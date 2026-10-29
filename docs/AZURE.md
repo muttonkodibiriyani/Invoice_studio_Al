@@ -431,7 +431,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $GRAPH" "$REV
 unset GRAPH
 ```
 
-Then, in a browser: open the sign-in address, choose **Sign in with your work account**, open the
+Then, in a browser: open the sign-in address, choose **Sign in with Microsoft**, open the
 developer tools → Network, click any `/api/` request and copy the value of its `Authorization` header
 after `Bearer `. Paste it at the hidden prompt, so it stays out of the shell history:
 

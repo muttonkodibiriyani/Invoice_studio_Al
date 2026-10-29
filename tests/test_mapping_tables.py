@@ -183,9 +183,8 @@ def test_expired_pending_upload_cannot_activate(client, owner, app):
     assert not app.state.store.get("fine_rules_config")
 
 
-def test_non_admin_is_forbidden_on_every_mapping_endpoint(client, provider):
-    token = provider.seed("mapping-member", "mapping-member@example.test")
-    client.app.state.users.create("mapping-member", "mapping-member@example.test", "Member", "member", "test", status="active", login_origin="existing")
+def test_non_admin_is_forbidden_on_every_mapping_endpoint(client, tenant):
+    token = tenant.token("mapping-member", "mapping-member@example.test")
     for method, path in [("GET", BASE), ("POST", BASE + "/validate"),
                          ("POST", BASE + "/uploads/x/activate"), ("POST", BASE + "/versions/x/rollback"),
                          ("GET", BASE + "/active/workbook")]:

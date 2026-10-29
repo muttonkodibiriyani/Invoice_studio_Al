@@ -1,7 +1,7 @@
 """Deny-by-default route access and request rate limits.
 
 Every API route declares its access level with `@access(...)`:
-  public  - no sign-in (the public config and the password flows)
+  public  - no sign-in (the public config)
   member  - any active workspace user
   admin   - active users with the admin role
 A route under /api without a declaration is a startup error, and the middleware refuses it anyway.

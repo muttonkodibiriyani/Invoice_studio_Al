@@ -3,7 +3,11 @@ the old holder can no longer change it (security review M5)."""
 import json
 import threading
 
+import pytest
+
 from app import main as main_module
+from app.main import create_app
+from app.store import Store
 from tests.conftest import bearer
 from tests.test_batch import OPTIONS, FakeReader, gone_quiet, plan, statuses, studio, upload, wait_until
 
@@ -153,3 +157,13 @@ def test_a_retry_after_the_cap_starts_the_count_again(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     assert wait_until(lambda: statuses(app, [jid])[jid] == "review")
     assert app.state.store.job(jid)["takeovers"] == 0
+
+
+@pytest.mark.parametrize("recover, expected", [("0", "processing"), ("1", "error")])
+def test_a_candidate_revision_leaves_the_live_instance_jobs_alone(recover, expected, tmp_path, monkeypatch, identity):
+    data = tmp_path / "data"
+    store = create_app(data, identity=identity, store_type=Store).state.store
+    store.job("running", {"id": "running", "revision": 1, "status": "processing"})
+    monkeypatch.setenv("INV_STUDIO_RECOVER_JOBS", recover)
+    restarted = create_app(data, identity=identity, store_type=Store)
+    assert restarted.state.store.job("running")["status"] == expected

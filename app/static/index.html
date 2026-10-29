@@ -16,22 +16,14 @@
         <h1 id="auth-title">Invoice Studio</h1>
         <p id="auth-message" role="status" aria-live="polite">Checking workspace access…</p>
         <span id="auth-spinner" class="spinner" aria-hidden="true"></span>
-        <button id="google-sign-in" class="button button-primary auth-button" type="button" hidden>
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 12.2c0-.7-.1-1.4-.2-2H12v3.7h4.5a3.8 3.8 0 0 1-1.7 2.5v2.4h3a9 9 0 0 0 2.2-6.6zM12 21a8.8 8.8 0 0 0 6-2.2l-3-2.4a5.5 5.5 0 0 1-8.2-2.9H3.7v2.4A9 9 0 0 0 12 21zM6.8 13.5a5.4 5.4 0 0 1 0-3.5V7.6H3.7a9 9 0 0 0 0 8.3l3.1-2.4zM12 6.5c1.5 0 2.9.5 4 1.5l2.8-2.8A9.4 9.4 0 0 0 3.7 7.6L6.8 10A5.4 5.4 0 0 1 12 6.5z"/></svg>
-          Continue with Google
+        <button id="microsoft-sign-in" class="button button-primary auth-button" type="button" hidden>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg>
+          Sign in with Microsoft
         </button>
-        <form id="password-sign-in" class="password-sign-in" hidden>
-          <label>Email<input id="auth-email" type="email" autocomplete="username" required></label>
-          <label>Password<input id="auth-password" type="password" autocomplete="current-password" required></label>
-          <button class="button button-primary auth-button" type="submit">Sign in</button>
-          <button id="password-reset" class="link-button" type="button">Forgot password?</button>
-        </form>
-        <button id="auth-send-verification" class="button button-primary auth-button" type="button" hidden>Send verification email</button>
-        <button id="auth-refresh-verification" class="button button-secondary auth-button" type="button" hidden>I've verified my email — continue</button>
         <button id="auth-retry" class="button button-secondary auth-button" type="button" hidden>Retry connection</button>
         <button id="auth-sign-out" class="button button-quiet auth-button" type="button" hidden>Use another account</button>
         <p id="auth-detail" class="auth-detail" role="status" aria-live="polite" hidden></p>
-        <p class="auth-privacy">Access is granted by your workspace administrator. Invoice data remains subject to the processing plan you confirm before each run.</p>
+        <p class="auth-privacy">Sign in with your work account. Access is granted by your workspace administrator in Microsoft Entra ID. Invoice data remains subject to the processing plan you confirm before each run.</p>
       </div>
     </section>
     <div id="app-shell" class="app-shell" hidden>
@@ -44,7 +36,7 @@
         </a>
         <div class="topbar-actions">
           <span id="runtime-badge" class="local-badge"><span class="status-dot" aria-hidden="true"></span><span>Local workspace</span></span>
-          <div id="cloud-user" class="cloud-user" hidden><span id="cloud-user-avatar" aria-hidden="true"></span><span><strong id="cloud-user-email"></strong><small>Verified workspace</small></span><button id="cloud-sign-out" type="button">Sign out</button></div>
+          <div id="cloud-user" class="cloud-user" hidden><span id="cloud-user-avatar" aria-hidden="true"></span><span><strong id="cloud-user-email"></strong><small>Work account</small></span><button id="cloud-sign-out" type="button">Sign out</button></div>
           <button class="button button-primary button-small" type="button" data-open-upload>
             <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></svg>
             Add invoices
@@ -530,37 +522,18 @@
         </section>
         <section id="users-section" class="page-section" aria-labelledby="users-title" hidden>
           <div class="page-heading">
-            <div><p class="eyebrow">Workspace access</p><h1 id="users-title">Users</h1><p>Invite people, hand them a password link, and control roles. Links are shown once; you pass them on yourself.</p></div>
+            <div><p class="eyebrow">Workspace access</p><h1 id="users-title">Users</h1><p id="users-intro">People sign in with their work account. Access and roles are managed in Microsoft Entra ID: add someone to the Invoice Studio administrator group or member group, and remove them there to take access away. This list shows who has signed in here and the role they had at their last sign-in. It does not grant or remove access.</p></div>
           </div>
           <div class="settings-grid">
             <article class="card settings-card wide">
               <div class="settings-card-header">
-                <span class="section-icon violet"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19 8v6M16 11h6"/></svg></span>
-                <div><h2>Add a user</h2><p>Creates the account without a password and gives you a create-password link to send to the person.</p></div>
-              </div>
-              <form id="user-create-form" class="settings-form">
-                <label>Email<input id="user-email" name="email" type="email" maxlength="254" required autocomplete="off"></label>
-                <label>Name<input id="user-name" name="name" maxlength="120" autocomplete="off" placeholder="Optional"></label>
-                <label>Role<select id="user-role" name="role"><option value="member">Member</option><option value="admin">Administrator</option></select></label>
-                <button class="button button-primary" type="submit">Create user and get link</button>
-              </form>
-            </article>
-            <article class="card settings-card wide">
-              <div class="settings-card-header">
                 <span class="section-icon coral"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3M5 10h14v10H5z"/></svg></span>
-                <div><h2>Workspace users</h2><p>Disabling takes effect immediately. Deleting removes the sign-in; the invoices they worked on stay.</p></div>
+                <div><h2>Who has signed in</h2><p>Someone removed in Entra ID stays listed with their last role; they can no longer sign in.</p></div>
               </div>
-              <div class="table-scroll"><table id="users-table" class="line-table users-table"><thead><tr><th scope="col">Email</th><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Last sign-in</th><th scope="col">Actions</th></tr></thead><tbody id="users-rows"><tr><td colspan="6" class="table-empty">Loading…</td></tr></tbody></table></div>
+              <div class="table-scroll"><table id="users-table" class="line-table users-table"><thead><tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Role at last sign-in</th><th scope="col">First sign-in</th><th scope="col">Last sign-in</th></tr></thead><tbody id="users-rows"><tr><td colspan="5" class="table-empty">Loading…</td></tr></tbody></table></div>
             </article>
           </div>
         </section>
-        <dialog id="user-link-dialog" aria-labelledby="user-link-title">
-          <form method="dialog" class="dialog-shell small-dialog user-link-dialog">
-            <div class="dialog-header"><div><p class="eyebrow">Hand this to the user</p><h2 id="user-link-title">Password link</h2><p id="user-link-note"></p></div></div>
-            <textarea id="user-link-text" readonly rows="3" spellcheck="false" aria-label="Password link"></textarea>
-            <div class="dialog-actions"><button id="user-link-copy" class="button button-primary" type="button">Copy link</button><button class="button button-secondary" type="submit">Done</button></div>
-          </form>
-        </dialog>
       </main>
     </div>
 
@@ -734,7 +707,7 @@
       </form>
     </dialog>
 
-    <script src="/static/firebase-auth.bundle.js" defer></script>
+    <script src="/static/entra-auth.bundle.js" defer></script>
     <script src="/static/app.js" defer></script>
   </body>
 </html>

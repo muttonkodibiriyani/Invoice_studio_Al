@@ -77,7 +77,7 @@ def test_the_readme_references_only_files_that_exist():
         assert (ROOT / target).exists(), f"README links to {target}, which does not exist"
     # Paths the README asks the reader to run or edit.
     for path in ("scripts/setup.sh", "scripts/run.sh", "scripts/setup.cmd", "scripts/run.cmd",
-                 "scripts/sync_static.py", ".env.example", ".github/workflows/ci.yml"):
+                 ".env.example", ".github/workflows/ci.yml"):
         assert (ROOT / path).exists(), path
         assert path.split("/")[-1] in readme, f"{path} should be documented"
     assert "docker compose up" in readme and (ROOT / "docker-compose.yml").exists()

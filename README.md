@@ -139,7 +139,7 @@ CI runs the same ruff and pytest commands on every push and pull request (`.gith
 
 The golden-sample tests prove the samples are read locally with no AI call. The two scans' tests need the scan readers: `.venv/bin/pytest -q -m scan_readers` after `./scripts/setup.sh --ocr` (`docs/GOLDEN_SAMPLES.md`).
 
-The UI is edited in `app/static/` only. `hosting/public/` (what Firebase Hosting serves) is derived from it by `scripts/sync_static.py`, and a test fails when the two drift.
+The UI lives in `app/static/`. The Microsoft sign-in module `app/static/entra-auth.bundle.js` is built from `app/static/entra-auth-entry.js` by `scripts/entra-bundle/` (`npm ci && npm run build` there), and a test fails when the bundle no longer matches its recorded sha256.
 
 ## Operations
 

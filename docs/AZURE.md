@@ -232,6 +232,13 @@ Python and `psycopg`), or from a machine you put in the network for the purpose.
 
 ## 2. Create the resources
 
+**The first deploy is one script.** `scripts/azure_deploy.py` reads the deploy kit (`infra/azure/deploy-kit.example.env`, one line per placeholder of the access request), runs the preflight (sign-in, tenant and subscription, resource group, roles including role assignments, providers, quota, template parameters, then ARM validation and what-if, where Azure Policy refuses), stops at the first check that fails with that reason, and only then deploys. `--check` runs the preflight alone and creates nothing. The steps below are what it runs.
+
+```bash
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env --check
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env
+```
+
 ```bash
 az bicep build --file infra/azure/main.bicep --stdout > /dev/null   # syntax check, no deployment
 az deployment group what-if -g "$RG" -f infra/azure/main.bicep -p @infra/azure/main.parameters.json

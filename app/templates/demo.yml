@@ -1,0 +1,35 @@
+issuer: Lumena Beauty Trading LLC (synthetic sample)
+keywords:
+  - Lumena Beauty Trading
+fields:
+  invoice_number: 'Invoice:\s*(DEMO-[0-9-]+)'
+  supplier_name: 'Supplier:\s*(Lumena Beauty Trading LLC)'
+  date: 'Date:\s*(\d{4}-\d{2}-\d{2})'
+  po: 'PO:\s*(\d+)'
+  currency: 'Currency:\s*([A-Z]{3})'
+  amount:
+    parser: regex
+    # The last amount on the line: a scan can put a stray mark before it ("Net total: 8 800.00").
+    # An amount starts only where a run of digits starts, so a long run is not backtracked over;
+    # the scan stops at the next copy of the label, which reads the same amount.
+    regex: 'Net total:(?:(?!Net total:)[^\n])*?(?<![0-9])([0-9]+\.[0-9]{2})(?![0-9])'
+    type: float
+  tax:
+    parser: regex
+    regex: 'Tax total:(?:(?!Tax total:)[^\n])*?(?<![0-9])([0-9]+\.[0-9]{2})(?![0-9])'
+    type: float
+  lines:
+    parser: lines
+    rules:
+      - start: 'ITEMS BEGIN'
+        end: 'ITEMS END'
+        line_separator: '\n|(?=LUM-[A-Z0-9]+\s+\d+)'
+        line: '(?P<sku>LUM-[A-Z0-9]+)\s+(?P<gtin>\d+)\s+(?P<description>.+?)\s+(?P<qty>[0-9.]+)\s+(?P<uom>EA)\s+(?P<price>[0-9.]+)'
+required_fields:
+  - invoice_number
+  - date
+  - amount
+  - lines
+options:
+  date_formats:
+    - '%Y-%m-%d'

@@ -1,0 +1,7 @@
+*.pdf binary
+*.png binary
+*.docx binary
+*.pptx binary
+
+# Windows batch files need CRLF whatever the checkout settings are.
+*.cmd text eol=crlf

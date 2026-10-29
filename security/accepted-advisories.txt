@@ -1,0 +1,10 @@
+# Advisories CI's dependency audit accepts. One id per line, then "#" and why it does not reach this app.
+# The audit reads the first word of every non-comment line as --ignore-vuln. Add a line only with a
+# security-review decision; remove it when its revisit trigger fires.
+#
+# filelock 3.32.3 (security review M6; coordinator decision, tm8 msg 01a18212-f97d). LOW residual, unreachable.
+# Revisit: remove when the PyTorch CPU index carries filelock >= 4.2.1, or when anything in the app or the
+# OCR stack uses ReadWriteLock.
+GHSA-v4x8-3wr5-3wq8  # CVE-2026-112940: in ReadWriteLock; nothing in the app or the OCR stack uses it
+GHSA-9vhv-jxww-xfm5  # CVE-2026-112913: in ReadWriteLock; nothing in the app or the OCR stack uses it
+GHSA-567q-5qvw-pf92  # CVE-2026-112907: Windows SoftFileLock only, a fallback there; needs another local user; worst case a hung download

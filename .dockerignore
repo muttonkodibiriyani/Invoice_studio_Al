@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+.firebase
+.data
+**/__pycache__
+build
+*.egg-info
+hosting
+docs
+tests
+.github
+infra

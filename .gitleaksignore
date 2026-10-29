@@ -1,0 +1,9 @@
+# gitleaks baseline (`gitleaks git`), reviewed 28 Oct 2026. A new finding fails CI; only add a line here after
+# checking the match is not a live secret, and say why above it.
+# Public sample token from jwt.io, used to prove the log redaction (tests/test_logging.py).
+1e7f07b9fcc1138aff95516cd7622d5581abb7c1:tests/test_logging.py:jwt:10
+# The python base image's public release-signing GPG key fingerprint, in the recovered image history.
+b9c623f693127b2d5b540206bb988d15a29bfbf5:docs/live-image-history.jsonl:generic-api-key:88
+# Firebase web API key in the recovered Hosting init files, removed from the tree by PR #40; it stays in history.
+b9c623f693127b2d5b540206bb988d15a29bfbf5:hosting/public/__/firebase/init.json:gcp-api-key:2
+b9c623f693127b2d5b540206bb988d15a29bfbf5:hosting/public/__/firebase/init.js:gcp-api-key:3

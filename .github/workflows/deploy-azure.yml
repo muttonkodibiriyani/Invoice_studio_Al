@@ -1,0 +1,170 @@
+# Builds the application image in Azure Container Registry and puts it on a new Container Apps
+# revision. Manual only: a build never goes live by itself, so the new revision gets no traffic
+# unless the dispatch asks for it.
+#
+# Sign-in uses OIDC federated credentials: no secret value is kept in the repository. What the
+# repository needs, and how to set it up, is in docs/AZURE.md.
+#   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#   variables: AZURE_RESOURCE_GROUP, AZURE_CONTAINER_REGISTRY, AZURE_CONTAINER_APP
+name: Deploy to Azure
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag in ACR. Empty uses the short commit sha."
+        required: false
+        default: ""
+      send_traffic:
+        description: "Send all traffic to the new revision. Leave off to test it on its own address first."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    # Add required reviewers to this environment in the repository settings to gate go-live.
+    environment: azure
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: tag
+        run: |
+          tag="${{ inputs.image_tag }}"
+          if [ -z "$tag" ]; then tag="$(git rev-parse --short HEAD)"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          slug=$(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          echo "suffix=r$slug-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Prepare the CLI
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
+          az extension add --name containerapp --upgrade --only-show-errors
+
+      - name: Pin traffic to the revision that is live now
+        id: live
+        run: |
+          live=$(az containerapp show \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.latestReadyRevisionName" -o tsv)
+          echo "revision=$live" >> "$GITHUB_OUTPUT"
+          if [ -n "$live" ]; then
+            az containerapp ingress traffic set \
+              --name "${{ vars.AZURE_CONTAINER_APP }}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --revision-weight "$live=100" --only-show-errors -o none
+          fi
+
+      # The image is about 5.6 GB with the OCR models, well past what a hosted runner can hold.
+      # ACR Tasks builds it inside Azure from the uploaded source, so nothing large crosses the network.
+      - name: Build the image in ACR
+        run: |
+          az acr build \
+            --registry "${{ vars.AZURE_CONTAINER_REGISTRY }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --platform linux/amd64 \
+            --file Dockerfile \
+            --image "inv-studio:${{ steps.tag.outputs.tag }}" \
+            --timeout 14400 \
+            .
+
+      - name: Create the new revision
+        id: revision
+        run: |
+          server=$(az acr show --name "${{ vars.AZURE_CONTAINER_REGISTRY }}" --query loginServer -o tsv)
+          # Deploy by digest, not by tag, the way docs/RUNBOOK.md does on Cloud Run.
+          digest=$(az acr manifest show-metadata \
+            --name "$server/inv-studio:${{ steps.tag.outputs.tag }}" \
+            --query digest -o tsv 2>/dev/null) || digest=""
+          if [ -z "$digest" ]; then
+            digest=$(az acr repository show \
+              --name "${{ vars.AZURE_CONTAINER_REGISTRY }}" \
+              --image "inv-studio:${{ steps.tag.outputs.tag }}" \
+              --query digest -o tsv)
+          fi
+          echo "Deploying $server/inv-studio@$digest"
+          az containerapp update \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "$server/inv-studio@$digest" \
+            --revision-suffix "${{ steps.tag.outputs.suffix }}" \
+            --only-show-errors -o none
+          new="${{ vars.AZURE_CONTAINER_APP }}--${{ steps.tag.outputs.suffix }}"
+          echo "revision=$new" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the new revision to be healthy
+        run: |
+          for _ in $(seq 1 60); do
+            state=$(az containerapp revision show \
+              --revision "${{ steps.revision.outputs.revision }}" \
+              --name "${{ vars.AZURE_CONTAINER_APP }}" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "properties.healthState" -o tsv 2>/dev/null || echo Unknown)
+            echo "health: $state"
+            if [ "$state" = "Healthy" ]; then exit 0; fi
+            if [ "$state" = "Unhealthy" ]; then exit 1; fi
+            sleep 20
+          done
+          echo "The revision did not become healthy in 20 minutes." >&2
+          exit 1
+
+      - name: Send traffic to the new revision
+        if: ${{ inputs.send_traffic }}
+        run: |
+          az containerapp ingress traffic set \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --revision-weight "${{ steps.revision.outputs.revision }}=100" \
+            --only-show-errors -o none
+
+      - name: Report
+        run: |
+          app=$(az containerapp show \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          revision=$(az containerapp revision show \
+            --revision "${{ steps.revision.outputs.revision }}" \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.fqdn" -o tsv)
+          {
+            echo "### Azure deployment"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |"
+            echo "| Digest | \`${{ steps.revision.outputs.digest }}\` |"
+            echo "| New revision | \`${{ steps.revision.outputs.revision }}\` |"
+            echo "| Revision address | https://$revision |"
+            echo "| App address | https://$app |"
+            echo "| Previous revision | \`${{ steps.live.outputs.revision }}\` |"
+            echo "| Traffic moved | ${{ inputs.send_traffic }} |"
+            echo ""
+            if [ -n "${{ steps.live.outputs.revision }}" ]; then
+              echo "Roll back with:"
+              echo '```'
+              echo "az containerapp ingress traffic set -n ${{ vars.AZURE_CONTAINER_APP }} -g ${{ vars.AZURE_RESOURCE_GROUP }} --revision-weight ${{ steps.live.outputs.revision }}=100"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

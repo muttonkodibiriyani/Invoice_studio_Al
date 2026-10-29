@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          cache-dependency-glob: pyproject.toml
+      - name: Install
+        run: |
+          if [ ! -d .venv ]; then uv venv --python 3.12; fi
+          uv pip install -e '.[test,cloud,azure]'
+      - name: Ruff
+        run: .venv/bin/ruff check .
+      - name: Tests
+        run: .venv/bin/pytest -q
+      - name: Build package
+        run: uv build

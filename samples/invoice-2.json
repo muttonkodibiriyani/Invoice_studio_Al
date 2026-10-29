@@ -1,0 +1,19 @@
+{
+  "number": "DEMO-2026-002",
+  "supplier_name": "Lumena Beauty Trading LLC",
+  "date": "2026-10-04",
+  "po": "70002",
+  "currency": "AED",
+  "net": "520",
+  "tax": "26.0",
+  "lines": [
+    {
+      "sku": "LUM-CRM50",
+      "gtin": "00012345678912",
+      "description": "Lumena cream 50 ml",
+      "uom": "EA",
+      "qty": "13",
+      "price": "40"
+    }
+  ]
+}

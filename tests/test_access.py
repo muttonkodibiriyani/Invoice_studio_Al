@@ -1,4 +1,4 @@
-"""Every API route × every principal: nobody gets past the middleware without the right role and status."""
+"""Every API route × every principal: nobody gets past the middleware without the right role in their token."""
 import pytest
 from starlette.routing import Route
 
@@ -6,11 +6,10 @@ from app.authorization import ADMIN, MEMBER, PUBLIC, route_access
 from tests.conftest import HEADERS, bearer
 
 NOT_SIGNED_IN = "Sign in to Invoice Studio"
+EXPIRED = "Sign-in expired or could not be verified. Sign in again."
 NO_ACCESS = "This account has not been granted access to this workspace"
-DISABLED = "This account is disabled. Contact the workspace administrator."
-UNVERIFIED = "Verify your email to open this workspace"
 ADMIN_ONLY = "Administrator access is required"
-MIDDLEWARE_DENIALS = {NOT_SIGNED_IN, NO_ACCESS, DISABLED, UNVERIFIED, ADMIN_ONLY, "Not found", "Missing request protection header"}
+MIDDLEWARE_DENIALS = {NOT_SIGNED_IN, EXPIRED, NO_ACCESS, ADMIN_ONLY, "Not found", "Missing request protection header"}
 
 
 def api_routes(app):
@@ -27,24 +26,16 @@ def concrete(path):
     return "".join("x" if part.startswith("{") else part for part in path.replace("{", "|{").replace("}", "}|").split("|"))
 
 
-def make_principals(provider, client, owner):
-    member_token = provider.seed("member-uid", "member@example.test")
-    invited_token = provider.seed("invited-uid", "invited@example.test")
-    disabled_token = provider.seed("disabled-uid", "disabled@example.test")
-    unverified_token = provider.seed("unverified-uid", "unverified@example.test", verified=False)
-    unknown_token = provider.seed("stranger-uid", "stranger@example.test")
-    users = client.app.state.users
-    users.create("member-uid", "member@example.test", "M", "member", invited_by="test", status="active", login_origin="existing")
-    users.create("invited-uid", "invited@example.test", "I", "member", invited_by="test", status="invited", login_origin="existing")
-    users.create("disabled-uid", "disabled@example.test", "D", "admin", invited_by="test", status="disabled", login_origin="existing")
-    users.create("unverified-uid", "unverified@example.test", "U", "member", invited_by="test", status="active", login_origin="existing")
+def make_principals(tenant, client, owner):
+    # "demoted" signed in as an administrator before; its row says admin, its token now says member.
+    demoted_admin = tenant.token("demoted-uid", "demoted@example.test", roles=("admin",))
+    assert client.get("/api/session", headers=bearer(demoted_admin)).status_code == 200
     return {
         "anonymous": None,
-        "unknown": unknown_token,
-        "disabled": disabled_token,
-        "unverified": unverified_token,
-        "member": member_token,
-        "invited": invited_token,
+        "expired": tenant.token("member-uid", "member@example.test", exp=1),
+        "no-role": tenant.token("stranger-uid", "stranger@example.test", roles=()),
+        "member": tenant.token("member-uid", "member@example.test"),
+        "demoted": tenant.token("demoted-uid", "demoted@example.test", roles=("member",)),
         "admin": owner,
     }
 
@@ -52,11 +43,10 @@ def make_principals(provider, client, owner):
 EXPECTED = {
     # principal -> {level: expected (status, detail) or None meaning "must reach the handler"}
     "anonymous": {PUBLIC: None, MEMBER: (401, NOT_SIGNED_IN), ADMIN: (401, NOT_SIGNED_IN)},
-    "unknown": {PUBLIC: None, MEMBER: (403, NO_ACCESS), ADMIN: (403, NO_ACCESS)},
-    "disabled": {PUBLIC: None, MEMBER: (403, DISABLED), ADMIN: (403, DISABLED)},
-    "unverified": {PUBLIC: None, MEMBER: (403, UNVERIFIED), ADMIN: (403, UNVERIFIED)},
+    "expired": {PUBLIC: None, MEMBER: (401, EXPIRED), ADMIN: (401, EXPIRED)},
+    "no-role": {PUBLIC: None, MEMBER: (403, NO_ACCESS), ADMIN: (403, NO_ACCESS)},
     "member": {PUBLIC: None, MEMBER: None, ADMIN: (403, ADMIN_ONLY)},
-    "invited": {PUBLIC: None, MEMBER: None, ADMIN: (403, ADMIN_ONLY)},
+    "demoted": {PUBLIC: None, MEMBER: None, ADMIN: (403, ADMIN_ONLY)},
     "admin": {PUBLIC: None, MEMBER: None, ADMIN: None},
 }
 
@@ -76,13 +66,13 @@ def test_admin_surface_is_admin_only(app):
         if method == "DELETE" and path.startswith("/api/learned"):
             assert level == ADMIN, (method, path)  # members teach from exported invoices; only admins forget
     public = {(m, p) for m, p, level in api_routes(app) if level == PUBLIC}
-    assert public == {("GET", "/api/public-config"), ("POST", "/api/password/forgot")}
+    assert public == {("GET", "/api/public-config")}
 
 
 @pytest.mark.parametrize("principal", list(EXPECTED))
-def test_route_matrix(principal, app, client, provider, owner):
+def test_route_matrix(principal, app, client, tenant, owner):
     app.state.limiter.allow = lambda *a, **k: True
-    tokens = make_principals(provider, client, owner)
+    tokens = make_principals(tenant, client, owner)
     token = tokens[principal]
     failures = []
     for method, path, level in api_routes(app):
@@ -111,21 +101,9 @@ def test_unregistered_api_path_is_404_without_a_token(client):
 
 
 def test_state_changing_calls_need_the_request_header(client, owner):
-    response = client.post("/api/users", json={"email": "a@example.test", "name": "", "role": "member"}, headers={"Authorization": "Bearer " + owner})
+    response = client.post("/api/settings", json={}, headers={"Authorization": "Bearer " + owner})
     assert response.status_code == 403
     assert response.json()["detail"] == "Missing request protection header"
-
-
-def test_revocation_is_checked_on_sensitive_calls_only(client, identity, owner):
-    identity.verify_calls.clear()
-    client.get("/api/session", headers=bearer(owner))
-    client.get("/api/users", headers=bearer(owner))
-    client.post("/api/password/forgot", json={"email": "x@example.test"}, headers=HEADERS)
-    checks = {call[1] for call in identity.verify_calls}
-    member_get, admin_get = identity.verify_calls[0][1], identity.verify_calls[1][1]
-    assert member_get is False and admin_get is True
-    assert len(identity.verify_calls) == 2, "public routes never call the identity provider"
-    assert checks == {False, True}
 
 
 def test_docs_are_off_in_the_cloud(client):
@@ -139,9 +117,6 @@ def test_docs_stay_on_locally(tmp_path):
 
     class Local:
         cloud = False
-        bootstrap_admins = set()
-        admin = None
-        public_url = ""
         def config(self): return {"cloud": False}
         def verify(self, *a, **k): raise AssertionError("not called locally")
     from fastapi.testclient import TestClient

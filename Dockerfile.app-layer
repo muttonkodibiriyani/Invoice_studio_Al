@@ -9,4 +9,11 @@ FROM ${BASE}
 USER root
 RUN rm -rf /opt/inv-studio/app
 COPY app /opt/inv-studio/app
+# Model folders read-only for the app's account, and no model hub lookups (N6, N8; the same as the Dockerfile).
+RUN set -e; \
+    rapidocr="$(python -c 'import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec("rapidocr").origin).parent/"models")')"; \
+    for d in /home/studio/.cache/huggingface /home/studio/.paddlex/official_models "$rapidocr"; do \
+        test -d "$d"; chown -R root:root "$d"; chmod -R a-w "$d"; \
+    done
 USER 1000:1000
+ENV HF_HUB_OFFLINE=1

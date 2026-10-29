@@ -14,7 +14,7 @@ dependencies = [
 test = ["pytest>=8,<10", "ruff>=0.11,<1", "reportlab>=4,<5"]
 docling = ["docling==2.143.1"]
 paddle = ["paddleocr==3.7.0", "paddlepaddle==3.3.1"]
-cloud = ["firebase-admin==7.7.0", "google-cloud-storage==3.16.0", "psycopg[binary]==3.3.6"]
+cloud = ["google-cloud-storage==3.16.0", "psycopg[binary]==3.3.6"]
 azure = ["azure-storage-blob==12.31.0", "azure-identity==1.27.0"]
 [build-system]
 requires = ["setuptools>=75"]

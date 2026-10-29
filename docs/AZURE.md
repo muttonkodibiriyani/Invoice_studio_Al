@@ -5,8 +5,9 @@
 The short version, for someone who is not a cloud specialist. The detailed steps follow from §0.
 
 Azure is a third place to run Invoice Studio, next to a Windows or Mac computer and Google Cloud.
-Sign-in stays with Firebase, on Google, on every hosted copy. The two hosted copies have separate
-databases and separate files.
+On Azure, people sign in with their work account in the team's Microsoft Entra ID tenant, and only
+members of two Entra groups get in. The Google Cloud copy keeps its own Google sign-in. The two hosted
+copies share no sign-in, no database and no files.
 
 ### The picture
 
@@ -14,10 +15,10 @@ databases and separate files.
                           HTTPS
   Browser ───────────────────────────────► Container app  (the whole app: page, API, readers)
      │                                        │
-     │ sign-in (email + password)             ├──► PostgreSQL     invoices, extracted data, workbooks
+     │ sign-in (work account)                 ├──► PostgreSQL     invoices, extracted data, workbooks
      ▼                                        │    (private network only)
-  Google: Firebase sign-in ◄── account check ─┤
-                               on each write  ├──► Blob Storage   the uploaded invoice files
+  Microsoft Entra ID ◄──── public signing keys┤
+  (admin and member groups)  (no credential)  ├──► Blob Storage   the uploaded invoice files
                                               │
                                               ├──► Key Vault      database login, encryption key, AI key
                                               │
@@ -42,14 +43,14 @@ to busy; the next table shows how they add up.
 | Key Vault | Keeps the three secrets: database login, the key that encrypts stored AI credentials, the Foundry key | Required | Standard | under US$1 |
 | Log Analytics | Keeps app logs and the audit logs of vault, files and registry | Required | Pay per GB, 30 days kept | US$0–15 |
 | Managed identity | The app's own login to the registry, vault and files. No password exists | Required | One identity | US$0 |
-| Firebase Authentication | Sign-in, shared with the Google Cloud copy | Required | The existing Google project | Not on the Azure bill |
+| Microsoft Entra ID | Sign-in: one app registration, two app roles granted to two groups. The app holds no Entra secret | Required | The team's workforce tenant | US$0 (group-to-role assignment needs Entra ID P1, see §6) |
 | Azure AI Foundry | Reads what the local readers could not | Optional | In a separate subscription | Not on this bill |
 
 ### How one invoice moves
 
 1. **Upload.** The browser sends the file (PDF or image, up to 12 MB) to the container app over HTTPS,
-   with the user's sign-in token. The app checks the token against Google's public certificates. On a
-   write it also asks Google whether the account is still active. No invoice content goes to Google.
+   with the user's Entra access token. The app checks the token against the tenant's public signing
+   keys, fetched from Microsoft and cached for a day. No invoice content goes to Microsoft Entra.
 2. **Store the file.** The file goes into Blob Storage (`evidence/uploads/`). A job row goes into
    PostgreSQL. A working copy sits on the container's own disk and is gone after a restart.
 3. **Read it locally.** The readers in the container read the invoice: the PDF text layer, and
@@ -116,16 +117,18 @@ environment fee applies.
 - [ ] An Azure subscription and an empty resource group in one region (the example uses UAE North).
 - [ ] Owner on that resource group, or Contributor plus User Access Administrator.
 - [ ] Azure CLI 2.60 or newer with Bicep and the `containerapp` extension, `jq` and `python3`.
-- [ ] From the Firebase console: the Google Cloud project name, the web API key and the web app ID.
-- [ ] The Firebase project owner's agreement to add the Azure address. The project is shared with
-      Product Intelligence (§6).
-- [ ] The administrator email list, and the member list if there is one.
+- [ ] From the Entra administrator (§6): the tenant id `<AZ_TENANT_ID>`, the app registration's client
+      id `<ENTRA_APP_CLIENT_ID>`, and the admin and member groups `<ENTRA_GROUP_ADMIN>` and
+      `<ENTRA_GROUP_MEMBER>` (display names `<ENTRA_GROUP_ADMIN_NAME>`, `<ENTRA_GROUP_MEMBER_NAME>`),
+      with the right people in each.
+- [ ] Someone who can add a redirect URI to that app registration after step 2 (`<ENTRA_REDIRECT_URI_OWNER>`).
 - [ ] A new database password and a new encryption key, kept in a password manager (§1).
 - [ ] If Foundry is used: its endpoint, deployment name and API key (§7).
 - [ ] A choice: purge protection on the vault (production; it can never be turned off) or off (a trial
       to throw away).
-- [ ] The GitHub sign-in for deploys (§4): one Azure app registration, three secrets and three variables
-      in the repository, and a reviewer on the `azure` environment.
+- [ ] Only if the GitHub deploy workflow is used (§4): one Azure app registration for deploys, three
+      secrets and seven variables (four of them the Entra values) in the repository, and a reviewer on
+      the `azure` environment. Not needed for a deploy by hand from Cloud Shell.
 
 ### Could be simpler or cheaper
 
@@ -142,7 +145,8 @@ the copy off is one command, and the next template run turns it back on.
 
 The detailed reference starts here. Phase 1 of the Azure move runs the same container image as Cloud
 Run, with each Google service swapped for its Azure equivalent. The Azure deployment holds no Google
-credential, so it cannot invite or manage users; that stays on the Google Cloud deployment (§6).
+credential and no Entra secret: sign-in is Microsoft Entra ID, and who gets in, with which role, is
+decided in Entra, not in the app (§6).
 Everything is in `infra/azure/*.bicep` and `.github/workflows/deploy-azure.yml`. The whole run below
 takes about an hour, most of it waiting for the first image build.
 
@@ -158,10 +162,9 @@ You need:
   in step 4 only needs Contributor.
 - **Azure CLI 2.60 or newer** with the Bicep tools: `az bicep install`, `az extension add --name containerapp`.
 - **`jq` and `python3`** on the machine you run these steps from: the §5 smoke test and the output reads use them.
-- **The public web configuration of the Firebase project** that holds the user pool (§1), and the
-  project owner's agreement to add one authorized domain (step 6). The project is shared with Product
-  Intelligence: see the warning in step 6. No service-account key is needed, and none may be created
-  for this deployment.
+- **The Entra sign-in values** (§6): tenant id, the app registration's client id and the two group
+  names. They are public identifiers, not secrets. No client secret or certificate is needed, and none
+  may be created for this app registration.
 - **The Azure AI Foundry endpoint and api-key**, if the Foundry provider is to be used (step 7).
 
 Nothing in this document deletes or changes anything in the Google Cloud deployment. The two run side
@@ -206,22 +209,26 @@ Write them into a parameter file that stays outside git (`infra/azure/main.param
 ```bash
 cp infra/azure/main.parameters.example.json infra/azure/main.parameters.json
 chmod 600 infra/azure/main.parameters.json
-# edit: location, the Firebase values below, and add
+# edit: location, the Entra values below, and add
 #   "postgresAdminPassword": { "value": "<the password>" },
 #   "vaultKey":              { "value": "<the Fernet key>" }
 ```
 
-The example also names the Firebase project the app signs users in with. All four are required: in
-cloud mode the app refuses to start without `googleCloudProject`, and the browser cannot sign in
-without the web configuration.
+The example also names the Entra sign-in values. The tenant and client ids are required: the template
+refuses anything that is not 36 characters long (so the placeholders, and `common` or `organizations`,
+fail at deploy time), and in cloud mode the app refuses to start unless both are GUIDs. Until the
+platform hands them over, they stay the named placeholders below, and step 2 cannot run.
 
-| Parameter | Where to find it |
-|---|---|
-| `googleCloudProject` | the Google Cloud project that holds the Firebase user pool (the Cloud Run deployment's project) |
-| `firebaseWebApiKey`, `firebaseAppId` | Firebase console → Project settings → General → Your apps → the web app. Public configuration that every browser receives, not a credential; the parameter file still stays out of git |
-| `firebaseAuthDomain` | optional; defaults to `<googleCloudProject>.firebaseapp.com` |
-| `bootstrapAdminEmails` | comma-separated addresses that become administrators on first sign-in |
-| `bootstrapMemberEmails` | optional; comma-separated addresses that become members (not administrators) on first sign-in. An address on both lists is an administrator |
+| Parameter | Value | Where it comes from |
+|---|---|---|
+| `entraTenantId` | `<AZ_TENANT_ID>` | Entra admin center → Overview → Tenant ID |
+| `entraClientId` | `<ENTRA_APP_CLIENT_ID>` | the app registration (§6) → Overview → Application (client) ID |
+| `entraAdminGroupName` | `<ENTRA_GROUP_ADMIN_NAME>` | optional; shown on the Users screen only |
+| `entraMemberGroupName` | `<ENTRA_GROUP_MEMBER_NAME>` | optional; shown on the Users screen only |
+
+None of these is a credential, and none decides who gets in: that is the app roles and groups in Entra
+(§6). The group *names* are display text; the groups' object ids are used only in Entra, when the roles
+are granted, and are not a deploy setting.
 
 `networkAddressPrefix` (default `10.40.0.0/24`) is the private network's address space; change it only
 if it would overlap a network this one is peered with later.
@@ -231,6 +238,13 @@ from inside the app container (`az containerapp exec -n "$APP" -g "$RG" --comman
 Python and `psycopg`), or from a machine you put in the network for the purpose.
 
 ## 2. Create the resources
+
+**The first deploy is one script.** `scripts/azure_deploy.py` reads the deploy kit (`infra/azure/deploy-kit.example.env`, one line per placeholder of the access request), runs the preflight (sign-in, tenant and subscription, resource group, roles including role assignments, providers, quota, template parameters, then ARM validation and what-if, where Azure Policy refuses), stops at the first check that fails with that reason, and only then deploys. `--check` runs the preflight alone and creates nothing. The steps below are what it runs.
+
+```bash
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env --check
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env
+```
 
 ```bash
 az bicep build --file infra/azure/main.bicep --stdout > /dev/null   # syntax check, no deployment
@@ -255,7 +269,8 @@ echo "$APP_URL"
 With no image given, the app starts on Microsoft's hello-world image, which is only there to fix the
 hostname before the real image exists. `curl "$APP_URL"` answers with a welcome page.
 
-The hostname does not change when the image does, so you can already give it to Firebase (step 6).
+The hostname does not change when the image does, so the redirect URI owner can already add `$APP_URL/`
+to the app registration (§6, step 3).
 
 **Key Vault purge protection is on** (`enableKeyVaultPurgeProtection`, default `true`), with 90 days of
 soft delete (`keyVaultSoftDeleteRetentionDays`). Nobody, an administrator included, can then destroy
@@ -355,9 +370,17 @@ Then set these in the GitHub repository (Settings → Secrets and variables → 
 | Variable | `AZURE_RESOURCE_GROUP` | `$RG` |
 | Variable | `AZURE_CONTAINER_REGISTRY` | `$ACR` |
 | Variable | `AZURE_CONTAINER_APP` | `$APP` |
+| Variable | `ENTRA_TENANT_ID` | `<AZ_TENANT_ID>`, the same as `entraTenantId` |
+| Variable | `ENTRA_CLIENT_ID` | `<ENTRA_APP_CLIENT_ID>`, the same as `entraClientId` |
+| Variable | `ENTRA_ADMIN_GROUP_NAME` | the same as `entraAdminGroupName` (empty if that is empty) |
+| Variable | `ENTRA_MEMBER_GROUP_NAME` | the same as `entraMemberGroupName` (empty if that is empty) |
 
 None of the three secrets is a credential — they are identifiers — but keeping them as secrets is the
-convention and keeps them out of logs. Add required reviewers to the `azure` environment
+convention and keeps them out of logs. The four `ENTRA_*` variables are public values. The workflow
+never sets them on the app: it compares them with what the Bicep deployment set and stops before
+building when they differ, or when the app still carries an old Firebase setting.
+
+Add required reviewers to the `azure` environment
 (Settings → Environments → azure) so a deployment needs a human approval.
 
 ## 5. Build the image and put it on a revision
@@ -376,7 +399,7 @@ applied, use the hand-build block below and §8 by hand instead: the workflow on
    invoices the live revision is reading (§9, "Invoices in flight");
 4. prints the new revision's own address, the app address and the rollback command in the run summary.
 
-The revision starts with no Google credential (§6). Before testing it, check that it is a candidate.
+The revision starts with no sign-in credential at all (§6). Before testing it, check that it is a candidate.
 This must print `0`; anything else means the run did not set it, so do not test that revision:
 
 ```bash
@@ -388,42 +411,52 @@ Test it on the revision address from the summary
 (`https://<app>--<suffix>.<region>.azurecontainerapps.io`) with the smoke test below before §8 sends it
 any traffic.
 
-**Smoke test: sign in, and one write must succeed.** Run it as a bootstrap administrator (an address in
-`bootstrapAdminEmails` with a password set on the Google Cloud deployment). Read the password with
-`read -s`, so it stays out of the shell history. The write saves the AI settings back unchanged, so it
-alters nothing; it passes only if the token verifies, the account lookup (revoked or disabled) answers
-without a key, and the database takes a write.
+**Smoke test: sign in, and one write must succeed.** Sign-in only works on an address registered as a
+redirect URI, and a revision address is not one, so the token comes from the browser on `$APP_URL` and
+is then sent to the revision address: the API checks the token, not the page it came from. On the
+**first** deployment `$APP_URL` still serves the hello-world image, so the redirect URI owner adds
+`$REV_URL/` as a second SPA redirect URI for the test and removes it after §8. Sign in as someone in
+`<ENTRA_GROUP_ADMIN>`. The write saves the AI settings back unchanged, so it alters nothing; it passes
+only if the token verifies against the tenant's keys and the database takes a write.
 
 ```bash
 REV_URL=https://<app>--<suffix>.<region>.azurecontainerapps.io   # from the run summary
-WEB_KEY=$(az containerapp show -n "$APP" -g "$RG" \
-  --query "properties.template.containers[0].env[?name=='INV_STUDIO_FIREBASE_API_KEY'].value | [0]" -o tsv)
-read -rp 'Admin email: ' EMAIL; read -rsp 'Password: ' PASSWORD; echo
 
 curl -fsS "$REV_URL/health"                                                  # 200
 curl -s -o /dev/null -w '%{http_code}\n' "$REV_URL/api/session"             # 401: no token
-TOKEN=$(curl -fsS -H "X-Goog-Api-Key: $WEB_KEY" -H "Referer: $APP_URL/" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg e "$EMAIL" --arg p "$PASSWORD" '{email:$e,password:$p,returnSecureToken:true}')" \
-  https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword | jq -r .idToken)
-unset PASSWORD
-curl -fsS -H "Authorization: Bearer $TOKEN" "$REV_URL/api/session"           # 200: your email, role admin
+curl -fsS "$REV_URL/api/public-config" | jq .entra                            # tenantId and clientId are yours
+# A real Entra token for another audience (Microsoft Graph) must be refused:
+GRAPH=$(az account get-access-token --resource https://graph.microsoft.com --query accessToken -o tsv)
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $GRAPH" "$REV_URL/api/session"  # 401
+unset GRAPH
+```
+
+Then, in a browser: open the sign-in address, choose **Sign in with Microsoft**, open the
+developer tools → Network, click any `/api/` request and copy the value of its `Authorization` header
+after `Bearer `. Paste it at the hidden prompt, so it stays out of the shell history:
+
+```bash
+read -rsp 'Access token: ' TOKEN; echo
+curl -fsS -H "Authorization: Bearer $TOKEN" "$REV_URL/api/session"           # 200: your name, role admin
 SETTINGS=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$REV_URL/api/state" | jq -c .settings)
 curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H "Origin: $REV_URL" -H 'X-Studio-Request: 1' \
   -H 'Content-Type: application/json' -d "$SETTINGS" "$REV_URL/api/settings"  # 200: THE WRITE
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $TOKEN" -H "Origin: $REV_URL" -H 'X-Studio-Request: 1' \
-  -H 'Content-Type: application/json' -d '{"email":"smoke@example.invalid","name":"x","role":"member"}' \
-  "$REV_URL/api/users"                                                       # 409: sign-ins are created on Google Cloud
-unset TOKEN
+  -H 'Content-Type: application/json' -d '{}' "$REV_URL/api/users"          # 404: nobody is invited in the app
+unset TOKEN SETTINGS
 ```
 
-If the write answers 401 or 403 while `/api/session` answered 200, the account lookup refused it: the
-web API key's HTTP-referrer restriction does not allow `$APP_URL` (§6), or Google did not answer. A
-revision that fails this test gets no traffic. Deactivate it, so it stops running next to the live one:
-`az containerapp revision deactivate -n "$APP" -g "$RG" --revision <new revision>`.
+Last, sign in once as someone in **neither** group: Entra itself must refuse with `AADSTS50105` and the
+app must never be reached. If that person gets in, "Assignment required" is off on the enterprise
+application (§6): stop, it is not ready.
 
-**First deployment only: the address the app sees.** The per-address limit on "Forgot password?" and
-the `ip` in the request log take the **last** `X-Forwarded-For` entry (`app/authorization.py`,
+If `/api/session` answers 401 with a token from the browser, read the revision's log: a refused token
+logs the check that failed (issuer, audience, tenant, scope...) and never the token. The usual cause is
+`entraTenantId` or `entraClientId` not matching the registration, or the registration still issuing v1
+tokens (§6). A revision that fails this test gets no traffic. Deactivate it, so it stops running next
+to the live one: `az containerapp revision deactivate -n "$APP" -g "$RG" --revision <new revision>`.
+
+**First deployment only: the address the app sees.** The `ip` in the request log takes the **last** `X-Forwarded-For` entry (`app/authorization.py`,
 `client_ip`). That entry is the caller's own address only if the front end in front of the app adds
 it. Cloud Run's does. On Container Apps nobody has checked yet, so check it once on the candidate,
 from a computer whose public address you know:
@@ -435,8 +468,8 @@ az containerapp logs show -n "$APP" -g "$RG" --revision <new revision> --tail 50
 ```
 
 The `ip` in that log line must be your public address. If it is `203.0.113.7`, the ingress passes the
-header on unchanged and any caller can choose the address the limit counts. Stop and report it before
-go-live: the per-account limits still hold, but the per-address limit is then not a limit.
+header on unchanged and any caller can choose the address the log records. Report it before go-live:
+the per-account limits still hold, but the request log's `ip` cannot be trusted.
 
 The first start of a revision is slow: Container Apps has to pull 5.6 GB and the OCR readers warm up.
 The startup probe allows about seven minutes. If a revision never becomes healthy, read the logs
@@ -543,71 +576,75 @@ directory. If a revision never becomes healthy and its log shows `certificate ve
 accepts any certificate. Microsoft's fallback for DNS set-ups where the name cannot match is
 `verify-ca`, and choosing it is a security decision for the owner.
 
-## 6. Firebase: no key, and the authorized domain
+## 6. Microsoft Entra ID sign-in
 
-**This deployment carries no Google credential.** There is no service-account key in Key Vault, no
-`GOOGLE_APPLICATION_CREDENTIALS` and no key file. An admin key for this user pool never expires and can
-mint a session for any user of Invoice Studio and Product Intelligence, so it is not put in an
-internet-facing container (security review finding H2). Do not create one for Azure.
+Sign-in is the team's workforce Entra ID tenant and nothing else. The design is the tm8 doc "Entra ID
+sign-in design"; this section is what to set up and check. Every `<PLACEHOLDER>` is a value the
+platform has not handed over yet: leave it as it is until it is given, and never make one up.
 
-What that means:
+**The app holds no Entra credential.** The browser signs in as a single-page application (auth code with
+PKCE). The API only checks access tokens against the tenant's public signing keys, at
+`https://login.microsoftonline.com/<AZ_TENANT_ID>/discovery/v2.0/keys`. There is no client secret, no
+certificate and no Microsoft Graph call. Do not create a secret for this registration: it would be a
+long-lived credential that nothing uses.
 
-- **The app starts and signs in without one.** The template sets `INV_STUDIO_IDENTITY_ADMIN=0`: the
-  Firebase client is built with no credential and only verifies tokens. Any value other than `0` or `1`
-  refuses to start; `1` (or unset) is the Google Cloud behaviour and on Azure exits with
-  `DefaultCredentialsError`, so do not change it.
-- **Sign-ins are created on the Google Cloud deployment.** Inviting a user and issuing a password link
-  need a Google credential, so on Azure they answer 409: "Users are managed on the primary workspace;
-  this deployment shares its sign-in pool". The rest of the Users page works on this deployment's own
-  user list:
-  - **Disable and enable** work. A disabled user is refused on their **next request, reads included**,
-    because every request re-reads their status. Their Google sign-in keeps working on other apps.
-  - **Change role** works. You cannot demote yourself or the last active administrator.
-  - **Delete** answers 409 for an address in `bootstrapAdminEmails`. Disable them instead.
-- **People are given access through the two lists, and only at their first sign-in.** Since invitations
-  answer 409 here, these are the only way in:
-  - To add a **member**, put their address in `bootstrapMemberEmails`. They are a member from their
-    first request and never hold the administrator role.
-  - To add an **administrator**, put their address in `bootstrapAdminEmails`. An address on both lists
-    is an administrator.
-  - Set the new list on the running app, and put the same list in the parameter file so the next
-    deployment keeps it (re-running step 2 instead needs `containerImage` set first, see §7):
+**What the Entra administrator sets up (once).** Agents do not create these; Tarkesh or the platform's
+Entra administrator does, in the Entra admin center:
 
-    ```bash
-    az containerapp update -n "$APP" -g "$RG" \
-      --set-env-vars "INV_STUDIO_MEMBER_EMAILS=<a@example.com,b@example.com>"
-    ```
+1. **App registration** `<ENTRA_APP_DISPLAY_NAME>`: single tenant (accounts in `<AZ_TENANT_ID>` only).
+   Platform **Single-page application**; implicit grant off (both boxes); "Allow public client flows"
+   **No**; no client secrets or certificates. Its Application (client) ID is `<ENTRA_APP_CLIENT_ID>`.
+2. **Expose an API:** Application ID URI `api://<ENTRA_APP_CLIENT_ID>`, one scope `access_as_user`,
+   admin consent only. In the manifest set `api.requestedAccessTokenVersion` to **2** (the API refuses v1
+   tokens). API permissions: `openid`, `profile`, `offline_access` and the app's own `access_as_user`,
+   with admin consent. No Microsoft Graph permission, not even `User.Read`. No groups claim.
+3. **Redirect URI**, after step 2 has printed `$APP_URL`: add `$APP_URL/` (with the trailing slash) as a
+   **Single-page application** redirect URI. Exact HTTPS addresses only, no wildcards, no `localhost`.
+   Done by `<ENTRA_REDIRECT_URI_OWNER>`, who must be an owner of the registration. Add
+   `https://<CUSTOM_DOMAIN>/` too if a custom domain is ever used.
+4. **App roles** on the registration, both for Users/Groups: display name "Invoice Studio administrator",
+   value **`admin`**; display name "Invoice Studio member", value **`member`**. The values are fixed by
+   the code; renaming one is a code change.
+5. **Enterprise application** (the registration's service principal) → Properties: **Assignment
+   required = Yes**. Then Users and groups: grant `admin` to `<ENTRA_GROUP_ADMIN>` and `member` to
+   `<ENTRA_GROUP_MEMBER>`. Granting a role to a *group* needs Entra ID P1 or higher in the tenant;
+   without it, people are granted one by one (an open platform question).
+6. **Group owners** `<ENTRA_GROUP_OWNERS>` add and remove people. Conditional Access (MFA, device,
+   location) is the tenant's choice: `<ENTRA_CA_NOTES>`.
 
-    Use `INV_STUDIO_ALLOWED_EMAILS` the same way for administrators. Give the whole list each time: it
-    replaces the old one. The person needs a Google Cloud sign-in with a verified email; a removed
-    account, or an email already in use under a different sign-in, is still refused.
-  - The list only decides the role at first sign-in. After that, **Change role** on the Users page
-    promotes or demotes them, and taking an address off a list does not remove the person: disable them.
-- **Sign-in is verified with Google's public certificates**, which needs only `GOOGLE_CLOUD_PROJECT`.
-  Writes and admin calls also check that the account is not disabled and the session not revoked.
-  On Google Cloud that uses the runtime credential. On Azure it is done without one:
-  Identity Toolkit `accounts:lookup`, called with the public web API key and the caller's own ID token.
-  A Google error, a timeout, a disabled account or a token older than the account's `validSince` refuses
-  the request. So a user disabled on the Google Cloud side loses write access on Azure at once. Reads
-  are not checked this way, as on Google Cloud today: that user can still read until their ID token
-  expires (up to an hour), unless an administrator also disables them on this deployment, which takes
-  effect on their next request.
-  The call sends `INV_STUDIO_PUBLIC_URL` (the app URL) as its Referer, so if the web API key is
-  restricted by HTTP referrer, `$APP_URL/*` must be among the allowed referrers, or every write is
-  refused. The browser on the Azure hostname needs that anyway to sign in. The smoke test in §5 checks it.
-- **A keyless path, if user management is wanted on Azure later:** Workload Identity Federation from
-  the app's managed identity to a Google service account that holds only `roles/firebaseauth.admin`,
-  ideally on a dedicated Identity Platform tenant. That is a decision for the project owner, not part of
-  phase 1.
+**What goes where.**
 
-**The Firebase project is shared with Product Intelligence.** Authorized domains are a project-wide
-Authentication setting: adding one affects every app in the project. Ask the owner before you touch it,
-exactly as `docs/RUNBOOK.md` requires.
+| Value | Bicep parameter (§1) | GitHub variable (§4) | App setting (§12) |
+|---|---|---|---|
+| `<AZ_TENANT_ID>` | `entraTenantId` | `ENTRA_TENANT_ID` | `INV_STUDIO_ENTRA_TENANT_ID` |
+| `<ENTRA_APP_CLIENT_ID>` | `entraClientId` | `ENTRA_CLIENT_ID` | `INV_STUDIO_ENTRA_CLIENT_ID` |
+| `<ENTRA_GROUP_ADMIN_NAME>` | `entraAdminGroupName` | `ENTRA_ADMIN_GROUP_NAME` | `INV_STUDIO_ENTRA_ADMIN_GROUP_NAME` |
+| `<ENTRA_GROUP_MEMBER_NAME>` | `entraMemberGroupName` | `ENTRA_MEMBER_GROUP_NAME` | `INV_STUDIO_ENTRA_MEMBER_GROUP_NAME` |
 
-**Authorized domain.** Firebase console → Authentication → Settings → Authorized domains → add the
-hostname of `$APP_URL` (the part after `https://`). Email-and-password sign-in works without it.
-Google sign-in, if it is ever switched on, needs it, and so do links that point back at this hostname.
-Skip it if neither applies.
+Change a value in the parameter file and re-run step 2 (with `containerImage` set to the live image,
+§7), then update the GitHub variable to match. Never set these on the app with `--set-env-vars`: the
+deploy workflow would then stop on a mismatch, and the next template run would undo it.
+
+**How access works once it is live.**
+
+- **Entra decides who gets in and with which role.** To give someone access, a group owner adds them to
+  `<ENTRA_GROUP_ADMIN>` or `<ENTRA_GROUP_MEMBER>`; to take it away, they remove them. Someone in both
+  is an administrator. The app reads the role from the token on every request and never grants,
+  changes or removes access. There is no invite, no password and no "Forgot password?" on Azure.
+- **The Users screen is read-only.** It lists who has signed in and the role they had at their last
+  sign-in, with the two group names from the parameters. It cannot add, disable or delete anyone.
+- **A removal is not instant.** A token already issued stays valid until it expires, by default 60–90
+  minutes. For an immediate stop: in Entra, "Revoke sessions" on the user and, if needed, set the
+  enterprise application's "Enabled for users to sign in" to No; then stop the revision. A shorter token
+  lifetime is a platform choice (open question).
+- **The only outbound sign-in traffic** is to `login.microsoftonline.com`: the keys and metadata from
+  the server, the token calls from the browser. A firewall allow-list needs that name and no Google one.
+- **Entra's sign-in logs** (Entra admin center → Sign-in logs, filtered to `<ENTRA_APP_CLIENT_ID>`) are the
+  record of every sign-in. Whether they go to the Log Analytics workspace is an open platform question.
+
+**Open platform questions** (placeholders until answered): Entra ID P1 for group-to-role assignment; a
+shorter access-token lifetime; sign-in logs to Log Analytics; public cloud or a sovereign authority (the
+app assumes `https://login.microsoftonline.com`).
 
 ## 7. Azure AI Foundry
 
@@ -734,7 +771,7 @@ The template sets all of these; this is the list to check when something is misc
 
 | Variable | Value |
 |---|---|
-| `INV_STUDIO_CLOUD` | `1` — PostgreSQL store, Firebase identity, JSON logs |
+| `INV_STUDIO_CLOUD` | `1` — PostgreSQL store, Entra ID sign-in, JSON logs |
 | `INV_STUDIO_STORAGE_BACKEND` | `azure` — files go to Blob Storage. Unset or `gcs` is the Google path, which is what the Cloud Run deployment keeps using |
 | `INV_STUDIO_AZURE_STORAGE_ACCOUNT` | the storage account name; the app builds `https://<account>.blob.core.windows.net` from it |
 | `INV_STUDIO_BUCKET` | `evidence` — the blob container, the same setting the GCS bucket used |
@@ -743,15 +780,15 @@ The template sets all of these; this is the list to check when something is misc
 | `INV_STUDIO_ALLOWED_ORIGINS` | the app URL, plus anything in the `extraAllowedOrigins` parameter. The API refuses writes from origins it does not know |
 | `INV_STUDIO_DATA` | `/tmp/inv-studio-data` — scratch space only; everything that must survive a restart is in PostgreSQL or Blob Storage |
 | `AZURE_CLIENT_ID` | the managed identity's client id, so `DefaultAzureCredential` picks it |
-| `GOOGLE_CLOUD_PROJECT` | the Firebase project (`googleCloudProject`). The app refuses to start in cloud mode without it |
-| `INV_STUDIO_FIREBASE_API_KEY`, `INV_STUDIO_FIREBASE_AUTH_DOMAIN`, `INV_STUDIO_FIREBASE_APP_ID` | the public Firebase web configuration the browser signs in with |
-| `INV_STUDIO_ALLOWED_EMAILS` | `bootstrapAdminEmails`: who becomes an administrator on first sign-in |
-| `INV_STUDIO_MEMBER_EMAILS` | `bootstrapMemberEmails`: who becomes a member on first sign-in |
-| `INV_STUDIO_IDENTITY_ADMIN` | `0` — no Google credential: verify tokens only, check revoked and disabled accounts through `accounts:lookup`, user management answers 409 (§6). Only `0` or `1` start |
-| `INV_STUDIO_PUBLIC_URL` | the app URL, sent as the Referer on `accounts:lookup` and used in password links |
+| `INV_STUDIO_ENTRA_TENANT_ID` | `entraTenantId`. The app refuses to start in cloud mode unless it is a GUID (not `common`, `organizations` or `consumers`) |
+| `INV_STUDIO_ENTRA_CLIENT_ID` | `entraClientId`: the audience the API accepts and the client the browser signs in with. Must be a GUID |
+| `INV_STUDIO_ENTRA_ADMIN_GROUP_NAME`, `INV_STUDIO_ENTRA_MEMBER_GROUP_NAME` | `entraAdminGroupName`, `entraMemberGroupName`: display text on the Users screen only |
 | `INV_STUDIO_ALLOWED_HOSTS` | `*.<environment domain>` — the app answers an unknown `Host` with 400; this lets a revision's own address (§5) through. The startup probe sends the app's hostname as `Host` for the same reason |
 | `INV_STUDIO_AZURE_API_KEY` | from Key Vault `inv-studio-foundry-key` |
 | `INV_STUDIO_AZURE_ENDPOINT`, `INV_STUDIO_AZURE_DEPLOYMENT` | `foundryEndpoint`, `foundryDeployment`, only when set |
+
+The app refuses to start in cloud mode if an old Firebase setting is still present: `GOOGLE_CLOUD_PROJECT`,
+any `INV_STUDIO_FIREBASE_*`, `INV_STUDIO_ALLOWED_EMAILS` or `INV_STUDIO_MEMBER_EMAILS`.
 
 One more is set only on a candidate revision, never by the template: `INV_STUDIO_RECOVER_JOBS=0`
 — the revision takes over no unfinished invoice from another (§5, §9). Unset means on.
@@ -782,13 +819,15 @@ image installs it, so one image runs on both clouds.
   node-hour and adds the plan management fee. Kept open until a real workload shows 8 GiB is not enough.
 - **Closed: the app did not start on Azure.** It looked for a Google credential at start-up, and the
   template ships none, and its startup probe arrived with the replica's IP as `Host`, which the app
-  answers with 400. The template now sets `INV_STUDIO_IDENTITY_ADMIN=0`, the probe sends the app's
-  hostname and `INV_STUDIO_ALLOWED_HOSTS` admits revision addresses, so the app starts and signs in with
-  no Google credential; the §5 smoke test proves a signed-in write on each new revision.
-- **Firebase is still in the picture**, so sign-in depends on a Google project that is shared with
-  another product. The template holds no Google credential, so sign-ins are created on the Google Cloud
-  deployment and people are given access on Azure through the administrator and member lists (§6); revoked and disabled accounts are checked without a key (§6). Workload Identity Federation is the
-  keyless way to add user management; moving to Microsoft Entra External ID is phase 2.
+  answers with 400. Sign-in is now Entra ID with no credential at all, the probe sends the app's
+  hostname and `INV_STUDIO_ALLOWED_HOSTS` admits revision addresses; the §5 smoke test proves a
+  signed-in write on each new revision.
+- **Closed: Firebase was still in the picture.** Sign-in depended on a Google project shared with
+  another product, and access on Azure was given through e-mail lists. Sign-in is now the team's own
+  Entra ID tenant, with roles from two groups (§6). What stays open: a removal takes effect when the
+  user's current token expires (§6), and group-to-role assignment needs Entra ID P1.
+- **No user moves across.** Google Cloud sign-ins are not carried over to Azure; people get access by
+  being put in the Entra groups.
 - **Nothing migrates data.** The Azure deployment starts with an empty database and an empty blob
   container. Moving the existing invoices across (`pg_dump` / `pg_restore` plus `azcopy` for the
   bucket) has not been written down yet and needs its own plan and its own downtime window. With the

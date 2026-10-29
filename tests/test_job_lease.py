@@ -3,7 +3,11 @@ the old holder can no longer change it (security review M5)."""
 import json
 import threading
 
+import pytest
+
 from app import main as main_module
+from app.main import create_app
+from app.store import Store
 from tests.conftest import bearer
 from tests.test_batch import OPTIONS, FakeReader, gone_quiet, plan, statuses, studio, upload, wait_until
 
@@ -15,11 +19,13 @@ def dropped(app):
 
 def test_an_old_process_that_resumes_cannot_change_the_jobs_a_new_one_took_over(tmp_path, monkeypatch):
     gate = threading.Event()
-    old, client, token = studio(tmp_path, monkeypatch, FakeReader(gate), INV_STUDIO_WORKERS="1")
+    reader = FakeReader(gate)
+    old, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
     names = ["inv-0.txt", "inv-1.txt"]
     plan_token = plan(client, token, names)
     ids = [upload(client, token, plan_token, name).json()["id"] for name in names]
     assert wait_until(lambda: statuses(old, ids) == {ids[0]: "processing", ids[1]: "queued"})
+    assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
     try:
         gone_quiet(monkeypatch)  # the old process is alive but stalled: its heartbeat has stopped
         new, _, _ = studio(tmp_path, monkeypatch, FakeReader())
@@ -38,10 +44,12 @@ def test_an_old_process_that_resumes_cannot_change_the_jobs_a_new_one_took_over(
 
 def test_a_live_holder_keeps_its_jobs_and_a_quiet_one_loses_them(tmp_path, monkeypatch):
     gate = threading.Event()
-    live, client, token = studio(tmp_path, monkeypatch, FakeReader(gate), INV_STUDIO_WORKERS="1")
+    reader = FakeReader(gate)
+    live, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
     jid = upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]
     try:
         assert wait_until(lambda: statuses(live, [jid])[jid] == "processing")
+        assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
         holder = live.state.store.job(jid)["holder"]
         other, _, _ = studio(tmp_path, monkeypatch, FakeReader())
         assert other.state.store.job(jid)["holder"] == holder  # a fresh heartbeat: left alone
@@ -62,10 +70,12 @@ def test_a_live_holder_keeps_its_jobs_and_a_quiet_one_loses_them(tmp_path, monke
 
 def test_a_candidate_with_recovery_off_never_takes_over_even_a_quiet_holder(tmp_path, monkeypatch):
     gate = threading.Event()
-    live, client, token = studio(tmp_path, monkeypatch, FakeReader(gate), INV_STUDIO_WORKERS="1")
+    reader = FakeReader(gate)
+    live, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
     jid = upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]
     try:
         assert wait_until(lambda: statuses(live, [jid])[jid] == "processing")
+        assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
         gone_quiet(monkeypatch)
         candidate, client2, token2 = studio(tmp_path, monkeypatch, FakeReader(), INV_STUDIO_RECOVER_JOBS="0")
         candidate.state.beat()
@@ -99,11 +109,13 @@ def test_a_job_is_taken_over_up_to_the_cap_and_then_marked_as_an_error(tmp_path,
     gate = threading.Event()
     now = [main_module.lease_clock()]
     monkeypatch.setattr(main_module, "lease_clock", lambda: now[0])
-    first, client, token = studio(tmp_path, monkeypatch, FakeReader(gate), INV_STUDIO_WORKERS="1")
+    reader = FakeReader(gate)
+    first, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
     jid = upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]
     apps = [first]
     try:
         assert wait_until(lambda: statuses(first, [jid])[jid] == "processing")
+        assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
         for taken in range(1, main_module.TAKEOVER_CAP + 1):
             now[0] += main_module.LEASE_STALE + 1  # the holder is held and has stopped beating
             reader = FakeReader(gate)
@@ -145,3 +157,13 @@ def test_a_retry_after_the_cap_starts_the_count_again(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     assert wait_until(lambda: statuses(app, [jid])[jid] == "review")
     assert app.state.store.job(jid)["takeovers"] == 0
+
+
+@pytest.mark.parametrize("recover, expected", [("0", "processing"), ("1", "error")])
+def test_a_candidate_revision_leaves_the_live_instance_jobs_alone(recover, expected, tmp_path, monkeypatch, identity):
+    data = tmp_path / "data"
+    store = create_app(data, identity=identity, store_type=Store).state.store
+    store.job("running", {"id": "running", "revision": 1, "status": "processing"})
+    monkeypatch.setenv("INV_STUDIO_RECOVER_JOBS", recover)
+    restarted = create_app(data, identity=identity, store_type=Store)
+    assert restarted.state.store.job("running")["status"] == expected

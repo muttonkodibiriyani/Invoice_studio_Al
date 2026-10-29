@@ -548,7 +548,6 @@ const app = {
   selectionToken: 0,
   preflight: null,
   authMode: "unknown",
-  authProviders: [],
   sessionUser: null,
   sessionVerified: false,
   workspaceStarted: false,
@@ -717,6 +716,7 @@ async function responseError(response) {
     || (Array.isArray(detail) ? detail.map((issue) => issue.msg || "Invalid value").join("; ") : "");
   const error = new Error(message || `Request failed (${response.status})`);
   error.detail = detail;
+  error.status = response.status;
   return error;
 }
 
@@ -3727,40 +3727,20 @@ function bindEvents() {
     try { await downloadApi(new URL(link.href).pathname, link.dataset.apiDownload || "download"); }
     catch (error) { notify(error.message, "error", 7000); }
   }));
-  $("#google-sign-in").addEventListener("click", signInGoogle);
-  $("#password-sign-in").addEventListener("submit", signInPassword);
-  $("#password-reset").addEventListener("click", resetPassword);
-  $("#user-create-form").addEventListener("submit", createUser);
-  $("#users-rows").addEventListener("click", userAction);
-  $("#users-rows").addEventListener("change", userAction);
-  $("#user-link-copy").addEventListener("click", copyUserLink);
-  $("#user-link-dialog").addEventListener("close", () => { $("#user-link-text").value = ""; });
+  $("#microsoft-sign-in").addEventListener("click", signInMicrosoft);
   $("#auth-retry").addEventListener("click", initializeAccess);
   $("#auth-sign-out").addEventListener("click", signOutCloud);
-  $("#auth-send-verification").addEventListener("click", async () => {
-    try {
-      await window.InvoiceStudioAuth.sendVerification();
-      showAuthGate({ message: "Check your email for the verification link.", verification: true, signOut: true });
-    } catch (_) { showAuthGate({ message: "Verification email could not be sent. Wait a moment and try again.", verification: true, signOut: true }); }
-  });
-  $("#auth-refresh-verification").addEventListener("click", async () => {
-    try { await window.InvoiceStudioAuth.refreshIdentity(); await verifyCloudSession(); }
-    catch (_) { showAuthGate({ message: "Email verification could not be refreshed. Try again.", verification: true, signOut: true }); }
-  });
   $("#cloud-sign-out").addEventListener("click", signOutCloud);
 }
 
-function showAuthGate({ message, detail = "", busy = false, google = false, password = false, retry = false, signOut = false, verification = false }) {
+function showAuthGate({ message, detail = "", busy = false, signIn = false, retry = false, signOut = false }) {
   $("#app-shell").hidden = true;
   $("#auth-gate").hidden = false;
   $("#auth-message").textContent = message;
   $("#auth-spinner").hidden = !busy;
-  $("#google-sign-in").hidden = !google;
-  $("#password-sign-in").hidden = !password;
+  $("#microsoft-sign-in").hidden = !signIn;
   $("#auth-retry").hidden = !retry;
   $("#auth-sign-out").hidden = !signOut;
-  $("#auth-send-verification").hidden = !verification;
-  $("#auth-refresh-verification").hidden = !verification;
   $("#auth-detail").hidden = !detail;
   $("#auth-detail").textContent = detail;
 }
@@ -3795,10 +3775,6 @@ async function startWorkspace() {
 }
 
 async function verifyCloudSession() {
-  if (window.InvoiceStudioAuth.currentUser?.()?.emailVerified === false) {
-    showAuthGate({ message: "Verify your email to open this workspace.", detail: "Use the verification email, then return here to continue.", verification: true, signOut: true });
-    return;
-  }
   showAuthGate({ message: "Verifying workspace access…", busy: true });
   try {
     const session = await api("/api/session");
@@ -3809,12 +3785,17 @@ async function verifyCloudSession() {
     await startWorkspace();
   } catch (error) {
     app.sessionVerified = false;
-    showAuthGate({ message: "This account does not have workspace access.", detail: error?.message || "Ask your workspace administrator to grant access, then try again.", signOut: true });
+    // 403: Entra let the person in but gave them no Invoice Studio role. Anything else: sign in again.
+    if (error?.status === 403) {
+      showAuthGate({ message: "This account does not have workspace access.", detail: `${error.message}. Ask your administrator to add you to the Invoice Studio group.`, signOut: true });
+    } else {
+      showAuthGate({ message: "Sign in with your work account to continue.", detail: error?.message || "Sign-in could not be verified. Sign in again.", signIn: true, signOut: true });
+    }
   }
 }
 
-// An idle server takes up to about 80 s to start. Until it is up, Cloud Run answers 429 and
-// Firebase Hosting answers 502 or 504 after 60 s: those mean "starting", not "no access".
+// An idle server takes up to about 80 s to start. Until it is up, the platform answers 429 or a 5xx:
+// those mean "starting", not "no access".
 const SERVER_STARTING_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 async function waitForServer(limitMs = 150000) {
@@ -3848,7 +3829,6 @@ async function initializeAccess() {
     const runtime = await window.InvoiceStudioAuth.bootstrap();
     if (!runtime.cloud) {
       app.authMode = "local";
-      app.authProviders = [];
       app.sessionVerified = true;
       $("#runtime-badge > span:last-child").textContent = "Local workspace";
       $("#cloud-user").hidden = true;
@@ -3856,20 +3836,11 @@ async function initializeAccess() {
       return;
     }
     app.authMode = "cloud";
-    app.authProviders = runtime.providers || [];
     if (runtime.user) {
       await verifyCloudSession();
       return;
     }
-    const google = app.authProviders.includes("google");
-    const password = app.authProviders.includes("password");
-    showAuthGate({
-      message: google || password ? "Sign in with an approved account to continue." : "No supported sign-in provider is enabled.",
-      detail: google || password ? "" : "Ask the workspace administrator to enable an authentication provider.",
-      google,
-      password,
-      retry: !google && !password,
-    });
+    showAuthGate({ message: "Sign in with your work account to continue.", detail: runtime.error || "", signIn: true, signOut: Boolean(runtime.error) });
   } catch (_) {
     app.authMode = "unknown";
     app.sessionVerified = false;
@@ -3877,75 +3848,17 @@ async function initializeAccess() {
   }
 }
 
-async function signInGoogle() {
-  const button = $("#google-sign-in");
+// The page leaves for Microsoft and comes back to "/", where bootstrap() picks up the result.
+async function signInMicrosoft() {
+  const button = $("#microsoft-sign-in");
   button.disabled = true;
-  button.textContent = "Opening Google sign-in…";
   try {
-    await window.InvoiceStudioAuth.signInGoogle();
-    await verifyCloudSession();
-  } catch (error) {
-    const cancelled = String(error?.code || error?.message || "").includes("popup-closed");
-    showAuthGate({ message: "Sign in with an approved account to continue.", detail: cancelled ? "Sign-in was cancelled." : "Google sign-in could not be completed. Try again.", google: true, password: app.authProviders.includes("password") });
+    await window.InvoiceStudioAuth.signIn();
+  } catch (_) {
+    showAuthGate({ message: "Sign in with your work account to continue.", detail: "Microsoft sign-in could not be started. Try again.", signIn: true });
   } finally {
     button.disabled = false;
-    button.textContent = "Continue with Google";
   }
-}
-
-async function signInPassword(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const email = $("#auth-email").value.trim();
-  const password = $("#auth-password").value;
-  const submit = $("button[type='submit']", form);
-  submit.disabled = true;
-  submit.textContent = "Signing in…";
-  try {
-    await window.InvoiceStudioAuth.signInPassword(email, password);
-    $("#auth-password").value = "";
-    await verifyCloudSession();
-  } catch (_) {
-    $("#auth-password").value = "";
-    showAuthGate({ message: "Sign in with an approved account to continue.", detail: "The email or password was not accepted, or this account is not enabled.", google: app.authProviders.includes("google"), password: true });
-  } finally {
-    submit.disabled = false;
-    submit.textContent = "Sign in";
-  }
-}
-
-async function resetPassword() {
-  const email = $("#auth-email").value.trim();
-  const google = app.authProviders.includes("google");
-  if (!email) {
-    showAuthGate({ message: "Enter your workspace email first.", detail: "Then choose “Forgot password?”.", google, password: true });
-    $("#auth-email").focus();
-    return;
-  }
-  const button = $("#password-reset");
-  button.disabled = true;
-  try {
-    // No sign-in token here: this is the one API call made before signing in.
-    const response = await fetch("/api/password/forgot", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json", "X-Studio-Request": "1" },
-      body: JSON.stringify({ email }),
-    });
-    if (response.status === 429) {
-      showAuthGate({ message: "Too many requests.", detail: "Wait fifteen minutes and try again.", google, password: true });
-      return;
-    }
-    if (!response.ok) throw new Error("failed");
-    // Nothing is emailed: the request is only flagged for an administrator, who sends the link themselves.
-    showAuthGate({
-      message: "No email is sent. Your administrator sends the link.",
-      detail: "If this address has a workspace account, the request now shows on the administrator's Users page and they send you a new password link themselves. If you also sign in to another app with this email (a shared sign-in), change the password there instead. The same message is shown whether or not the address is known.",
-      google,
-      password: true,
-    });
-  } catch (_) {
-    showAuthGate({ message: "The request could not be sent.", detail: "Check the connection and try again.", google, password: true });
-  } finally { button.disabled = false; }
 }
 
 async function signOutCloud() {
@@ -3956,13 +3869,12 @@ async function signOutCloud() {
   app.pollTimer = null;
   clearSelectedJob();
   $("#cloud-user").hidden = true;
-  showAuthGate({ message: "Signed out. Use an approved account to continue.", google: app.authProviders.includes("google"), password: app.authProviders.includes("password") });
+  showAuthGate({ message: "Signed out. Sign in with your work account to continue.", signIn: true });
 }
 
 
 // ---- Users (administrators only) ---------------------------------------------------------------------------
-// Password links are issued by the server from the identity provider's code and shown once to the administrator,
-// who passes them on. Nothing here sends email.
+// Read-only: who has signed in and the role their token carried then. Access is managed in Microsoft Entra ID.
 
 function formatWhen(iso) {
   if (!iso) return "Never";
@@ -3973,7 +3885,7 @@ function formatWhen(iso) {
 function usersEmptyRow(text) {
   const row = document.createElement("tr");
   const cell = document.createElement("td");
-  cell.colSpan = 6;
+  cell.colSpan = 5;
   cell.className = "table-empty";
   cell.textContent = text;
   row.append(cell);
@@ -3985,6 +3897,7 @@ async function loadUsers() {
   try {
     const data = await api("/api/users");
     app.users = Array.isArray(data.users) ? data.users : [];
+    app.userGroups = data.groups || {};
     renderUsers();
   } catch (error) {
     $("#users-rows").replaceChildren(usersEmptyRow(error.message));
@@ -3992,147 +3905,29 @@ async function loadUsers() {
 }
 
 function renderUsers() {
+  const groups = app.userGroups || {};
+  const admins = groups.admin ? `“${groups.admin}”` : "the Invoice Studio administrator group";
+  const members = groups.member ? `“${groups.member}”` : "member group";
+  $("#users-intro").textContent = `People sign in with their work account. Access and roles are managed in Microsoft Entra ID: add someone to ${admins} or ${members}, and remove them there to take access away. This list shows who has signed in here and the role they had at their last sign-in. It does not grant or remove access.`;
   const users = app.users || [];
   const rows = $("#users-rows");
   if (!users.length) {
-    rows.replaceChildren(usersEmptyRow("No users yet. Add the first one above."));
+    rows.replaceChildren(usersEmptyRow("Nobody has signed in yet."));
     return;
   }
   const text = (value) => { const cell = document.createElement("td"); cell.textContent = value; return cell; };
-  const button = (label, action, className = "button button-quiet button-small", disabled = false) => {
-    const element = document.createElement("button");
-    element.type = "button";
-    element.className = className;
-    element.textContent = label;
-    element.dataset.userAction = action;
-    element.disabled = disabled;
-    return element;
-  };
-  const note = (value) => { const element = document.createElement("small"); element.className = "user-note"; element.textContent = value; return element; };
   rows.replaceChildren(...users.map((user) => {
-    const me = user.uid === app.sessionUser?.uid;
-    // A sign-in Invoice Studio did not create (shared with another app in the project) keeps its password where it
-    // was created; the server refuses links for it, so none is offered.
-    const shared = user.login_origin === "existing";
+    const me = user.oid === app.sessionUser?.uid;
     const row = document.createElement("tr");
-    row.dataset.uid = user.uid;
-    row.append(text(user.email + (me ? " (you)" : "")), text(user.name || "—"));
-    const role = document.createElement("td");
-    const select = document.createElement("select");
-    select.setAttribute("aria-label", `Role for ${user.email}`);
-    select.dataset.userAction = "role";
-    [["member", "Member"], ["admin", "Administrator"]].forEach(([value, label]) => {
-      const option = new Option(label, value);
-      option.selected = user.role === value;
-      select.add(option);
-    });
-    select.disabled = me;
-    role.append(select);
-    row.append(role);
-    const status = document.createElement("td");
-    const pill = document.createElement("span");
-    pill.className = "status-pill " + ({ active: "success", invited: "warning", disabled: "error" }[user.status] || "neutral");
-    pill.textContent = { active: "Active", invited: "Invited", disabled: "Disabled" }[user.status] || user.status;
-    status.append(pill);
-    if (user.reset_requested_at) status.append(note(`Reset requested ${formatWhen(user.reset_requested_at)}`));
-    row.append(status, text(formatWhen(user.last_login_at)));
-    const actions = document.createElement("td");
-    const wrap = document.createElement("div");
-    wrap.className = "user-actions";
-    wrap.append(
-      shared
-        ? note("Shared sign-in: its password is changed where it was created, not here.")
-        : button(user.status === "invited" ? "Create-password link" : "Reset-password link", "password-link", "button button-secondary button-small", user.status === "disabled"),
-      user.status === "disabled" ? button("Enable", "enable") : button("Disable", "disable", "button button-quiet button-small", me),
-      button("Delete", "delete", "button button-danger button-small", me),
+    row.append(
+      text((user.name || "—") + (me ? " (you)" : "")),
+      text(user.email || "—"),
+      text(user.role === "admin" ? "Administrator" : "Member"),
+      text(formatWhen(user.first_login_at)),
+      text(formatWhen(user.last_login_at)),
     );
-    actions.append(wrap);
-    row.append(actions);
     return row;
   }));
-}
-
-function showUserLink(result) {
-  $("#user-link-title").textContent = result.kind === "invite" ? "Create-password link" : "Reset-password link";
-  $("#user-link-note").textContent = `Send this link to ${result.user.email} yourself (chat, SMS or your own email). It is shown once, works once and expires; issue a new one if needed.`;
-  $("#user-link-text").value = result.link;
-  $("#user-link-dialog").showModal();
-  $("#user-link-text").select();
-}
-
-async function copyUserLink() {
-  const field = $("#user-link-text");
-  try {
-    await navigator.clipboard.writeText(field.value);
-    notify("Link copied.");
-  } catch (_) {
-    field.select();
-    notify("Copy is blocked here. Select the link and copy it manually.", "error");
-  }
-}
-
-// Until the project owner lets Invoice Studio manage sign-ins, the identity provider refuses every change to them.
-function userAdminError(error) {
-  return /PermissionDenied|InsufficientPermission/.test(error.message || "")
-    ? "Invoice Studio is not yet allowed to create or change sign-ins: the Google Cloud project owner still has to grant that permission. Nothing was changed."
-    : error.message;
-}
-
-async function createUser(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const submit = $("button[type='submit']", form);
-  submit.disabled = true;
-  try {
-    const body = { email: $("#user-email").value.trim(), name: $("#user-name").value.trim(), role: $("#user-role").value };
-    const result = await api("/api/users", { method: "POST", body });
-    form.reset();
-    await loadUsers();
-    showUserLink(result);
-  } catch (error) {
-    notify(userAdminError(error), "error", 8000);
-  } finally {
-    submit.disabled = false;
-  }
-}
-
-async function userAction(event) {
-  const control = event.target.closest("[data-user-action]");
-  if (!control) return;
-  if (control.tagName === "SELECT" && event.type !== "change") return;
-  if (control.tagName !== "SELECT" && event.type !== "click") return;
-  const uid = control.closest("tr")?.dataset.uid;
-  const user = (app.users || []).find((entry) => entry.uid === uid);
-  if (!user) return;
-  const target = `/api/users/${encodeURIComponent(uid)}`;
-  const action = control.dataset.userAction;
-  control.disabled = true;
-  try {
-    if (action === "role") {
-      if (control.value === user.role) return;
-      await api(`${target}/role`, { method: "POST", body: { role: control.value } });
-      notify(`${user.email} is now ${control.value === "admin" ? "an administrator" : "a member"}.`);
-    } else if (action === "password-link") {
-      showUserLink(await api(`${target}/password-link`, { method: "POST", body: {} }));
-    } else if (action === "disable") {
-      if (!window.confirm(`Disable ${user.email}? They lose access immediately.`)) return;
-      await api(`${target}/disable`, { method: "POST", body: {} });
-      notify(`${user.email} disabled.`);
-    } else if (action === "enable") {
-      await api(`${target}/enable`, { method: "POST", body: {} });
-      notify(`${user.email} enabled.`);
-    } else if (action === "delete") {
-      const removal = user.login_origin === "existing" ? "They lose access here; their shared sign-in is kept." : "Their sign-in is removed.";
-      if (!window.confirm(`Delete ${user.email}? ${removal} This cannot be undone.`)) return;
-      await api(target, { method: "DELETE" });
-      notify(`${user.email} deleted.`);
-    }
-  } catch (error) {
-    notify(userAdminError(error), "error", 8000);
-  } finally {
-    control.disabled = false;
-    await loadUsers();
-  }
 }
 
 async function init() {

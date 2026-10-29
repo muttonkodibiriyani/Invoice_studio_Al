@@ -4,6 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = (ROOT / ".env.example").read_text()
 # Every name the application itself reads. Keep the pattern in step with the
@@ -79,3 +81,18 @@ def test_the_readme_references_only_files_that_exist():
         assert (ROOT / path).exists(), path
         assert path.split("/")[-1] in readme, f"{path} should be documented"
     assert "docker compose up" in readme and (ROOT / "docker-compose.yml").exists()
+
+
+def test_compose_publishes_every_port_on_loopback_only():
+    """Local mode has no sign-in, so a port published without 127.0.0.1 opens the admin to the LAN."""
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    published = [(name, port) for name, service in compose["services"].items()
+                 for port in service.get("ports", [])]
+    assert published, "docker-compose.yml should publish the app port"
+    for name, port in published:
+        if isinstance(port, dict):
+            host_ip = port.get("host_ip")
+        else:
+            parts = str(port).split(":")
+            host_ip = parts[0] if len(parts) == 3 else None
+        assert host_ip == "127.0.0.1", f"service {name} publishes {port!r} beyond loopback"

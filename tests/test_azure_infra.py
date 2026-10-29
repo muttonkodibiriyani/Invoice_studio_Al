@@ -194,6 +194,25 @@ def test_the_container_app_runs_without_identity_admin():
     assert re.search(r"name: 'INV_STUDIO_PUBLIC_URL'\s+value: predictedUrl", text), "INV_STUDIO_PUBLIC_URL must be the app URL"
 
 
+def test_after_the_warm_up_the_models_are_read_only_and_the_model_hub_is_off():
+    # The warm-up downloads the models, so both steps must come after it (N6, N8). The app-only release builds on
+    # an older image, so it repeats them; the Azure template sets the variable as well.
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    head, tail = dockerfile.split("RUN python scripts/warm_ocr.py\n", 1)
+    app_layer = (ROOT / "Dockerfile.app-layer").read_text()
+    assert "HF_HUB_OFFLINE" not in head, "the warm-up must be able to download the models"
+    for text in (tail, app_layer):
+        assert re.search(r"^ENV HF_HUB_OFFLINE=1$", text, re.MULTILINE)
+        lock = re.search(r'^\s+for d in (.*); do \\\n\s+test -d "\$d"; chown -R root:root "\$d"; chmod -R a-w "\$d";',
+                         text, re.MULTILINE)
+        assert lock, "the model folders are not made read-only"
+        assert lock.group(1).split() == ["/home/studio/.cache/huggingface", "/home/studio/.paddlex/official_models",
+                                         '"$rapidocr"']
+        assert text.index("USER 1000:1000") > lock.end(), "the app must run as its own account again"
+    bicep = (INFRA / "containerapp.bicep").read_text()
+    assert re.search(r"name: 'HF_HUB_OFFLINE'\s+value: '1'", bicep)
+
+
 def test_the_startup_probe_sends_a_host_the_app_accepts():
     # The app answers an unknown Host with 400; a probe's default Host is the replica's IP.
     text = (INFRA / "containerapp.bicep").read_text()

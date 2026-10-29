@@ -39,7 +39,7 @@ ENV PIP_CONSTRAINT=/opt/build/constraints.txt
 COPY pyproject.toml LICENSE ./
 RUN mkdir -p app && touch app/__init__.py
 RUN python -m pip install --no-cache-dir \
-        pip==25.0.1 setuptools==78.1.0 wheel==0.45.1 \
+        pip==26.2.2 setuptools==84.2.1 wheel==0.48.0 \
     && python -m pip install --no-cache-dir --no-build-isolation '.[cloud,azure]' \
     && python -m pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
@@ -83,6 +83,17 @@ RUN python -c 'import importlib.util,os; from pathlib import Path; p=Path(import
 USER 1000:1000
 # Downloads the OCR models into the image and verifies every reader on the synthetic sample invoice.
 RUN python scripts/warm_ocr.py
+# The models are in place. From here on the app's account cannot change them (N8: PaddleX reads model settings with
+# yaml.FullLoader), and no reader asks the model hub for a newer version (N6: Docling names a moving branch).
+# The same two steps are in Dockerfile.app-layer, for app-only releases on an older image.
+USER root
+RUN set -e; \
+    rapidocr="$(python -c 'import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec("rapidocr").origin).parent/"models")')"; \
+    for d in /home/studio/.cache/huggingface /home/studio/.paddlex/official_models "$rapidocr"; do \
+        test -d "$d"; chown -R root:root "$d"; chmod -R a-w "$d"; \
+    done
+USER 1000:1000
+ENV HF_HUB_OFFLINE=1
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]

@@ -171,6 +171,7 @@ def test_a_restart_queues_the_unfinished_jobs_again_in_order(tmp_path, monkeypat
     plan_token = plan(client, token, names)
     ids = [upload(client, token, plan_token, name).json()["id"] for name in names]
     assert wait_until(lambda: statuses(app, ids)[ids[0]] == "processing")
+    assert wait_until(lambda: first.active == 1)  # inside the gated read: the next studio() cannot swap it out
     assert statuses(app, ids[1:]) == {ids[1]: "queued", ids[2]: "queued"}
     # The process dies: its running job stays "processing" and the waiting ones "queued" in the shared database.
     app.state.pool.shutdown(wait=False, cancel_futures=True)
@@ -204,9 +205,11 @@ def test_recovered_jobs_start_only_once_the_app_is_fully_built(tmp_path, monkeyp
     # A recovered job that a worker reads at once must find every helper of create_app defined (it once hit a
     # NameError on a closure defined after the recovery block and ended in "error").
     gate = threading.Event()
-    app, client, token = studio(tmp_path, monkeypatch, FakeReader(gate), INV_STUDIO_WORKERS="1")
+    first = FakeReader(gate)
+    app, client, token = studio(tmp_path, monkeypatch, first, INV_STUDIO_WORKERS="1")
     ids = [upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]]
     assert wait_until(lambda: statuses(app, ids)[ids[0]] == "processing")
+    assert wait_until(lambda: first.active == 1)  # inside the gated read: the next studio() cannot swap it out
     app.state.pool.shutdown(wait=False, cancel_futures=True)
     gone_quiet(monkeypatch)
     try:

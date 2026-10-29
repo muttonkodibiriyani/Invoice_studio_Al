@@ -112,6 +112,12 @@ var baseEnv = [
     value: '*.${environment.properties.defaultDomain}'
   }
   {
+    // The image sets this too. Readers use only the models baked into the image and never ask huggingface.co
+    // for a newer one (N6).
+    name: 'HF_HUB_OFFLINE'
+    value: '1'
+  }
+  {
     name: 'GOOGLE_CLOUD_PROJECT'
     value: googleCloudProject
   }

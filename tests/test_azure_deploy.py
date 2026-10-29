@@ -151,7 +151,7 @@ def test_every_kit_mapping_names_a_kit_line():
 def test_mapped_parameters_that_exist_today_are_in_main_bicep():
     declared = bicep_parameters()
     for name in ("location", "namePrefix", "tags", "networkAddressPrefix", "foundryEndpoint",
-                 "foundryDeployment", "logRetentionInDays", "extraAllowedOrigins"):
+                 "foundryDeployment", "logRetentionInDays", "extraAllowedOrigins", "hubVnetId", "dnsServers"):
         assert name in declared
 
 
@@ -287,13 +287,14 @@ def test_deploy_passes_the_kit_and_cleans_up(tmp_path, capsys):
     assert not any(name.startswith(("entraAdminRole", "entraMemberRole")) or name.endswith("GroupId") for name in p)
     assert p["postgresAdminPassword"] == "a-long-db-password" and p["vaultKey"] == FERNET
     assert "existingLogWorkspaceId" not in p  # n/a is not passed
-    assert "hubVnetId" not in p  # main.bicep has no such parameter yet
+    assert p["hubVnetId"] == "value-hub_vnet_id" and p["dnsServers"] == ["10.0.0.4"]
+    assert "egressFirewallIp" not in p  # main.bicep has no such parameter yet
     # The parameter file with the secrets is gone, and the secrets were never printed.
     create = next(c for c in az.calls if c[:3] == ("deployment", "group", "create"))
     assert not Path(create[create.index("-p") + 1][1:]).exists()
     out = capsys.readouterr()
     assert "a-long-db-password" not in out.out + out.err and FERNET not in out.out + out.err
-    assert "not passed yet, main.bicep has no such parameter: HUB_VNET_ID -> hubVnetId" in out.out
+    assert "not passed yet, main.bicep has no such parameter: HUB_FIREWALL_IP -> egressFirewallIp" in out.out
     env = (deploy.STATE / "outputs.env").read_text()
     assert f"export RG={RG}" in env and "export APP_URL=https://app.example" in env
     assert "add https://app.example/ as an SPA redirect URI on the Entra app value-entra_app_client_id" in out.out

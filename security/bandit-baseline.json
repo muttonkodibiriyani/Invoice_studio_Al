@@ -1,0 +1,626 @@
+{
+ "errors": [],
+ "generated_at": "2026-10-29T20:27:30Z",
+ "metrics": {},
+ "results": [
+  {
+   "code": "356     def unfinished_jobs(self,c):\n357         return [json.loads(row[0]) for row in c.execute(f\"SELECT payload FROM jobs WHERE {UNFINISHED}\")]\n358 \n",
+   "col_offset": 58,
+   "end_col_offset": 89,
+   "filename": "app/cloud_store.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 357,
+   "line_range": [
+    357
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "242             }\n243             connection.execute(f\"DELETE FROM {names['sources']}\")\n244             connection.execute(\n",
+   "col_offset": 33,
+   "end_col_offset": 45,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 243,
+   "line_range": [
+    243
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "244             connection.execute(\n245                 f\"INSERT INTO {names['sources']}(id,payload) VALUES (?,?)\",\n246                 (source[\"id\"], json.dumps(source, separators=(\",\", \":\"))),\n",
+   "col_offset": 18,
+   "end_col_offset": 30,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 245,
+   "line_range": [
+    245
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "248             connection.execute(\n249                 f\"UPDATE {names['meta']} SET complete=? WHERE singleton=1\", (True,)\n250             )\n",
+   "col_offset": 18,
+   "end_col_offset": 25,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 249,
+   "line_range": [
+    249
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "253             source_row = connection.execute(\n254                 f\"SELECT payload FROM {names['sources']} ORDER BY id LIMIT 1\"\n255             ).fetchone()\n",
+   "col_offset": 18,
+   "end_col_offset": 38,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 254,
+   "line_range": [
+    254
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "468         for row in connection.execute(\n469             f\"\"\"SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace\n470                 WHERE n.nspname=current_schema() AND c.relname IN ({placeholders})\"\"\",\n471             tuple(table_names),\n",
+   "col_offset": 16,
+   "end_col_offset": 67,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 469,
+   "line_range": [
+    469,
+    470
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "515         connection.execute(\n516             f\"\"\"INSERT INTO {names['meta']}\n517                 (singleton,archive_sha256,import_identity,format_version,next_line,\n518                  item_count,po_count,term_count,complete)\n519                 VALUES (1,?,?,?,0,0,0,0,?)\"\"\",\n520             (archive_digest, identity, IMPORT_FORMAT_VERSION, False),\n",
+   "col_offset": 16,
+   "end_col_offset": 28,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 516,
+   "line_range": [
+    516,
+    517,
+    518,
+    519
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "676     return connection.execute(\n677         f\"\"\"SELECT archive_sha256,import_identity,format_version,next_line,\n678                    item_count,po_count,term_count,complete\n679             FROM {names['meta']} WHERE singleton=1\"\"\"\n680     ).fetchone()\n",
+   "col_offset": 12,
+   "end_col_offset": 17,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 677,
+   "line_range": [
+    677,
+    678,
+    679
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "714         row_cursor = connection.execute(\n715             f\"\"\"INSERT INTO {names['rows']}(id,kind,source_hash,sheet,row_number,payload)\n716                 SELECT id,kind,source_hash,sheet,row_number,payload\n717                 FROM {names['batch_rows']}\"\"\"\n718         )\n",
+   "col_offset": 16,
+   "end_col_offset": 28,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 715,
+   "line_range": [
+    715,
+    716,
+    717
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "726         term_cursor = connection.execute(\n727             f\"\"\"INSERT INTO {names['terms']}(kind,term,row_id)\n728                 SELECT kind,term,row_id FROM {names['batch_terms']}\n729                 ORDER BY kind,term,row_id\"\"\"\n730         )\n",
+   "col_offset": 16,
+   "end_col_offset": 28,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 727,
+   "line_range": [
+    727,
+    728,
+    729
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "733         connection.execute(\n734             f\"\"\"UPDATE {names['meta']} SET next_line=?,item_count=?,po_count=?,term_count=?\n735                 WHERE singleton=1\"\"\",\n736             (line_number, counts[\"item\"], counts[\"po\"], term_count),\n",
+   "col_offset": 16,
+   "end_col_offset": 23,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 734,
+   "line_range": [
+    734,
+    735
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "749         for row in connection.execute(\n750             f\"SELECT kind,COUNT(*) AS count FROM {names['rows']} GROUP BY kind\"\n751         ):\n",
+   "col_offset": 14,
+   "end_col_offset": 49,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 750,
+   "line_range": [
+    750
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "754             connection.execute(\n755                 f\"SELECT COUNT(*) AS count FROM {names['terms']}\"\n756             ).fetchone()[\"count\"]\n",
+   "col_offset": 18,
+   "end_col_offset": 48,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 755,
+   "line_range": [
+    755
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "760             for row in connection.execute(\n761                 f\"\"\"SELECT source_hash,COUNT(*) AS count FROM {names['rows']}\n762                     GROUP BY source_hash\"\"\"\n763             )\n",
+   "col_offset": 20,
+   "end_col_offset": 62,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 761,
+   "line_range": [
+    761,
+    762
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "766             connection.execute(\n767                 f\"SELECT COUNT(*) AS count FROM {names['sources']}\"\n768             ).fetchone()[\"count\"]\n",
+   "col_offset": 18,
+   "end_col_offset": 48,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 767,
+   "line_range": [
+    767
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "804         for row in connection.execute(\n805             f\"SELECT kind,COUNT(*) AS count FROM {names['rows']} GROUP BY kind\"\n806         ):\n",
+   "col_offset": 14,
+   "end_col_offset": 49,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 805,
+   "line_range": [
+    805
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "811             for row in connection.execute(\n812                 f\"\"\"SELECT source_hash,COUNT(*) AS count FROM {names['rows']}\n813                     GROUP BY source_hash\"\"\"\n814             )\n",
+   "col_offset": 20,
+   "end_col_offset": 62,
+   "filename": "app/lookup_shadow_import.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 812,
+   "line_range": [
+    812,
+    813
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "112             rows=c.execute(\n113                 f\"\"\"SELECT DISTINCT ik.row_id AS item_row_id,r.id,r.payload FROM lookup_terms ik\n114                    JOIN lookup_terms pk ON pk.kind='po' AND pk.term=ik.term\n115                    JOIN lookup_terms pf ON pf.kind='po' AND pf.row_id=pk.row_id AND pf.term=?\n116                    JOIN lookup_rows r ON r.id=pk.row_id\n117                    WHERE ik.kind='item' AND ik.row_id IN ({marks}) AND ik.term LIKE ?\n118                    ORDER BY ik.row_id,r.id LIMIT 1001\"\"\",\n119                 (\"f:po:\"+normalize_identifier(po),*[r['id'] for r in records],\"x:%\")\n",
+   "col_offset": 20,
+   "end_col_offset": 58,
+   "filename": "app/product_candidates.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 113,
+   "line_range": [
+    113,
+    114,
+    115,
+    116,
+    117,
+    118
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "547                 duplicate = connection.execute(\n548                     f\"\"\"SELECT source_hash,sheet,row_number FROM {stage_table}\n549                         GROUP BY source_hash,sheet,row_number HAVING COUNT(*)>1 LIMIT 1\"\"\"\n550                 ).fetchone()\n",
+   "col_offset": 24,
+   "end_col_offset": 65,
+   "filename": "app/reference_lookup.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 548,
+   "line_range": [
+    548,
+    549
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "104     def unfinished_jobs(self,c):\n105         return [json.loads(r[0]) for r in c.execute(f\"SELECT payload FROM jobs WHERE {UNFINISHED}\")]\n106 \n",
+   "col_offset": 54,
+   "end_col_offset": 85,
+   "filename": "app/store.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 89,
+    "link": "https://cwe.mitre.org/data/definitions/89.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible SQL injection vector through string-based query construction.",
+   "line_number": 105,
+   "line_range": [
+    105
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+   "test_id": "B608",
+   "test_name": "hardcoded_sql_expressions"
+  },
+  {
+   "code": "54     # Cloud Run keeps its writable state on the container's tmpfs.\n55     values.setdefault(\"INV_STUDIO_DATA\", \"/tmp/inv-studio-data\")\n56     lines = [\"# Generated by scripts/cloud_env.py. Keep outside version control.\"]\n",
+   "col_offset": 41,
+   "end_col_offset": 63,
+   "filename": "scripts/cloud_env.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 377,
+    "link": "https://cwe.mitre.org/data/definitions/377.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Probable insecure usage of temp file/directory.",
+   "line_number": 55,
+   "line_range": [
+    55
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html",
+   "test_id": "B108",
+   "test_name": "hardcoded_tmp_directory"
+  },
+  {
+   "code": "411                                                           \"User-Agent\": \"invoice-studio-engine-check\"})\n412     with urllib.request.urlopen(req, timeout=timeout) as resp:\n413         return json.loads(resp.read().decode(\"utf-8\"))\n",
+   "col_offset": 9,
+   "end_col_offset": 53,
+   "filename": "tools/security/check_docling.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 22,
+    "link": "https://cwe.mitre.org/data/definitions/22.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+   "line_number": 412,
+   "line_range": [
+    412
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+   "test_id": "B310",
+   "test_name": "blacklist"
+  },
+  {
+   "code": "669         elif re.fullmatch(r\"[0-9a-f]{40}\", p.name):\n670             h = hashlib.sha1(b\"blob %d\\0\" % p.stat().st_size)\n671             with open(p, \"rb\") as fh:\n",
+   "col_offset": 16,
+   "end_col_offset": 61,
+   "filename": "tools/security/check_docling.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 327,
+    "link": "https://cwe.mitre.org/data/definitions/327.html"
+   },
+   "issue_severity": "HIGH",
+   "issue_text": "Use of weak SHA1 hash for security. Consider usedforsecurity=False",
+   "line_number": 670,
+   "line_range": [
+    670
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b324_hashlib.html",
+   "test_id": "B324",
+   "test_name": "hashlib"
+  },
+  {
+   "code": "1078             writes.add(os.path.dirname(full) or full)\n1079     local = {h: v for h, v in net.items() if h.split(\":\")[0] in (\"localhost\", \"127.0.0.1\", \"::1\", \"0.0.0.0\", \"\")}\n1080     remote = {h: v for h, v in net.items() if h not in local}\n",
+   "col_offset": 98,
+   "end_col_offset": 107,
+   "filename": "tools/security/check_docling.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 605,
+    "link": "https://cwe.mitre.org/data/definitions/605.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible binding to all interfaces.",
+   "line_number": 1079,
+   "line_range": [
+    1079
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+   "test_id": "B104",
+   "test_name": "hardcoded_bind_all_interfaces"
+  },
+  {
+   "code": "410                                                           \"User-Agent\": \"invoice-studio-engine-check\"})\n411     with urllib.request.urlopen(req, timeout=timeout) as resp:\n412         return json.loads(resp.read().decode(\"utf-8\"))\n",
+   "col_offset": 9,
+   "end_col_offset": 53,
+   "filename": "tools/security/check_invoice2data.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 22,
+    "link": "https://cwe.mitre.org/data/definitions/22.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+   "line_number": 411,
+   "line_range": [
+    411
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+   "test_id": "B310",
+   "test_name": "blacklist"
+  },
+  {
+   "code": "668         elif re.fullmatch(r\"[0-9a-f]{40}\", p.name):\n669             h = hashlib.sha1(b\"blob %d\\0\" % p.stat().st_size)\n670             with open(p, \"rb\") as fh:\n",
+   "col_offset": 16,
+   "end_col_offset": 61,
+   "filename": "tools/security/check_invoice2data.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 327,
+    "link": "https://cwe.mitre.org/data/definitions/327.html"
+   },
+   "issue_severity": "HIGH",
+   "issue_text": "Use of weak SHA1 hash for security. Consider usedforsecurity=False",
+   "line_number": 669,
+   "line_range": [
+    669
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b324_hashlib.html",
+   "test_id": "B324",
+   "test_name": "hashlib"
+  },
+  {
+   "code": "1077             writes.add(os.path.dirname(full) or full)\n1078     local = {h: v for h, v in net.items() if h.split(\":\")[0] in (\"localhost\", \"127.0.0.1\", \"::1\", \"0.0.0.0\", \"\")}\n1079     remote = {h: v for h, v in net.items() if h not in local}\n",
+   "col_offset": 98,
+   "end_col_offset": 107,
+   "filename": "tools/security/check_invoice2data.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 605,
+    "link": "https://cwe.mitre.org/data/definitions/605.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible binding to all interfaces.",
+   "line_number": 1078,
+   "line_range": [
+    1078
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+   "test_id": "B104",
+   "test_name": "hardcoded_bind_all_interfaces"
+  },
+  {
+   "code": "410                                                           \"User-Agent\": \"invoice-studio-engine-check\"})\n411     with urllib.request.urlopen(req, timeout=timeout) as resp:\n412         return json.loads(resp.read().decode(\"utf-8\"))\n",
+   "col_offset": 9,
+   "end_col_offset": 53,
+   "filename": "tools/security/check_paddleocr.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 22,
+    "link": "https://cwe.mitre.org/data/definitions/22.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
+   "line_number": 411,
+   "line_range": [
+    411
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_calls.html#b310-urllib-urlopen",
+   "test_id": "B310",
+   "test_name": "blacklist"
+  },
+  {
+   "code": "668         elif re.fullmatch(r\"[0-9a-f]{40}\", p.name):\n669             h = hashlib.sha1(b\"blob %d\\0\" % p.stat().st_size)\n670             with open(p, \"rb\") as fh:\n",
+   "col_offset": 16,
+   "end_col_offset": 61,
+   "filename": "tools/security/check_paddleocr.py",
+   "issue_confidence": "HIGH",
+   "issue_cwe": {
+    "id": 327,
+    "link": "https://cwe.mitre.org/data/definitions/327.html"
+   },
+   "issue_severity": "HIGH",
+   "issue_text": "Use of weak SHA1 hash for security. Consider usedforsecurity=False",
+   "line_number": 669,
+   "line_range": [
+    669
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b324_hashlib.html",
+   "test_id": "B324",
+   "test_name": "hashlib"
+  },
+  {
+   "code": "1077             writes.add(os.path.dirname(full) or full)\n1078     local = {h: v for h, v in net.items() if h.split(\":\")[0] in (\"localhost\", \"127.0.0.1\", \"::1\", \"0.0.0.0\", \"\")}\n1079     remote = {h: v for h, v in net.items() if h not in local}\n",
+   "col_offset": 98,
+   "end_col_offset": 107,
+   "filename": "tools/security/check_paddleocr.py",
+   "issue_confidence": "MEDIUM",
+   "issue_cwe": {
+    "id": 605,
+    "link": "https://cwe.mitre.org/data/definitions/605.html"
+   },
+   "issue_severity": "MEDIUM",
+   "issue_text": "Possible binding to all interfaces.",
+   "line_number": 1078,
+   "line_range": [
+    1078
+   ],
+   "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b104_hardcoded_bind_all_interfaces.html",
+   "test_id": "B104",
+   "test_name": "hardcoded_bind_all_interfaces"
+  }
+ ]
+}

@@ -89,3 +89,8 @@ Engine-specific:
    manifest check above.
 4. **PaddlePaddle runs four shell probes when it loads** (`ldd --version`, `cat /proc/cpuinfo`,
    `which nvcc`, `which ccache`). They are harmless, but a strict runtime policy will see them.
+
+## Used by CI
+
+`check_base_image.py` (refuses a `FROM` not pinned by digest) and `audit_requirements.py` (the package list
+the dependency audit reads) are run by `.github/workflows/security.yml`; see `docs/CI_SECURITY.md`.

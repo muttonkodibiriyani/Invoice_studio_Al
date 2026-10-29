@@ -4,6 +4,9 @@
 # is the single clean build that reproduces the same /opt/inv-studio tree and the same installed packages.
 # The base is pinned by digest (the multi-arch index, read from the Docker Hub registry API on 2026-10-28), so a
 # re-pushed tag cannot change the build. To move it: read the new index digest of the tag and replace both parts.
+# Approved base image: <APPROVED_BASE_IMAGE>@<APPROVED_BASE_IMAGE_DIGEST>. The platform has not named it yet;
+# until it does, the upstream image below is used. CI refuses an unpinned FROM (tools/security/check_base_image.py)
+# and scans this base for fixed HIGH/CRITICAL OS vulnerabilities (docs/CI_SECURITY.md).
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
 
 ARG TORCH_VERSION=2.14.1+cpu

@@ -1,0 +1,56 @@
+{
+    "failed_checks": [
+        {
+            "file": "/main.json",
+            "findings": [
+                {
+                    "resource": "Microsoft.ContainerRegistry/registries.[parameters('name')]",
+                    "check_ids": [
+                        "CKV_AZURE_139",
+                        "CKV_AZURE_163",
+                        "CKV_AZURE_166"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.KeyVault/vaults.[parameters('name')]",
+                    "check_ids": [
+                        "CKV_AZURE_109",
+                        "CKV_AZURE_110",
+                        "CKV_AZURE_189",
+                        "CKV_AZURE_42"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.KeyVault/vaults/secrets.[format('{0}/{1}', parameters('name'), 'inv-studio-database-url')]",
+                    "check_ids": [
+                        "CKV_AZURE_114",
+                        "CKV_AZURE_41"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.KeyVault/vaults/secrets.[format('{0}/{1}', parameters('name'), 'inv-studio-foundry-key')]",
+                    "check_ids": [
+                        "CKV_AZURE_114",
+                        "CKV_AZURE_41"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.KeyVault/vaults/secrets.[format('{0}/{1}', parameters('name'), 'inv-studio-vault-key')]",
+                    "check_ids": [
+                        "CKV_AZURE_114",
+                        "CKV_AZURE_41"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.Storage/storageAccounts.[parameters('accountName')]",
+                    "check_ids": [
+                        "CKV_AZURE_206",
+                        "CKV_AZURE_35",
+                        "CKV_AZURE_43",
+                        "CKV_AZURE_59"
+                    ]
+                }
+            ]
+        }
+    ]
+}

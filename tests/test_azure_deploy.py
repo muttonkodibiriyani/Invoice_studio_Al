@@ -55,16 +55,8 @@ def filled_kit(tmp_path, **overrides):
 class FakeAz:
     """Answers az commands like a ready subscription. Tests override one answer to break it."""
 
-    def __init__(self, entra=True):
+    def __init__(self):
         params = bicep_parameters()
-        if entra:  # main.bicep after the Entra change: no Firebase, Entra parameters
-            for name in ("googleCloudProject", "firebaseWebApiKey", "firebaseAppId", "firebaseAuthDomain",
-                         "bootstrapAdminEmails", "bootstrapMemberEmails"):
-                params.pop(name, None)
-            for name in ("entraTenantId", "entraClientId"):
-                params[name] = {"type": "string"}
-            for name in ("entraAdminGroupName", "entraMemberGroupName"):
-                params[name] = {"type": "string", "defaultValue": ""}
         self.calls = []
         self.params_seen = None
         self.answers = {
@@ -246,11 +238,17 @@ def test_rerun_allows_a_group_that_is_not_empty(tmp_path):
     assert not any(call[:2] == ("resource", "list") for call in az.calls)
 
 
-def test_stops_while_main_bicep_still_requires_firebase(tmp_path, capsys):
-    az = FakeAz(entra=False)  # main.bicep as it is today
+def test_the_kit_gives_every_parameter_main_bicep_requires(tmp_path, capsys):
+    az = FakeAz()  # main.bicep as it is: the Entra settings, no Firebase
+    assert run(tmp_path, az, "--check") == 0
+    assert "template takes the kit" in capsys.readouterr().out
+
+
+def test_stops_when_main_bicep_requires_a_parameter_the_kit_does_not_give(tmp_path, capsys):
+    az = FakeAz()
+    az.answers["bicep build"]["parameters"]["newRequiredSetting"] = {"type": "string"}
     assert run(tmp_path, az) == 1
-    err = stop_reason(capsys)
-    assert "requires googleCloudProject" in err and "01a187ab-75f0" in err
+    assert "main.bicep requires newRequiredSetting" in stop_reason(capsys)
     assert not az.created()
 
 

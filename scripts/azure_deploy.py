@@ -14,7 +14,7 @@ before anything is created:
   roles      Owner, or Contributor plus a role that can create role assignments for the template's three
   providers  every resource provider the template uses is Registered
   quota      PostgreSQL Standard_B2s offered in the region; no Container Apps quota already full
-  template   main.bicep needs nothing the kit does not give (today: the Firebase settings, until Entra lands)
+  template   main.bicep needs nothing the kit does not give
   policy     ARM validation and what-if, which is where Azure Policy refuses a deployment
 
 Then it shows the what-if counts and asks you to type DEPLOY. --check runs the same preflight with
@@ -285,8 +285,8 @@ def declared_parameters(run):
 def check_template(declared, values, skipped):
     missing = [name for name, required in declared.items() if required and name not in values]
     if missing:
-        raise Stop(f"main.bicep requires {missing[0]}, which the deploy kit does not give. The Firebase "
-                   "settings leave the template with the Entra change (task 01a187ab-75f0); deploy after it merges")
+        raise Stop(f"main.bicep requires {missing[0]}, which the deploy kit does not give. Map it from a kit "
+                   "line in PARAMS (scripts/azure_deploy.py) or give it a default in main.bicep")
     ok(f"template takes the kit ({len(values)} parameters)")
     for line in skipped:
         print(f"  note  not passed yet, main.bicep has no such parameter: {line}")

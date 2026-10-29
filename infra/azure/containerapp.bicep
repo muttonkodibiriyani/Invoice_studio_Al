@@ -25,15 +25,13 @@ param memory string = '8Gi'
 param extraAllowedOrigins array = []
 param foundryEndpoint string = ''
 param foundryDeployment string = ''
-@description('The Google Cloud project that holds the Firebase user pool. The app refuses to start in cloud mode without it.')
-param googleCloudProject string
-param firebaseWebApiKey string
-param firebaseAuthDomain string
-param firebaseAppId string
-@description('Comma-separated addresses that become administrators on their first sign-in.')
-param bootstrapAdminEmails string
-@description('Comma-separated addresses that become members (not administrators) on their first sign-in.')
-param bootstrapMemberEmails string = ''
+@description('Entra ID tenant (GUID). The app refuses to start in cloud mode without it.')
+param entraTenantId string
+@description('Client id of the Entra app registration: the audience of the access tokens the API accepts.')
+param entraClientId string
+@description('Group display names for the Users screen. Display only.')
+param entraAdminGroupName string = ''
+param entraMemberGroupName string = ''
 
 var isPlaceholder = empty(containerImage)
 var image = isPlaceholder ? 'mcr.microsoft.com/k8se/quickstart:latest' : containerImage
@@ -118,40 +116,22 @@ var baseEnv = [
     value: '1'
   }
   {
-    name: 'GOOGLE_CLOUD_PROJECT'
-    value: googleCloudProject
+    // Public values, not credentials: the API checks Entra access tokens against the tenant's public
+    // signing keys (issuer, tenant and audience from these two), and the browser signs in with them.
+    name: 'INV_STUDIO_ENTRA_TENANT_ID'
+    value: entraTenantId
   }
   {
-    // No Google credential on Azure (security review H2): verify tokens with Google's public certificates,
-    // check revoked and disabled accounts through accounts:lookup, answer 409 to user management.
-    name: 'INV_STUDIO_IDENTITY_ADMIN'
-    value: '0'
+    name: 'INV_STUDIO_ENTRA_CLIENT_ID'
+    value: entraClientId
   }
   {
-    // The Referer on that accounts:lookup call, for a web API key restricted by HTTP referrer.
-    name: 'INV_STUDIO_PUBLIC_URL'
-    value: predictedUrl
+    name: 'INV_STUDIO_ENTRA_ADMIN_GROUP_NAME'
+    value: entraAdminGroupName
   }
   {
-    // The public web configuration the browser signs in with: not a credential.
-    name: 'INV_STUDIO_FIREBASE_API_KEY'
-    value: firebaseWebApiKey
-  }
-  {
-    name: 'INV_STUDIO_FIREBASE_AUTH_DOMAIN'
-    value: firebaseAuthDomain
-  }
-  {
-    name: 'INV_STUDIO_FIREBASE_APP_ID'
-    value: firebaseAppId
-  }
-  {
-    name: 'INV_STUDIO_ALLOWED_EMAILS'
-    value: bootstrapAdminEmails
-  }
-  {
-    name: 'INV_STUDIO_MEMBER_EMAILS'
-    value: bootstrapMemberEmails
+    name: 'INV_STUDIO_ENTRA_MEMBER_GROUP_NAME'
+    value: entraMemberGroupName
   }
   {
     // DefaultAzureCredential needs the client id to pick a user-assigned identity.

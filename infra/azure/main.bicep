@@ -39,22 +39,24 @@ param foundryDeployment string = ''
 @description('Image to run. Empty on the first deployment: the app starts on the Microsoft hello-world image and the deploy workflow replaces it with the real one.')
 param containerImage string = ''
 
-@description('Extra browser origins allowed to call the API (a Firebase Hosting site, a custom domain). The container app URL is always allowed.')
+@description('Extra browser origins allowed to call the API (a custom domain). The container app URL is always allowed.')
 param extraAllowedOrigins array = []
 
-@description('The Google Cloud project that holds the Firebase user pool, e.g. the one the Cloud Run deployment uses.')
-param googleCloudProject string
+@description('Directory (tenant) id of the workforce Entra ID tenant that signs people in: a GUID, never common, organizations or consumers. Public, not a secret.')
+@minLength(36)
+@maxLength(36)
+param entraTenantId string
 
-@description('Firebase web app configuration (Project settings > General > Your apps). Public: the browser receives it to sign in.')
-param firebaseWebApiKey string
-param firebaseAppId string
-param firebaseAuthDomain string = '${googleCloudProject}.firebaseapp.com'
+@description('Application (client) id of the Invoice Studio app registration (single-page application that also exposes the API). Public, not a secret: the registration has no client secret.')
+@minLength(36)
+@maxLength(36)
+param entraClientId string
 
-@description('Comma-separated addresses that become administrators on their first sign-in. On Azure the app cannot invite anyone (user management answers 409): only the addresses here and in bootstrapMemberEmails get in, and their sign-ins are created on the Google Cloud deployment.')
-param bootstrapAdminEmails string
+@description('Display name of the Entra group granted the admin app role. Shown on the Users screen only; who is an administrator is decided in Entra.')
+param entraAdminGroupName string = ''
 
-@description('Comma-separated addresses that become members (not administrators) on their first sign-in. An address on both lists is an administrator.')
-param bootstrapMemberEmails string = ''
+@description('Display name of the Entra group granted the member app role. Shown on the Users screen only.')
+param entraMemberGroupName string = ''
 
 @description('Address space of the private network. The database is reachable only from inside it.')
 param networkAddressPrefix string = '10.40.0.0/24'
@@ -227,16 +229,14 @@ module containerapp 'containerapp.bicep' = {
     extraAllowedOrigins: extraAllowedOrigins
     foundryEndpoint: foundryEndpoint
     foundryDeployment: foundryDeployment
-    googleCloudProject: googleCloudProject
-    firebaseWebApiKey: firebaseWebApiKey
-    firebaseAuthDomain: firebaseAuthDomain
-    firebaseAppId: firebaseAppId
-    bootstrapAdminEmails: bootstrapAdminEmails
-    bootstrapMemberEmails: bootstrapMemberEmails
+    entraTenantId: entraTenantId
+    entraClientId: entraClientId
+    entraAdminGroupName: entraAdminGroupName
+    entraMemberGroupName: entraMemberGroupName
   }
 }
 
-@description('The address of the app. Add its hostname to the Firebase authorized domains before signing in.')
+@description('The address of the app. Add <appUrl>/ as a single-page application redirect URI on the Entra app registration before signing in.')
 output appUrl string = containerapp.outputs.appUrl
 output appName string = containerapp.outputs.appName
 output appEnvironmentName string = containerapp.outputs.appEnvironmentName

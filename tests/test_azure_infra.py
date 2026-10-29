@@ -18,14 +18,12 @@ DOCS = ROOT / "docs" / "AZURE.md"
 APP = ROOT / "app"
 
 # What app/cloud_store.py, app/authentication.py and app/main.py read in cloud mode; the container
-# app must pass all of it. Without GOOGLE_CLOUD_PROJECT the app refuses to start.
+# app must pass all of it. Without the Entra tenant and client ids the app refuses to start.
 REQUIRED_ENV = (
-    "GOOGLE_CLOUD_PROJECT",
-    "INV_STUDIO_FIREBASE_API_KEY",
-    "INV_STUDIO_FIREBASE_AUTH_DOMAIN",
-    "INV_STUDIO_FIREBASE_APP_ID",
-    "INV_STUDIO_ALLOWED_EMAILS",
-    "INV_STUDIO_MEMBER_EMAILS",
+    "INV_STUDIO_ENTRA_TENANT_ID",
+    "INV_STUDIO_ENTRA_CLIENT_ID",
+    "INV_STUDIO_ENTRA_ADMIN_GROUP_NAME",
+    "INV_STUDIO_ENTRA_MEMBER_GROUP_NAME",
     "INV_STUDIO_CLOUD",
     "INV_STUDIO_DATA",
     "INV_STUDIO_DATABASE_URL",
@@ -34,8 +32,6 @@ REQUIRED_ENV = (
     "INV_STUDIO_STORAGE_BACKEND",
     "INV_STUDIO_AZURE_STORAGE_ACCOUNT",
     "INV_STUDIO_ALLOWED_ORIGINS",
-    "INV_STUDIO_IDENTITY_ADMIN",
-    "INV_STUDIO_PUBLIC_URL",
     "INV_STUDIO_ALLOWED_HOSTS",
 )
 
@@ -164,8 +160,6 @@ def test_the_container_app_passes_every_setting_the_app_reads():
     assert "'azure'" in text, "the storage backend must be set to azure"
 
 
-@pytest.mark.xfail(strict=True, reason="the app no longer reads the Firebase settings the container app still sets; "
-                   "task 01a187ab-75f0 replaces them with the Entra settings and removes this mark")
 def test_every_setting_the_container_app_passes_is_one_something_reads():
     # A variable nobody reads is a setting that silently does nothing, as the Foundry key once did
     # under a name the app never looked up. AZURE_CLIENT_ID is read by azure-identity, not by app/.
@@ -178,22 +172,60 @@ def test_every_setting_the_container_app_passes_is_one_something_reads():
 
 
 def test_the_template_ships_no_google_credential():
-    # Phase 1 signs users in against the shared Firebase pool with Google's public certificates
-    # only. A static service-account key in an internet-facing container could mint sessions for
-    # every user of the pool, so none is stored, mounted or pointed at (security review H2).
+    # Sign-in is Entra ID only, and the API holds no credential for it: it checks access tokens against
+    # the tenant's public signing keys. No Google or Entra secret is stored, mounted or pointed at.
     for path in [*bicep_files(), INFRA / "main.parameters.example.json"]:
         text = path.read_text()
         for marker in ("GOOGLE_APPLICATION_CREDENTIALS", "firebase-key", "firebaseServiceAccount",
-                       "service_account", "private_key", "storageType: 'Secret'"):
-            assert marker not in text, f"{path.name} carries a Google credential ({marker})"
+                       "service_account", "private_key", "storageType: 'Secret'", "clientSecret",
+                       "client-secret", "ENTRA_CLIENT_SECRET"):
+            assert marker not in text, f"{path.name} carries a credential ({marker})"
 
 
-def test_the_container_app_runs_without_identity_admin():
-    # With no Google credential the app starts only when it is told to verify tokens without one. The value
-    # is strict: anything but 0 or 1 refuses to start, and 1 (or unset) looks for a credential and exits.
-    text = (INFRA / "containerapp.bicep").read_text()
-    assert re.search(r"name: 'INV_STUDIO_IDENTITY_ADMIN'\s+value: '0'", text), "INV_STUDIO_IDENTITY_ADMIN must be '0'"
-    assert re.search(r"name: 'INV_STUDIO_PUBLIC_URL'\s+value: predictedUrl", text), "INV_STUDIO_PUBLIC_URL must be the app URL"
+# Firebase sign-in left the Azure build (Entra ID sign-in design, section 5.4). A leftover parameter or
+# setting would look as if it does something; the app refuses to start on some of them in cloud mode.
+FIREBASE_MARKERS = (
+    "googleCloudProject", "firebaseWebApiKey", "firebaseAppId", "firebaseAuthDomain",
+    "bootstrapAdminEmails", "bootstrapMemberEmails", "GOOGLE_CLOUD_PROJECT", "INV_STUDIO_FIREBASE_",
+    "INV_STUDIO_IDENTITY_ADMIN", "INV_STUDIO_PUBLIC_URL", "INV_STUDIO_ALLOWED_EMAILS",
+    "INV_STUDIO_MEMBER_EMAILS", "INV_STUDIO_AUTH_TENANT_ID", "identitytoolkit", "securetoken",
+)
+
+
+def test_no_firebase_setting_is_left_in_the_deploy_files():
+    for path in [*bicep_files(), INFRA / "main.parameters.example.json"]:
+        text = path.read_text()
+        for marker in FIREBASE_MARKERS:
+            assert marker not in text, f"{path.name} still carries the Firebase setting {marker}"
+        assert "firebase" not in text.lower(), f"{path.name} still mentions Firebase"
+
+
+def test_the_entra_ids_are_required_and_passed_through():
+    main = (INFRA / "main.bicep").read_text()
+    params = declared_params(main)
+    for name in ("entraTenantId", "entraClientId"):
+        assert params.get(name) is False, f"{name} must be a required parameter with no default"
+        # A GUID is 36 characters; common, organizations and consumers are refused at deploy time too.
+        assert re.search(rf"@minLength\(36\)\s+@maxLength\(36\)\s+param {name} string", main), name
+    assert params.get("entraAdminGroupName") is True and params.get("entraMemberGroupName") is True
+    app = (INFRA / "containerapp.bicep").read_text()
+    assert re.search(r"name: 'INV_STUDIO_ENTRA_TENANT_ID'\s+value: entraTenantId", app)
+    assert re.search(r"name: 'INV_STUDIO_ENTRA_CLIENT_ID'\s+value: entraClientId", app)
+    example = (INFRA / "main.parameters.example.json").read_text()
+    assert '"<AZ_TENANT_ID>"' in example and '"<ENTRA_APP_CLIENT_ID>"' in example
+
+
+def test_the_workflow_checks_the_entra_settings_before_it_builds():
+    # The workflow reads the Entra values and never sets them: a second place that writes app settings
+    # would drift from the Bicep deployment.
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+    names = [step.get("name", "") for step in steps]
+    check = names.index("Check the Entra sign-in settings")
+    assert check < names.index("Build the image in ACR")
+    for var in ("ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_ADMIN_GROUP_NAME", "ENTRA_MEMBER_GROUP_NAME"):
+        assert steps[check]["env"][var] == "${{ vars.%s }}" % var
+    body = WORKFLOW.read_text()
+    assert "--set-env-vars" not in body and "--replace-env-vars" not in body
 
 
 def test_after_the_warm_up_the_models_are_read_only_and_the_model_hub_is_off():

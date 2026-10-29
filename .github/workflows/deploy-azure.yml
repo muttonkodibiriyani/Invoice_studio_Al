@@ -5,7 +5,8 @@
 # Sign-in uses OIDC federated credentials: no secret value is kept in the repository. What the
 # repository needs, and how to set it up, is in docs/AZURE.md.
 #   secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-#   variables: AZURE_RESOURCE_GROUP, AZURE_CONTAINER_REGISTRY, AZURE_CONTAINER_APP
+#   variables: AZURE_RESOURCE_GROUP, AZURE_CONTAINER_REGISTRY, AZURE_CONTAINER_APP,
+#              ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_ADMIN_GROUP_NAME, ENTRA_MEMBER_GROUP_NAME
 name: Deploy to Azure
 
 on:
@@ -58,6 +59,46 @@ jobs:
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
           az extension add --name containerapp --upgrade --only-show-errors
+
+      # Sign-in settings come from the Bicep deployment (docs/AZURE.md section 6); this workflow never sets
+      # them. It stops before building when the app does not carry the Entra values the repository
+      # variables name, or still carries an old sign-in setting, so a revision never starts half-configured.
+      - name: Check the Entra sign-in settings
+        env:
+          ENTRA_TENANT_ID: ${{ vars.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+          ENTRA_ADMIN_GROUP_NAME: ${{ vars.ENTRA_ADMIN_GROUP_NAME }}
+          ENTRA_MEMBER_GROUP_NAME: ${{ vars.ENTRA_MEMBER_GROUP_NAME }}
+        run: |
+          az containerapp show \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.template.containers[0].env" -o json > app-env.json
+          python3 - <<'PY'
+          import json, os, re, sys
+          env = {item["name"]: item.get("value", "") for item in json.load(open("app-env.json"))}
+          guid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+          problems = []
+          for var in ("ENTRA_TENANT_ID", "ENTRA_CLIENT_ID"):
+              want = os.environ[var].strip().lower()
+              if not guid.match(want):
+                  problems.append(f"repository variable {var} must be a GUID")
+              elif env.get(f"INV_STUDIO_{var}", "").strip().lower() != want:
+                  problems.append(f"INV_STUDIO_{var} on the app does not match the repository variable {var}")
+          for var in ("ENTRA_ADMIN_GROUP_NAME", "ENTRA_MEMBER_GROUP_NAME"):
+              if env.get(f"INV_STUDIO_{var}", "") != os.environ[var]:
+                  problems.append(f"INV_STUDIO_{var} on the app does not match the repository variable {var}")
+          old = ("GOOGLE_CLOUD_PROJECT", "INV_STUDIO_ALLOWED_EMAILS", "INV_STUDIO_MEMBER_EMAILS", "INV_STUDIO_IDENTITY_ADMIN")
+          leftover = sorted(name for name in env if name in old or name.startswith("INV_STUDIO_FIREBASE_"))
+          if leftover:
+              problems.append("the app still sets old sign-in settings: " + ", ".join(leftover))
+          for problem in problems:
+              print(f"::error::{problem}")
+          if problems:
+              print("Run the Bicep deployment with the Entra parameters first (docs/AZURE.md section 6).", file=sys.stderr)
+              sys.exit(1)
+          print("Entra sign-in settings match.")
+          PY
 
       - name: Pin traffic to the revision that is live now
         id: live

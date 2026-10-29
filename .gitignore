@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.data/
+build/
+*.egg-info/
+.venv/
+.firebase/
+*.log
+.env
+infra/azure/main.parameters.json
+infra/azure/*.secrets.json
+# Nothing loads /__/firebase/init.js or init.json (sign-in reads /api/public-config); a copy carries the web API key.
+hosting/public/__/
+node_modules/

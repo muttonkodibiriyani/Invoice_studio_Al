@@ -1,0 +1,1 @@
+us-central1-docker.pkg.dev/productintelligence-beeb3/inv-studio/app@sha256:c91d782e4d68429c280d82c239316aaaf09fb64227c62037da7b8a8cbbc8f348

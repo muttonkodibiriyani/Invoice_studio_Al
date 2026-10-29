@@ -1,0 +1,12 @@
+# App-only release: an existing, verified image plus the app/ tree of the commit being shipped.
+# Use it only when app/ is the only shipped path that changed since BASE was built; check with
+#   git diff --stat <base commit>..HEAD -- app samples scripts/warm_ocr.py pyproject.toml constraints.txt Dockerfile README.md
+# Dependencies, OCR models and everything outside /opt/inv-studio/app stay exactly as in BASE (no re-download,
+# no warm-up re-run). The old app/ is removed first, so files deleted in the commit do not linger.
+#   docker build -f Dockerfile.app-layer --build-arg BASE=<image>@sha256:<digest> -t <image>:<tag> .
+ARG BASE
+FROM ${BASE}
+USER root
+RUN rm -rf /opt/inv-studio/app
+COPY app /opt/inv-studio/app
+USER 1000:1000

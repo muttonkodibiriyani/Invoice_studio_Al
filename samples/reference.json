@@ -1,0 +1,210 @@
+{
+  "sites": [
+    {
+      "id": "91001",
+      "seller": "LUMENA_AE",
+      "name": "Lumena Beauty Trading LLC",
+      "country": "AE"
+    },
+    {
+      "id": "92001",
+      "seller": "LUMENA_KW",
+      "name": "Lumena Kuwait WLL",
+      "country": "KW"
+    }
+  ],
+  "routes": [
+    {
+      "site": "91001",
+      "buyer": "RETAIL_AE",
+      "origin": "AE",
+      "market": "AE",
+      "currency": "AED",
+      "status": "approved"
+    },
+    {
+      "site": "91001",
+      "buyer": "RETAIL_KW",
+      "origin": "AE",
+      "market": "KW",
+      "currency": "AED",
+      "status": "pending"
+    },
+    {
+      "site": "92001",
+      "buyer": "RETAIL_KW",
+      "origin": "KW",
+      "market": "KW",
+      "currency": "KWD",
+      "status": "approved"
+    }
+  ],
+  "items": [
+    {
+      "id": "345000101",
+      "site": "91001",
+      "sku": "LUM-SER30",
+      "gtin": "00012345678905",
+      "description": "Lumena serum 30 ml",
+      "uom": "EA"
+    },
+    {
+      "id": "345000102",
+      "site": "91001",
+      "sku": "LUM-CRM50",
+      "gtin": "00012345678912",
+      "description": "Lumena cream 50 ml",
+      "uom": "EA"
+    },
+    {
+      "id": "345000101",
+      "site": "92001",
+      "sku": "KW-SER30",
+      "gtin": "00012345678905",
+      "description": "Lumena serum 30 ml",
+      "uom": "EA"
+    }
+  ],
+  "orders": [
+    {
+      "id": "70001",
+      "site": "91001",
+      "buyer": "RETAIL_AE",
+      "origin": "AE",
+      "market": "AE",
+      "currency": "AED",
+      "location": "38001",
+      "location_type": "Store (S)",
+      "status": "open",
+      "lines": [
+        {
+          "id": "1",
+          "item": "345000101",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "60",
+          "uom": "EA"
+        },
+        {
+          "id": "2",
+          "item": "345000102",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "40",
+          "uom": "EA"
+        }
+      ]
+    },
+    {
+      "id": "70002",
+      "site": "91001",
+      "buyer": "RETAIL_AE",
+      "origin": "AE",
+      "market": "AE",
+      "currency": "AED",
+      "location": "38001",
+      "location_type": "Store (S)",
+      "status": "open",
+      "lines": [
+        {
+          "id": "1",
+          "item": "345000101",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "60",
+          "uom": "EA"
+        },
+        {
+          "id": "2",
+          "item": "345000102",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "40",
+          "uom": "EA"
+        }
+      ]
+    },
+    {
+      "id": "70003",
+      "site": "91001",
+      "buyer": "RETAIL_AE",
+      "origin": "AE",
+      "market": "AE",
+      "currency": "AED",
+      "location": "38001",
+      "location_type": "Store (S)",
+      "status": "open",
+      "lines": [
+        {
+          "id": "1",
+          "item": "345000101",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "60",
+          "uom": "EA"
+        },
+        {
+          "id": "2",
+          "item": "345000102",
+          "ordered": "100",
+          "invoiced": "0",
+          "price": "40",
+          "uom": "EA"
+        }
+      ]
+    }
+  ],
+  "receipts": [
+    {
+      "id": "GRN-70001-1",
+      "po": "70001",
+      "line": "1",
+      "qty": "100",
+      "status": "accepted"
+    },
+    {
+      "id": "GRN-70001-2",
+      "po": "70001",
+      "line": "2",
+      "qty": "100",
+      "status": "accepted"
+    },
+    {
+      "id": "GRN-70002-1",
+      "po": "70002",
+      "line": "1",
+      "qty": "100",
+      "status": "accepted"
+    },
+    {
+      "id": "GRN-70002-2",
+      "po": "70002",
+      "line": "2",
+      "qty": "100",
+      "status": "accepted"
+    },
+    {
+      "id": "GRN-70003-1",
+      "po": "70003",
+      "line": "1",
+      "qty": "6",
+      "status": "accepted"
+    },
+    {
+      "id": "GRN-70003-2",
+      "po": "70003",
+      "line": "2",
+      "qty": "6",
+      "status": "accepted"
+    }
+  ],
+  "taxRules": [
+    {
+      "origin": "AE",
+      "market": "AE",
+      "currency": "AED",
+      "code": "UEPV05",
+      "rate": "0.05"
+    }
+  ]
+}

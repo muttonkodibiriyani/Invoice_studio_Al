@@ -1,0 +1,35 @@
+{
+  "number": "HLS-24017",
+  "supplier_name": "Harbour Lane Stationers LLC",
+  "date": "2026-10-24",
+  "po": null,
+  "currency": "AED",
+  "net": "621.00",
+  "tax": "31.05",
+  "lines": [
+    {
+      "sku": "HLS-1001",
+      "gtin": null,
+      "description": "A4 copy paper 80gsm ream",
+      "uom": "PCS",
+      "qty": "20",
+      "price": "18.50"
+    },
+    {
+      "sku": "HLS-2040",
+      "gtin": null,
+      "description": "Gel pen blue 0.5mm",
+      "uom": "BOX",
+      "qty": "50",
+      "price": "2.40"
+    },
+    {
+      "sku": "HLS-3310",
+      "gtin": null,
+      "description": "Stapler heavy duty",
+      "uom": "PCS",
+      "qty": "4",
+      "price": "32.75"
+    }
+  ]
+}

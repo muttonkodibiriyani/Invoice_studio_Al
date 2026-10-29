@@ -1,0 +1,59 @@
+{
+  "name": "sites/inv-studio-740495548022/versions/8e2243be6414c5f4",
+  "status": "FINALIZED",
+  "config": {
+    "headers": [
+      {
+        "headers": {
+          "Content-Security-Policy": "default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self'; img-src 'self' data: blob:; frame-src 'self' blob: https://*.firebaseapp.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+          "Cache-Control": "no-store"
+        },
+        "glob": "**"
+      }
+    ],
+    "rewrites": [
+      {
+        "glob": "/api/**",
+        "run": {
+          "serviceId": "inv-studio-api",
+          "region": "us-central1"
+        }
+      },
+      {
+        "glob": "/health",
+        "run": {
+          "serviceId": "inv-studio-api",
+          "region": "us-central1"
+        }
+      },
+      {
+        "glob": "/auth/**",
+        "run": {
+          "serviceId": "inv-studio-api",
+          "region": "us-central1"
+        }
+      },
+      {
+        "glob": "**",
+        "path": "/index.html"
+      }
+    ]
+  },
+  "labels": {
+    "deployment-tool": "cli-firebase"
+  },
+  "createTime": "2026-10-08T15:09:49.286776Z",
+  "createUser": {
+    "email": "firebase-adminsdk-fbsvc@productintelligence-beeb3.iam.gserviceaccount.com",
+    "imageUrl": "https://lh3.googleusercontent.com/a/ACg8ocLDtOASDo6bbHmP_C6Ti3TWOiOa3dDj9MDJXF8RRyZsLmMoX-k=mo"
+  },
+  "finalizeTime": "2026-10-08T15:09:57.720250Z",
+  "finalizeUser": {
+    "email": "firebase-adminsdk-fbsvc@productintelligence-beeb3.iam.gserviceaccount.com",
+    "imageUrl": "https://lh3.googleusercontent.com/a/ACg8ocLDtOASDo6bbHmP_C6Ti3TWOiOa3dDj9MDJXF8RRyZsLmMoX-k=mo"
+  },
+  "fileCount": "11",
+  "versionBytes": "237565"
+}

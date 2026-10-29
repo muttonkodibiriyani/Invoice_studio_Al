@@ -1,0 +1,18 @@
+# One command runs the full image locally:
+#
+#   docker compose up
+#
+# then open http://localhost:8080. The container runs in local mode: no
+# sign-in, SQLite, files on disk. Invoice data persists across restarts in
+# the named volume inv-studio-data (remove it with `docker compose down -v`).
+services:
+  app:
+    build: .
+    image: inv-studio-app:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - inv-studio-data:/tmp/inv-studio-data
+
+volumes:
+  inv-studio-data:

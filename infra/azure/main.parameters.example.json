@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "uaenorth" },
+    "namePrefix": { "value": "invstudio" },
+    "postgresAdminLogin": { "value": "invstudio" },
+    "extraAllowedOrigins": { "value": [] },
+    "googleCloudProject": { "value": "your-firebase-project" },
+    "firebaseWebApiKey": { "value": "public-firebase-web-api-key" },
+    "firebaseAppId": { "value": "your-firebase-web-app-id" },
+    "bootstrapAdminEmails": { "value": "approved.owner@example.com" },
+    "bootstrapMemberEmails": { "value": "" },
+    "foundryEndpoint": { "value": "" },
+    "foundryDeployment": { "value": "" },
+    "containerImage": { "value": "" },
+    "writeSecrets": { "value": true },
+    "enableKeyVaultPurgeProtection": { "value": false }
+  }
+}

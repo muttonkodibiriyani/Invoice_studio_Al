@@ -1,13 +1,17 @@
-"""Shared fixtures: the app in cloud mode with a fake identity provider and the SQLite store.
+"""Shared fixtures: the app in cloud mode with a stand-in Entra tenant and the SQLite store.
 
-No Firebase, no PostgreSQL. Tokens are the string "tok-<uid>"; password codes are issued and consumed by FakeUserAdmin.
+No network and no PostgreSQL. `Tenant` signs v2 access tokens with a test RSA key, and the real EntraIdentity checks
+them against its JWKS, handed in through the `fetch` seam instead of being downloaded.
 """
+import json
 import os
-import secrets
 import sys
+import time
 from pathlib import Path
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -15,124 +19,57 @@ os.environ.setdefault("INV_STUDIO_LEARN", "0")
 os.environ.pop("INV_STUDIO_CLOUD", None)
 os.environ.pop("INV_STUDIO_DEMO_REFERENCES", None)
 
+from app.authentication import EntraIdentity  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.store import Store  # noqa: E402
-from app.user_admin import UserAdminError  # noqa: E402
 
 OWNER = "owner@example.test"
 HEADERS = {"X-Studio-Request": "1"}
+# Synthetic GUIDs for tests only, not a real tenant or app registration.
+TENANT_ID = "11111111-2222-4333-8444-555555555555"
+CLIENT_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+ISSUER = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
+SIGNING_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+OTHER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
-class FakeUserAdmin:
-    """The identity provider's user store, as far as the app can see it."""
+class Tenant:
+    """The Entra tenant as the app sees it: its signing keys (JWKS) and the access tokens it issues."""
 
     def __init__(self):
-        self.accounts = {}   # uid -> {"email", "name", "disabled", "password"}
-        self.codes = {}      # oobCode -> email
-        self.revoked = set()
-        self.calls = []
+        self.kid = "test-kid"
+        self.fetched = []  # the URL of every JWKS fetch
 
-    def _uid_for(self, email):
-        for uid, account in self.accounts.items():
-            if account["email"] == email:
-                return uid
-        return None
+    def jwks(self, url):
+        self.fetched.append(url)
+        jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(SIGNING_KEY.public_key()))
+        return {"keys": [{**jwk, "kid": self.kid, "use": "sig", "alg": "RS256"}]}
 
-    def find_uid(self, email):
-        self.calls.append(("find_uid", email))
-        return self._uid_for(email)
-
-    def create(self, email, name):
-        self.calls.append(("create", email))
-        if self._uid_for(email):
-            raise UserAdminError("An account with this email already exists in the identity provider")
-        uid = "u" + secrets.token_hex(6)
-        self.accounts[uid] = {"email": email, "name": name, "disabled": False, "password": None}
-        return uid
-
-    def password_code(self, email):
-        self.calls.append(("password_code", email))
-        if not self._uid_for(email):
-            raise UserAdminError("The identity provider has no account for this user")
-        code = "code-" + secrets.token_urlsafe(18)
-        self.codes[code] = email
-        return code
-
-    def set_disabled(self, uid, disabled):
-        self.calls.append(("set_disabled", uid, disabled))
-        if uid not in self.accounts:
-            raise UserAdminError("The identity provider has no account for this user")
-        self.accounts[uid]["disabled"] = disabled
-        if disabled:
-            self.revoked.add(uid)
-
-    def revoke(self, uid):
-        self.calls.append(("revoke", uid))
-        self.revoked.add(uid)
-
-    def delete(self, uid):
-        self.calls.append(("delete", uid))
-        if uid not in self.accounts:
-            raise UserAdminError("The identity provider has no account for this user")
-        del self.accounts[uid]
-
-    # What the browser does on the set-password page, and at sign-in.
-    def set_password(self, code, password):
-        email = self.codes.pop(code)  # a code works once
-        self.accounts[self._uid_for(email)]["password"] = password
-
-    def sign_in(self, email, password):
-        uid = self._uid_for(email)
-        account = self.accounts.get(uid)
-        if account is None or account["disabled"] or account["password"] != password:
-            raise ValueError("wrong credentials")
-        self.revoked.discard(uid)
-        return "tok-" + uid
-
-    # Test helper: an account that exists in the provider but was never created through the app.
-    def seed(self, uid, email, verified=True):
-        self.accounts[uid] = {"email": email, "name": "", "disabled": False, "password": "pw", "verified": verified}
-        return "tok-" + uid
+    def token(self, oid, email="", roles=("member",), *, key=SIGNING_KEY, algorithm="RS256", headers=None, **claims):
+        """A v2 access token for our API from our SPA. A claim passed as None is left out."""
+        now = int(time.time())
+        body = {"iss": ISSUER, "aud": CLIENT_ID, "tid": TENANT_ID, "iat": now, "nbf": now, "exp": now + 3600,
+                "ver": "2.0", "scp": "access_as_user", "azp": CLIENT_ID, "oid": oid,
+                "preferred_username": email, "name": email.split("@")[0], "roles": None if roles is None else list(roles)}
+        body = {k: v for k, v in {**body, **claims}.items() if v is not None}
+        return jwt.encode(body, key, algorithm=algorithm, headers={"kid": self.kid, **(headers or {})})
 
 
-class FakeIdentity:
-    def __init__(self, admin, bootstrap_admins=(OWNER,), public_url="https://studio.example.test"):
-        self.cloud = True
-        self.project = "test-project"
-        self.bootstrap_admins = {x.casefold() for x in bootstrap_admins}
-        self.bootstrap_members = set()
-        self.tenant_id = ""
-        self.public_url = public_url
-        self.admin = admin
-        self.verify_calls = []
-
-    def config(self):
-        return {"cloud": True, "firebase": {"providers": ["password"]}}
-
-    def verify(self, authorization, check_revoked=False):
-        self.verify_calls.append((authorization, check_revoked))
-        if not authorization or not authorization.startswith("Bearer "):
-            raise ValueError("Sign in to Invoice Studio")
-        token = authorization[7:]
-        if not token.startswith("tok-"):
-            raise ValueError("Sign-in expired or could not be verified. Sign in again.")
-        uid = token[4:]
-        account = self.admin.accounts.get(uid)
-        if account is None:
-            raise ValueError("Sign-in expired or could not be verified. Sign in again.")
-        if check_revoked and uid in self.admin.revoked:
-            raise ValueError("Sign-in expired or could not be verified. Sign in again.")
-        return {"email": account["email"], "uid": uid, "email_verified": account.get("verified", True)}
+def entra_env(monkeypatch):
+    monkeypatch.setenv("INV_STUDIO_CLOUD", "1")
+    monkeypatch.setenv("INV_STUDIO_ENTRA_TENANT_ID", TENANT_ID)
+    monkeypatch.setenv("INV_STUDIO_ENTRA_CLIENT_ID", CLIENT_ID)
 
 
 @pytest.fixture
-def provider():
-    return FakeUserAdmin()
+def tenant():
+    return Tenant()
 
 
 @pytest.fixture
-def identity(provider):
-    return FakeIdentity(provider)
+def identity(tenant, monkeypatch):
+    entra_env(monkeypatch)
+    return EntraIdentity(fetch=tenant.jwks)
 
 
 @pytest.fixture
@@ -151,9 +88,9 @@ def bearer(token):
 
 
 @pytest.fixture
-def owner(provider, client):
-    """The bootstrap administrator, signed in once so the admin row exists."""
-    token = provider.seed("owner-uid", OWNER)
+def owner(tenant, client):
+    """An administrator (the token carries the admin app role), signed in once so their entra_users row exists."""
+    token = tenant.token("owner-uid", OWNER, roles=("admin",))
     response = client.get("/api/session", headers=bearer(token))
     assert response.status_code == 200, response.text
     return token

@@ -270,7 +270,7 @@ def test_an_azure_read_is_counted_and_priced_in_the_spend_ledger(tmp_path, store
     assert costs.model_of(trace) == "invoice-reader"
 
 
-def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, owner, provider):
+def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, owner, tenant):
     state = client.get("/api/state", headers=bearer(owner)).json()
     assert state["connections"]["azure"] is False
     assert state["azure_endpoint"] == ""
@@ -280,9 +280,7 @@ def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, o
     assert refused.status_code == 400
     assert client.get("/api/state", headers=bearer(owner)).json()["connections"]["azure"] is False
 
-    member = provider.seed("member-uid", "member@example.test")
-    client.app.state.users.create("member-uid", "member@example.test", "M", "member", invited_by="test",
-                                  status="active", login_origin="existing")
+    member = tenant.token("member-uid", "member@example.test")
     forbidden = client.post("/api/connections/azure", headers=bearer(member),
                             json={"endpoint": "acme.openai.azure.com", "api_key": KEY})
     assert forbidden.status_code == 403
@@ -311,7 +309,7 @@ def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, o
     assert "connection_connected" in events and "connection_disconnected" in events
 
 
-def test_the_environment_makes_azure_the_hosted_managed_default(tmp_path, identity, monkeypatch):
+def test_the_environment_makes_azure_the_hosted_managed_default(tmp_path, identity, tenant, monkeypatch):
     """Like VERTEX_PROJECT_ID today: the endpoint and key (from Secret Manager) plus a deployment name."""
     from fastapi.testclient import TestClient
     from app.main import create_app
@@ -321,7 +319,7 @@ def test_the_environment_makes_azure_the_hosted_managed_default(tmp_path, identi
     monkeypatch.setenv("INV_STUDIO_AZURE_DEPLOYMENT", "gpt-5-invoices")
     app = create_app(tmp_path / "managed", identity=identity, store_type=Store)
     with TestClient(app) as client:
-        token = identity.admin.seed("owner-uid", "owner@example.test")
+        token = tenant.token("owner-uid", "owner@example.test", roles=("admin",))
         state = client.get("/api/state", headers=bearer(token)).json()
         assert state["connections"]["azure"] is True
         assert state["azure_endpoint"] == FOUNDRY_ENDPOINT

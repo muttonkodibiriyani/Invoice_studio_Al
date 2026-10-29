@@ -25,11 +25,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import Field, SecretStr, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
-from .authentication import CloudIdentity, actor
+from .authentication import EntraIdentity, actor
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
-from .user_admin import UserAdminError, page_link
-from .users import UserDirectory, normalize_email, now_iso, recent
+from .users import UserDirectory
 from .engines import AI_CONCURRENCY, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
 from .learned import LearnedStore
 from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook
@@ -136,20 +135,6 @@ class Retry(StrictModel):
     preflight_token: str
 
 
-class NewUser(StrictModel):
-    email: str = Field(min_length=3,max_length=254)
-    name: str = Field(default="",max_length=120)
-    role: str = Field(default="member",pattern="^(admin|member)$")
-
-
-class RoleChange(StrictModel):
-    role: str = Field(pattern="^(admin|member)$")
-
-
-class ForgotPassword(StrictModel):
-    email: str = Field(min_length=3,max_length=254)
-
-
 class Connection(StrictModel):
     api_key: SecretStr = Field(min_length=10,max_length=500)
 
@@ -234,9 +219,9 @@ async def heartbeat(app):
 
 
 def create_app(data_dir=None,*,identity=None,store_type=None):
-    """The application. `identity` and `store_type` are test seams: tests pass a fake identity provider and the
-    SQLite store to exercise the cloud authorization paths without Firebase or PostgreSQL."""
-    identity=identity or CloudIdentity()
+    """The application. `identity` and `store_type` are test seams: tests pass an EntraIdentity that checks tokens
+    against a test key, and the SQLite store, to exercise the cloud authorization paths without network or PostgreSQL."""
+    identity=identity or EntraIdentity()
     protect_process()
     # The API schema is not a public surface: documentation routes are off in the cloud workspace.
     docs={"docs_url":None,"redoc_url":None,"openapi_url":None} if identity.cloud else {}
@@ -255,9 +240,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     register_mapping_tables(app,store)
     users=UserDirectory(store);users.ensure_schema()
     limiter=RateLimiter()  # signed-in callers, keyed by uid
-    public_limiter=RateLimiter()  # anonymous callers, keyed by address and by email
     log=logging.getLogger("inv_studio.request")
-    login_touch={}  # uid -> monotonic time last_login_at was last written (one write per five minutes)
+    login_touch={}  # oid -> (monotonic time its entra_users row was last written, the role written)
     LOCAL_IDENTITY={"email":"local operator","uid":"local-operator","name":"Local operator","role":"admin","status":"active"}
     learned=None
     if os.getenv("INV_STUDIO_LEARN","1")!="0":
@@ -294,7 +278,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         return True
     plans={};plans_lock=threading.RLock()
     app.state.store=store;app.state.providers=providers;app.state.auth=auth;app.state.pool=pool;app.state.learn_pool=learn_pool;app.state.learned=learned
-    app.state.users=users;app.state.limiter=limiter;app.state.public_limiter=public_limiter;app.state.identity_provider=identity
+    app.state.users=users;app.state.limiter=limiter;app.state.identity_provider=identity
     allowed_origins={x.strip() for x in os.getenv("INV_STUDIO_ALLOWED_ORIGINS","").split(",") if x.strip()}
     hosts=["127.0.0.1","localhost","testserver"]
     if identity.cloud:
@@ -304,37 +288,22 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     app.state.identity=identity
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=hosts)
     def resolve_user(claims):
-        """The workspace user behind verified claims. Unknown, disabled and unverified accounts are refused;
-        bootstrap administrators and members are created on first sign-in; invited users become active on theirs."""
-        # Audit rows written here (bootstrap, activation) must name the signed-in account, not the default actor.
-        actor_token=actor.set(claims["uid"])
-        try:return _resolve_user(claims)
-        finally:actor.reset(actor_token)
-
-    def _resolve_user(claims):
-        user=users.get(claims["uid"])
-        if user is None:
-            role="admin" if claims["email"] in identity.bootstrap_admins else "member" if claims["email"] in identity.bootstrap_members else None
-            if role is None:raise PermissionError("This account has not been granted access to this workspace")
-            if not claims["email_verified"]:raise PermissionError("Verify your email to open this workspace")
-            with store.connection(True) as c:
-                if users.removed(claims["uid"],c):raise PermissionError("This account was removed from this workspace. Contact the workspace administrator.")
-                if users.by_email(claims["email"],c):raise PermissionError("This email is registered under a different sign-in. Contact the workspace administrator.")
-                user=users.create(claims["uid"],claims["email"],"",role=role,invited_by="bootstrap",status="active",c=c,login_origin="existing")
-                users.update(user["uid"],c,last_login_at=now_iso())
-                store.audit("user.bootstrapped",{"uid":user["uid"],"email":user["email"],"role":role},c)
-            login_touch[user["uid"]]=time.monotonic()
-        if user["status"]=="disabled":raise PermissionError("This account is disabled. Contact the workspace administrator.")
-        if not claims["email_verified"]:raise PermissionError("Verify your email to open this workspace")
-        now=time.monotonic()
-        if user["status"]=="invited":
-            with store.connection(True) as c:
-                user=users.update(user["uid"],c,status="active",last_login_at=now_iso()) or user
-                store.audit("user.activated",{"uid":user["uid"],"email":user["email"]},c)
-            login_touch[user["uid"]]=now
-        elif login_touch.get(user["uid"],-1e9)<now-300:
-            users.update(user["uid"],last_login_at=now_iso());login_touch[user["uid"]]=now
-        return {"uid":user["uid"],"email":user["email"],"name":user["name"],"role":user["role"],"status":user["status"]}
+        """The workspace user behind verified claims. The role is the token's, on every request: the entra_users row
+        only records the sign-in (at most every five minutes, or at once when the role changed) and grants nothing."""
+        uid=claims["uid"];now=time.monotonic();seen=login_touch.get(uid)
+        if seen is None or seen[1]!=claims["role"] or seen[0]<now-300:
+            # Audit rows written here must name the signed-in account, not the default actor.
+            actor_token=actor.set(uid)
+            try:
+                with store.connection(True) as c:
+                    before=users.record(claims,identity.tenant_id,c)
+                    if before is None:
+                        store.audit("user.first_sign_in",{"oid":uid,"email":claims["email"],"role":claims["role"]},c)
+                    elif before["role"]!=claims["role"]:
+                        store.audit("user.role_observed_changed",{"oid":uid,"email":claims["email"],"from":before["role"],"to":claims["role"]},c)
+            finally:actor.reset(actor_token)
+            login_touch[uid]=(now,claims["role"])
+        return {"uid":uid,"email":claims["email"],"name":claims["name"],"role":claims["role"]}
 
     def matched_route(scope):
         for route in app.router.routes:
@@ -354,8 +323,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             response.headers["Cache-Control"]="no-store"
             response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; frame-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
             if identity.cloud:
-                auth_domain=os.getenv("INV_STUDIO_FIREBASE_AUTH_DOMAIN","")
-                response.headers["Content-Security-Policy"]=("default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self'; img-src 'self' data: blob: https://*.googleusercontent.com; frame-src 'self' blob: https://"+auth_domain+"; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+                # MSAL in the browser talks to Entra; its silent token renewal may fall back to a hidden iframe.
+                response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; frame-src 'self' blob: https://login.microsoftonline.com; connect-src 'self' https://login.microsoftonline.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
                 # HTTPS only from now on (security pack N2). This host only: no includeSubDomains, since both the Azure
                 # and the Google hostnames sit under shared provider domains, and no preload. Local mode is plain http.
                 response.headers["Strict-Transport-Security"]="max-age=31536000"
@@ -370,14 +339,11 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             level=route_access(app,request.scope) if api else None
             if api and level is None:return finish(JSONResponse({"detail":"Not found"},404))
             if identity.cloud and api and level!=PUBLIC:
-                # Revocation is re-checked with the identity provider on administrative and state-changing calls.
-                sensitive=level==ADMIN or request.method not in ("GET","HEAD","OPTIONS")
-                try:claims=await run_in_threadpool(identity.verify,request.headers.get("authorization"),sensitive)
+                try:claims=await run_in_threadpool(identity.verify,request.headers.get("authorization"))
                 except PermissionError as exc:return finish(JSONResponse({"detail":str(exc)},403))
                 except ValueError as exc:return finish(JSONResponse({"detail":str(exc)},401))
                 who=claims["uid"]
-                try:user=await run_in_threadpool(resolve_user,claims)
-                except PermissionError as exc:return finish(JSONResponse({"detail":str(exc)},403))
+                user=await run_in_threadpool(resolve_user,claims)
                 if not allows(level,user["role"]):return finish(JSONResponse({"detail":"Administrator access is required"},403))
                 if level==ADMIN and request.method not in ("GET","HEAD","OPTIONS") and not limiter.allow("admin:"+user["uid"],60,60):
                     return finish(JSONResponse({"detail":"Too many requests. Wait a minute and try again."},429))
@@ -1683,148 +1649,13 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         store.audit("subscription_disconnected",{"provider":"chatgpt","account_id":aid[:200],"remote_revoked":detail=="Disconnected"})
         return {"detail":detail}
 
-    # ---- Users and sign-in (administrators) -------------------------------------------------------------
-    EMAIL_RE=re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
-    RESET_REPEAT=900  # seconds: a repeated "Forgot password?" for the same account inside this window changes nothing
-    SHARED_POOL="Users are managed on the primary workspace; this deployment shares its sign-in pool"
-    def require_user_management():
-        if not identity.cloud:raise HTTPException(409,"User management is available in the cloud workspace only")
-    def user_or_404(uid):
-        user=users.get(uid)
-        if not user:raise HTTPException(404,"User not found")
-        return user
-    def provider(operation,*args):
-        """A sign-in change at the identity provider. A deployment without identity admin (INV_STUDIO_IDENTITY_ADMIN=0)
-        makes none: it changes only its own user directory, and sign-ins are created and reset on the primary workspace."""
-        if identity.admin is None:raise HTTPException(409,SHARED_POOL)
-        try:return getattr(identity.admin,operation)(*args)
-        except UserAdminError as exc:raise HTTPException(502,str(exc))
-    def app_login(user):
-        """Did this app create the user's sign-in? Only then may it change that sign-in at the identity provider."""
-        return user.get("login_origin")=="app"
-    def guard_self_and_last_admin(target,request,action):
-        me=request.state.identity
-        if target["uid"]==me["uid"]:raise HTTPException(409,f"You cannot {action} your own account")
-        if target["role"]=="admin" and target["status"]=="active" and len(users.active_admins())<=1:
-            raise HTTPException(409,"Make another user an active administrator first")
-    def link_base(request):
-        """The address the person will open the link on: the workspace address the administrator is using (live site,
-        Hosting preview channel or candidate URL) when the browser says so, else the configured public address."""
-        origin=request.headers.get("origin","").rstrip("/")
-        if origin and (origin in allowed_origins or urlparse(origin).netloc==request.headers.get("host")):return origin
-        return identity.public_url or str(request.base_url)
-    def issue_link(user,request):
-        """A create-password link for invited users, a reset link for active ones. Only the caller sees it."""
-        if identity.admin is None:raise HTTPException(409,SHARED_POOL)
-        if not app_login(user):
-            raise HTTPException(409,"Invoice Studio did not create this sign-in (it may be shared with another app in this Google project), so it does not set its password. Reset it where it was created.")
-        if user["status"]=="disabled":raise HTTPException(409,"Enable this user before issuing a password link")
-        if not limiter.allow("links:"+request.state.identity["uid"],20,600):raise HTTPException(429,"Too many password links issued. Wait ten minutes and try again.")
-        kind="invite" if user["status"]=="invited" else "reset"
-        code=provider("password_code",user["email"])
-        if kind=="reset" and user.get("reset_requested_at"):user=users.update(user["uid"],reset_requested_at=None) or user
-        store.audit("user."+kind+"_link_issued",{"uid":user["uid"],"email":user["email"]})
-        return {"user":user,"kind":kind,"link":page_link(link_base(request),code)}
-
+    # ---- Users (administrators, read-only) -----------------------------------------------------------------
+    # Access and roles are managed in Entra ID; this lists who has signed in here and their role at that sign-in.
     @app.get("/api/users")
     @access(ADMIN)
     def list_users():
-        require_user_management()
-        return {"users":users.list()}
-
-    @app.post("/api/users",status_code=201)
-    @access(ADMIN)
-    def create_user(body:NewUser,request:Request):
-        require_user_management()
-        email=normalize_email(body.email)
-        if not EMAIL_RE.match(email):raise HTTPException(422,"Enter a valid email address")
-        if users.by_email(email):raise HTTPException(409,"This email already has a workspace account")
-        # The provider's user pool can hold sign-ins of other apps in the project (Product Intelligence shares it).
-        # Taking one over (re-enabling it, setting its password) would reach into that app, so it is refused.
-        if provider("find_uid",email) is not None:
-            raise HTTPException(409,"This email already has a sign-in that Invoice Studio did not create (for example a Product Intelligence login), and Invoice Studio does not take over other sign-ins. Use another email address, or ask the project owner.")
-        uid=provider("create",email,body.name)
-        try:user=users.create(uid,email,body.name,body.role,invited_by=request.state.identity["email"],login_origin="app")
-        except Exception:
-            # Remove the sign-in just created, so a retry starts clean instead of hitting "did not create".
-            try:identity.admin.delete(uid)
-            except Exception:log.exception("could not remove the sign-in of a failed invitation",extra={"studio":{"uid":uid}})
-            raise
-        store.audit("user.invited",{"uid":uid,"email":email,"role":body.role})
-        return issue_link(user,request)
-
-    @app.post("/api/users/{uid}/password-link")
-    @access(ADMIN)
-    def user_password_link(uid:str,request:Request):
-        require_user_management()
-        return issue_link(user_or_404(uid),request)
-
-    @app.post("/api/users/{uid}/disable")
-    @access(ADMIN)
-    def disable_user(uid:str,request:Request):
-        require_user_management()
-        user=user_or_404(uid)
-        guard_self_and_last_admin(user,request,"disable")
-        # The app refuses the user at once (every request re-reads the status). A sign-in the app created is also
-        # disabled at the provider, which ends its sessions; a sign-in it did not create keeps working elsewhere.
-        if app_login(user):provider("set_disabled",uid,True)
-        user=users.update(uid,status="disabled")
-        store.audit("user.disabled",{"uid":uid,"email":user["email"]})
-        return {"user":user}
-
-    @app.post("/api/users/{uid}/enable")
-    @access(ADMIN)
-    def enable_user(uid:str):
-        require_user_management()
-        user=user_or_404(uid)
-        if app_login(user):provider("set_disabled",uid,False)
-        user=users.update(uid,status="active" if user["last_login_at"] else "invited")
-        store.audit("user.enabled",{"uid":uid,"email":user["email"]})
-        return {"user":user}
-
-    @app.post("/api/users/{uid}/role")
-    @access(ADMIN)
-    def change_role(uid:str,body:RoleChange,request:Request):
-        require_user_management()
-        user=user_or_404(uid)
-        if user["role"]==body.role:return {"user":user}
-        if body.role!="admin":guard_self_and_last_admin(user,request,"change the role of")
-        previous=user["role"]
-        user=users.update(uid,role=body.role)
-        store.audit("user.role_changed",{"uid":uid,"email":user["email"],"from":previous,"to":body.role})
-        return {"user":user}
-
-    @app.delete("/api/users/{uid}")
-    @access(ADMIN)
-    def delete_user(uid:str,request:Request):
-        require_user_management()
-        user=user_or_404(uid)
-        guard_self_and_last_admin(user,request,"delete")
-        if user["email"] in identity.bootstrap_admins:
-            raise HTTPException(409,"This administrator is a workspace owner in the service configuration. Disable them instead, or have them removed from that list first.")
-        # The provider first: if that fails nothing has changed yet and the administrator can simply retry.
-        if app_login(user):provider("delete",uid)
-        users.soft_delete(uid)
-        store.audit("user.deleted",{"uid":uid,"email":user["email"]})
-        return {"deleted":uid}
-
-    @app.post("/api/password/forgot")
-    @access(PUBLIC)
-    def forgot_password(body:ForgotPassword,request:Request):
-        """Neutral by design: the answer is the same whether or not the address has an account. In the cloud
-        workspace the request is recorded so an administrator can issue a reset link from the Users page. Repeats for
-        one account inside RESET_REPEAT write nothing, so the per-address limit only has to stop floods."""
-        if not public_limiter.allow("forgot:"+client_ip(request,identity.cloud),30,900):raise HTTPException(429,"Too many requests. Wait fifteen minutes and try again.")
-        email=normalize_email(body.email)
-        if identity.cloud and EMAIL_RE.match(email):
-            user=users.by_email(email)
-            if user and user["status"]!="disabled" and not recent(user["reset_requested_at"],RESET_REPEAT):
-                users.update(user["uid"],reset_requested_at=now_iso())
-                store.audit("user.reset_requested",{"uid":user["uid"],"email":user["email"]})
-        return {"detail":"If this email belongs to a workspace account, the administrator will issue a reset link."}
-
-    @app.get("/set-password")
-    def set_password_page():return FileResponse(ROOT/"app/static/set-password.html")
+        if not identity.cloud:raise HTTPException(409,"The user list is available in the cloud workspace only")
+        return {"users":users.list(),"groups":identity.groups}
 
     @app.get("/health")
     def health():return {"status":"ok","version":"0.1.0"}

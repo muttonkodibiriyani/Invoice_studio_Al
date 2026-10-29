@@ -13,7 +13,8 @@ from app import engines
 from app import main as main_module
 from app.main import create_app
 from app.store import Store
-from tests.conftest import OWNER, FakeIdentity, FakeUserAdmin, bearer
+from app.authentication import EntraIdentity
+from tests.conftest import OWNER, Tenant, bearer, entra_env
 
 OPTIONS = {"engine": "auto", "prefer_native_text": True, "ai_fallback": False, "provider": "openai", "model": "", "language": "en"}
 
@@ -63,11 +64,12 @@ def studio(tmp_path, monkeypatch, reader, **env):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(main_module, "process_job", reader)
-    provider = FakeUserAdmin()
-    app = create_app(tmp_path / "data", identity=FakeIdentity(provider), store_type=BlobStore)
+    tenant = Tenant()
+    entra_env(monkeypatch)
+    app = create_app(tmp_path / "data", identity=EntraIdentity(fetch=tenant.jwks), store_type=BlobStore)
     from fastapi.testclient import TestClient
     client = TestClient(app)
-    token = provider.seed("owner-uid", OWNER)
+    token = tenant.token("owner-uid", OWNER, roles=("admin",))
     assert client.get("/api/session", headers=bearer(token)).status_code == 200
     return app, client, token
 

@@ -1,123 +1,131 @@
-"""Firebase identity verification for the explicitly enabled cloud workspace.
+"""Entra ID sign-in for the cloud workspace (design doc "Entra ID sign-in design" §3).
 
-Verification answers "who is this?" only. Whether that person may use the workspace, and as what, is decided by
-the user directory and the route access levels (see app/authorization.py and app/users.py).
+The API accepts only v2 access tokens that the team's own tenant issued to this app's SPA for this API. Entra decides
+who gets in and with which role: the role is read from the token's `roles` claim on every request, and nothing the
+app stores can grant one. Route access levels are in app/authorization.py. The backend holds no credential: tokens
+are checked against the tenant's public signing keys.
 """
+import logging
 import os
+import re
+import threading
+import time
 from contextvars import ContextVar
 
+import jwt
+
 actor = ContextVar("invoice_actor", default="local-operator")
-LOOKUP_TIMEOUT = 5
+AUTHORITY = "https://login.microsoftonline.com"
+SCOPE = "access_as_user"
+GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+# Settings of the Firebase build. One left in a cloud deployment would look as if it works, so it stops the start.
+LEFTOVERS = ("GOOGLE_CLOUD_PROJECT", "INV_STUDIO_ALLOWED_EMAILS", "INV_STUDIO_MEMBER_EMAILS")
+EXPIRED = "Sign-in expired or could not be verified. Sign in again."
+NO_ROLE = "This account has not been granted access to this workspace"
+KEYS_TTL = 86400  # seconds the tenant's keys are kept
+REFETCH_GAP = 300  # an unknown kid refetches the keys at most this often
+LEEWAY = 60
+FETCH_TIMEOUT = 5
+log = logging.getLogger("inv_studio.auth")
 
 
-def verify_only_credential():
-    """A Firebase credential that holds no key. ID tokens are checked against Google's public certificates, so
-    verifying needs none, and this never falls back to Application Default Credentials."""
-    from firebase_admin import credentials
-    from google.auth.credentials import AnonymousCredentials
-
-    class VerifyOnly(credentials.Base):
-        def get_credential(self):
-            return AnonymousCredentials()
-    return VerifyOnly()
+def fetch_json(url):
+    import httpx
+    response = httpx.get(url, timeout=FETCH_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
 
 
-class CloudIdentity:
-    def __init__(self):
+class TenantKeys:
+    """The tenant's token-signing keys (its JWKS), cached in process. If they cannot be fetched and none are cached,
+    no token verifies: sign-in fails closed."""
+
+    def __init__(self, tenant_id, fetch):
+        self.url = f"{AUTHORITY}/{tenant_id}/discovery/v2.0/keys"
+        self.fetch = fetch
+        self.keys = {}
+        self.loaded = None  # monotonic time of the last successful fetch
+        self.tried = None  # monotonic time of the last attempt
+        self.lock = threading.Lock()
+
+    def get(self, kid):
+        with self.lock:
+            now = time.monotonic()
+            stale = self.loaded is None or now - self.loaded > KEYS_TTL
+            due = self.tried is None or now - self.tried >= REFETCH_GAP
+            if due and (stale or kid not in self.keys):
+                self.tried = now
+                try:
+                    self.keys = {k["kid"]: jwt.PyJWK(k, "RS256").key for k in self.fetch(self.url)["keys"]
+                                 if k.get("kty") == "RSA" and k.get("use", "sig") == "sig" and k.get("kid")}
+                    self.loaded = now
+                except Exception:
+                    log.exception("could not fetch the tenant's signing keys")
+            return self.keys.get(kid)
+
+
+class EntraIdentity:
+    def __init__(self, fetch=fetch_json):
+        """`fetch` is the test seam: tests hand in the JWKS of a test key instead of downloading the tenant's."""
         self.cloud = os.getenv("INV_STUDIO_CLOUD") == "1"
-        self.project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
-        # Bootstrap lists: these addresses get an admin (or member) row on first sign-in; an address on both is an
-        # admin. Everyone else is created by an administrator inside the app.
-        self.bootstrap_admins = {x.strip().casefold() for x in os.getenv("INV_STUDIO_ALLOWED_EMAILS", "").split(",") if x.strip()}
-        self.bootstrap_members = {x.strip().casefold() for x in os.getenv("INV_STUDIO_MEMBER_EMAILS", "").split(",") if x.strip()}
-        self.tenant_id = os.getenv("INV_STUDIO_AUTH_TENANT_ID", "").strip()
-        self.web_api_key = os.getenv("INV_STUDIO_FIREBASE_API_KEY", "")
-        self.public_url = os.getenv("INV_STUDIO_PUBLIC_URL", "").strip() or next(
-            (x.strip() for x in os.getenv("INV_STUDIO_ALLOWED_ORIGINS", "").split(",") if x.strip()), "")
-        self.app = None
-        self.admin = None
-        self.client = None
+        # Lower case, as Entra writes them in iss, tid, aud and azp, which are compared exactly.
+        self.tenant_id = os.getenv("INV_STUDIO_ENTRA_TENANT_ID", "").strip().lower()
+        self.client_id = os.getenv("INV_STUDIO_ENTRA_CLIENT_ID", "").strip().lower()
+        # Display only, for the Users screen: who to ask for access. They decide nothing.
+        self.groups = {"admin": os.getenv("INV_STUDIO_ENTRA_ADMIN_GROUP_NAME", "").strip(),
+                       "member": os.getenv("INV_STUDIO_ENTRA_MEMBER_GROUP_NAME", "").strip()}
+        self.issuer = f"{AUTHORITY}/{self.tenant_id}/v2.0"
         if self.cloud:
-            if not self.project:
-                raise ValueError("Cloud project must be configured")
-            # The Auth emulator accepts unsigned tokens. Only the test suite may use it, by also setting a flag that no
-            # image or deployment template sets, so a copied setting can never reach Cloud Run or Azure.
-            if os.getenv("FIREBASE_AUTH_EMULATOR_HOST") and os.getenv("INV_STUDIO_TEST_AUTH_EMULATOR") != "1":
-                raise RuntimeError("FIREBASE_AUTH_EMULATOR_HOST is for local tests only")
-            # INV_STUDIO_IDENTITY_ADMIN=0: this deployment holds no Google credential for sign-in (Azure). A key for a
-            # sign-in pool shared with other apps could sign in as any of their users. It verifies tokens only, checks
-            # revocation through the browser's own lookup call, and users are managed on the primary workspace.
-            setting = os.getenv("INV_STUDIO_IDENTITY_ADMIN", "1")
-            if setting not in ("0", "1"):
-                raise ValueError("INV_STUDIO_IDENTITY_ADMIN must be 0 or 1")
-            keyless = setting == "0"
-            if keyless and not self.web_api_key:
-                raise ValueError("INV_STUDIO_FIREBASE_API_KEY must be configured when INV_STUDIO_IDENTITY_ADMIN=0")
-            import firebase_admin
-            from firebase_admin import auth
-            from .user_admin import FirebaseUserAdmin
-            self.app = firebase_admin.initialize_app(verify_only_credential() if keyless else None,
-                                                     options={"projectId": self.project}, name="invoice-studio-"+os.urandom(6).hex())
-            # Tokens are verified by the same client that manages users: the project's pool, or the workspace's own
-            # Identity Platform tenant when INV_STUDIO_AUTH_TENANT_ID is set (a project-pool token is refused there).
-            self.client = auth.Client(self.app, tenant_id=self.tenant_id or None)
-            self.admin = None if keyless else FirebaseUserAdmin(self.client)
-
-    def _check_account(self, token, claims):
-        """Without an Admin credential, revocation and disabled accounts are checked the way the browser looks up its
-        own account: Identity Toolkit accounts:lookup with the public web API key and the caller's ID token. The rule
-        is firebase-admin's (refused when disabled, or when the token was issued before validSince). Any error,
-        timeout or unexpected answer refuses the request; nothing is cached."""
-        import httpx
-        emulator = os.getenv("FIREBASE_AUTH_EMULATOR_HOST")
-        base = f"http://{emulator}/identitytoolkit.googleapis.com" if emulator else "https://identitytoolkit.googleapis.com"
-        headers = {"X-Goog-Api-Key": self.web_api_key}  # a header, so the key is never part of a logged URL
-        if self.public_url:
-            headers["Referer"] = self.public_url.rstrip("/") + "/"
-        body = {"idToken": token, **({"tenantId": self.tenant_id} if self.tenant_id else {})}
-        response = httpx.post(base + "/v1/accounts:lookup", json=body, headers=headers, timeout=LOOKUP_TIMEOUT)
-        response.raise_for_status()
-        users = response.json().get("users") or []
-        if len(users) != 1 or users[0].get("localId") != claims["uid"]:
-            raise PermissionError("account lookup did not return this user")
-        if users[0].get("disabled") is True:
-            raise PermissionError("account disabled")
-        if int(claims["iat"]) < int(users[0].get("validSince", 0)):
-            raise PermissionError("token revoked")
+            # A GUID, so never common/organizations/consumers: a multi-tenant authority would accept any tenant.
+            for name, value in (("INV_STUDIO_ENTRA_TENANT_ID", self.tenant_id), ("INV_STUDIO_ENTRA_CLIENT_ID", self.client_id)):
+                if not GUID.match(value):
+                    raise ValueError(name + " must be the GUID of the workforce tenant and its app registration")
+            for name in sorted(os.environ):
+                if name in LEFTOVERS or name.startswith("INV_STUDIO_FIREBASE_"):
+                    raise ValueError(name + " is a Firebase setting; this build signs in with Entra ID only. Remove it.")
+        self.keys = TenantKeys(self.tenant_id, fetch)
 
     def config(self):
         if not self.cloud:
             return {"cloud": False}
-        firebase = {
-            "apiKey": os.getenv("INV_STUDIO_FIREBASE_API_KEY", ""),
-            "authDomain": os.getenv("INV_STUDIO_FIREBASE_AUTH_DOMAIN", ""),
-            "projectId": self.project,
-            "appId": os.getenv("INV_STUDIO_FIREBASE_APP_ID", ""),
-            "providers": ["password"],
-        }
-        if self.tenant_id:
-            firebase["tenantId"] = self.tenant_id
-        return {"cloud": True, "firebase": firebase}
+        return {"cloud": True, "entra": {"clientId": self.client_id, "tenantId": self.tenant_id,
+                                         "authority": f"{AUTHORITY}/{self.tenant_id}",
+                                         "scopes": [f"api://{self.client_id}/{SCOPE}"]}}
 
-    def verify(self, authorization, check_revoked=False):
-        """The verified identity behind a bearer token: {"uid", "email", "email_verified"}.
+    def verify(self, authorization):
+        """The signed-in user behind a bearer token: {"uid" (the oid), "email", "name", "role"}.
 
-        ValueError means "not signed in" (401); the caller decides authorization (403).
+        ValueError means "not signed in" (401) and says nothing about why; PermissionError means signed in but given
+        no app role (403).
         """
         if not authorization or not authorization.startswith("Bearer "):
             raise ValueError("Sign in to Invoice Studio")
         token = authorization[7:]
         if len(token) > 16384:
-            raise ValueError("Invalid sign-in token")
+            raise ValueError(EXPIRED)
         try:
-            claims = self.client.verify_id_token(token, check_revoked=check_revoked and self.admin is not None)
-            if check_revoked and self.admin is None:
-                self._check_account(token, claims)
-        except Exception:
-            raise ValueError("Sign-in expired or could not be verified. Sign in again.") from None
-        if claims.get("firebase", {}).get("tenant") != (self.tenant_id or None):
-            raise ValueError("Sign-in expired or could not be verified. Sign in again.")
-        email = str(claims.get("email", "")).casefold()
-        if not email:
-            raise PermissionError("This account has no email address")
-        return {"email": email, "uid": claims["uid"], "email_verified": claims.get("email_verified") is True}
+            header = jwt.get_unverified_header(token)
+            if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
+                raise ValueError("algorithm or key id")
+            key = self.keys.get(header["kid"])
+            if key is None:
+                raise ValueError("unknown signing key")
+            claims = jwt.decode(token, key, algorithms=["RS256"], audience=self.client_id, issuer=self.issuer,
+                                leeway=LEEWAY, options={"require": ["exp", "nbf", "iat", "iss", "aud"]})
+            if claims["aud"] != self.client_id or claims.get("tid") != self.tenant_id or claims.get("ver") != "2.0":
+                raise ValueError("audience, tenant or version")
+            if SCOPE not in str(claims.get("scp", "")).split() or claims.get("azp") != self.client_id:
+                raise ValueError("not a delegated token from this app")
+            if not isinstance(claims.get("oid"), str) or not claims["oid"]:
+                raise ValueError("no object id")
+        except Exception as exc:
+            # Which check refused it, for the operator (a v1 token or a missing scope after a registration mistake).
+            # Only our own short reasons or PyJWT's error class: never the token or a claim value.
+            log.info("sign-in token refused: %s", str(exc) if type(exc) is ValueError else type(exc).__name__)
+            raise ValueError(EXPIRED) from None
+        roles = claims.get("roles") if isinstance(claims.get("roles"), list) else []
+        role = "admin" if "admin" in roles else "member" if "member" in roles else None
+        if role is None:
+            raise PermissionError(NO_ROLE)
+        email = str(claims.get("preferred_username") or claims.get("email") or "").casefold()
+        return {"uid": claims["oid"], "email": email, "name": str(claims.get("name") or "")[:120], "role": role}

@@ -46,70 +46,23 @@ async function main() {
     createElement: (tag) => new Element(tag),
     addEventListener: (type, handler) => { document[type] = handler; },
   };
-  const storageTouches = [];
-  const forbiddenStorage = new Proxy({}, {
-    get() { storageTouches.push("get"); throw Error("storage touched"); },
-    set() { storageTouches.push("set"); throw Error("storage touched"); },
-  });
-  const location = { pathname: "/set-password", hash: "#oobCode=synthetic-action", search: "" };
+  const forbiddenStorage = new Proxy({}, { get() { throw Error("storage touched"); }, set() { throw Error("storage touched"); } });
+  const location = { pathname: "/", hash: "", search: "", origin: "https://studio.example.test" };
   const replacements = [];
-  const confirmations = [];
   const delays = [];
-  const injectedScripts = [];
-  let verifications = 0;
-  let recovered = false;
-  const terminalVerify = { expired: "expired-action-code", invalid: "invalid-action-code", disabled: "user-disabled" };
   const hostileEmail = '<img src=x onerror="alert(1)">@example.test';
-  const window = {
-    localStorage: forbiddenStorage, sessionStorage: forbiddenStorage,
-    InvoiceStudioAuth: {
-      async verifyResetCode(code) {
-        verifications++;
-        assert(code === "synthetic-action");
-        assert(location.hash === "" && location.search === "", "URL was not cleared before verification");
-        if (terminalVerify[scenario] || scenario === "network") {
-          throw Object.assign(Error("provider internals must stay private"), {
-            code: `auth/${terminalVerify[scenario] || "network-request-failed"}`,
-          });
-        }
-        if ((scenario === "verify-transient-success" && verifications < 3)
-          || (scenario === "verify-transient-exhaust" && !recovered)) {
-          // Public-config failures have no Firebase auth/ error code.
-          throw Error("public-config unavailable");
-        }
-        if (scenario === "verify-other-auth-error" && verifications < 3) {
-          throw Object.assign(Error("temporary provider failure"), { code: "auth/internal-error" });
-        }
-        return hostileEmail;
-      },
-      async confirmReset(code, password) {
-        assert(code === "synthetic-action");
-        confirmations.push(password);
-        if (["confirm-expired", "confirm-disabled", "weak"].includes(scenario)) {
-          throw Object.assign(Error("provider internals must stay private"), {
-            code: `auth/${scenario === "weak" ? "weak-password" : scenario === "confirm-disabled" ? "user-disabled" : "expired-action-code"}`,
-          });
-        }
-        if ((scenario === "confirm-transient-success" && confirmations.length < 3)
-          || (scenario === "confirm-transient-exhaust" && !recovered)) {
-          throw Object.assign(Error("temporary network failure"), { code: "auth/network-request-failed" });
-        }
-      },
-    },
+  // A scripted double of entra-auth.bundle.js: the real MSAL redirect is not run here.
+  const signIns = [];
+  const signOuts = [];
+  const sdk = {
+    runtime: { cloud: true, user: null, error: "" },
+    async bootstrap() { return sdk.runtime; },
+    async getToken() { return "synthetic-token"; },
+    async signIn() { signIns.push(location.href); },
+    async signOut() { signOuts.push(true); },
+    currentUser: () => sdk.runtime.user,
   };
-  const sdk = window.InvoiceStudioAuth;
-  document.head = {
-    append(script) {
-      assert(script.tagName === "SCRIPT" && script.src === "/static/firebase-auth.bundle.js");
-      assert(script.textContent === "", "module recovery must not inject inline code");
-      assert(location.hash === "" && location.search === "");
-      injectedScripts.push(script);
-      queueMicrotask(() => {
-        if (scenario === "module-fails" && !recovered) script.emit("error");
-        else { window.InvoiceStudioAuth = sdk; script.emit("load"); }
-      });
-    },
-  };
+  const window = { localStorage: forbiddenStorage, sessionStorage: forbiddenStorage, InvoiceStudioAuth: sdk };
   const context = vm.createContext({
     document, window, location, URLSearchParams,
     history: { replaceState(_, __, path) {
@@ -184,55 +137,91 @@ async function main() {
       ["invoice2data", "paddleocr", "docling", "openai"]);
     return;
   }
-  if (scenario === "users") {
+  if (scenario === "bundle") {
+    // The built Entra bundle: the app.js seam is there, local mode needs no sign-in, and an incomplete or
+    // multi-tenant configuration is refused before MSAL is created.
+    let config = { cloud: false };
+    context.fetch = async () => ({ ok: true, status: 200, json: async () => config });
+    context.window = context;
     vm.runInContext(fs.readFileSync(script, "utf8"), context);
-    // Layout setup is unrelated to user management; all real user-event bindings still run.
+    const auth = context.InvoiceStudioAuth;
+    assert.deepEqual(Object.keys(auth).sort(), ["bootstrap", "currentUser", "getToken", "signIn", "signOut"]);
+    assert.deepEqual({ ...(await auth.bootstrap()) }, { cloud: false, user: null });
+    assert.equal(await auth.getToken(), null);
+    const tenant = "11111111-2222-3333-4444-555555555555";
+    const client = "66666666-7777-8888-9999-000000000000";
+    for (const entra of [undefined, { clientId: client, tenantId: "common", authority: "https://login.microsoftonline.com/common", scopes: ["s"] },
+      { clientId: client, tenantId: tenant, authority: "https://login.example.test/" + tenant, scopes: ["s"] },
+      { clientId: "", tenantId: tenant, authority: "https://login.microsoftonline.com/" + tenant, scopes: ["s"] },
+      { clientId: client, tenantId: tenant, authority: "https://login.microsoftonline.com/" + tenant, scopes: [] }]) {
+      config = { cloud: true, entra };
+      await assert.rejects(auth.bootstrap(), /not configured completely/);
+    }
+    return;
+  }
+  if (scenario === "sign-in" || scenario === "redirect-error" || scenario === "no-role") {
+    // The gate offers only "Sign in with Microsoft" (plus retry / another account), never a password or invite path.
+    const responses = { "/api/public-config": { status: 200, body: { cloud: true } } };
+    responses["/api/session"] = scenario === "no-role"
+      ? { status: 403, body: { detail: "This account has not been granted access to this workspace" } }
+      : { status: 200, body: { uid: "oid-1", email: hostileEmail, name: "N", role: "member" } };
+    const requests = [];
+    context.fetch = async (path, options = {}) => {
+      requests.push({ path, options });
+      const { status, body } = responses[path] || { status: 200, body: { jobs: [] } };
+      return { ok: status < 400, status, headers: { get: () => "application/json" }, json: async () => body };
+    };
+    vm.runInContext(fs.readFileSync(script, "utf8"), context);
     vm.runInContext("applySidebarMode = () => {}; setupPaneResizers = () => {}; setupModelPicker = () => {};", context);
     window.matchMedia = () => ({ addEventListener() {} });
-    vm.runInContext("bindEvents()", context);
-    context.fixture = { uid: "synthetic-uid", email: hostileEmail, name: '<svg onload="alert(1)">', role: "member", status: "invited" };
-    vm.runInContext("app.sessionUser = {uid: 'owner'}; app.users = [fixture]; renderUsers();", context);
-    const row = node("#users-rows").children[0];
-    assert(row.children[0].textContent === hostileEmail);
-    assert(row.children[1].textContent === context.fixture.name);
-    context.result = { user: context.fixture, kind: "invite", link: "synthetic-link-value" };
-    vm.runInContext("showUserLink(result)", context);
-    assert(node("#user-link-dialog").open);
-    assert(node("#user-link-text").selected);
-    assert(node("#user-link-text").value === context.result.link);
-    assert(node("#user-link-note").textContent.includes(hostileEmail));
-    let copied = "";
-    const notifications = [];
-    context.navigator = { clipboard: { async writeText(value) { copied = value; } } };
-    context.recordNotice = (text) => notifications.push(text);
-    vm.runInContext("notify = (text) => recordNotice(text)", context);
-    await vm.runInContext("copyUserLink()", context);
-    assert(copied === context.result.link);
-    assert(notifications[0] === "Link copied.");
-    context.navigator.clipboard.writeText = async () => { throw Error("clipboard blocked"); };
-    await vm.runInContext("copyUserLink()", context);
-    assert(notifications[1].includes("copy it manually"));
-    await node("#user-link-dialog").close();
-    assert(node("#user-link-text").value === "", "link retained after dialog close");
-    // Links are offered only for sign-ins the app created; a shared sign-in gets a note instead of a button.
-    const actionsOf = (tableRow) => tableRow.children[5].children[0].children;
-    assert(actionsOf(row)[0].dataset.userAction === "password-link" && actionsOf(row)[0].textContent === "Create-password link");
-    context.fixture.login_origin = "app";
-    context.shared = { uid: "shared-uid", email: "shared@example.test", name: "", role: "admin", status: "active",
-      login_origin: "existing", reset_requested_at: "2026-10-22T17:59:14+00:00" };
-    vm.runInContext("app.users = [fixture, shared]; renderUsers();", context);
-    const [appRow, sharedRow] = node("#users-rows").children;
-    assert(actionsOf(appRow)[0].dataset.userAction === "password-link");
-    assert(!actionsOf(sharedRow).some((element) => element.dataset.userAction === "password-link"), "link offered for a shared sign-in");
-    assert(actionsOf(sharedRow)[0].textContent.includes("Shared sign-in"));
-    assert(sharedRow.children[3].children.some((element) => element.textContent.startsWith("Reset requested")));
-    // While the runtime may not manage sign-ins, the provider's refusal is explained instead of shown raw.
-    vm.runInContext("api = async () => { throw new Error('The identity provider rejected the request: PermissionDeniedError'); }", context);
-    const control = { tagName: "BUTTON", disabled: false, dataset: { userAction: "password-link" }, closest: () => ({ dataset: { uid: "synthetic-uid" } }) };
-    await vm.runInContext("userAction", context)({ type: "click", target: { closest: () => control } });
-    assert(notifications.at(-1).includes("not yet allowed") && notifications.at(-1).includes("Nothing was changed"));
-    assert(!control.disabled && !node("#user-link-dialog").open);
-    assert(vm.runInContext("userAdminError(new Error('Enter a valid email address'))", context) === "Enter a valid email address");
+    context.clearInterval = () => {};
+    vm.runInContext("bindEvents(); startWorkspace = async () => { app.started = true; }; clearSelectedJob = () => {};", context);
+    if (scenario === "redirect-error") sdk.runtime.error = "This account has not been granted access to this workspace. Ask your administrator to add you to the Invoice Studio group.";
+    if (scenario === "no-role") sdk.runtime.user = { email: "x@example.test", name: "" };
+    await vm.runInContext("initializeAccess()", context);
+    for (const gone of ["#google-sign-in", "#password-sign-in", "#password-reset", "#auth-send-verification", "#user-create-form", "#user-link-dialog"]) {
+      assert(!nodes.has(gone), `${gone} is still used`);
+    }
+    if (scenario === "no-role") {
+      assert(node("#microsoft-sign-in").hidden && !node("#auth-sign-out").hidden);
+      assert(node("#auth-message").textContent === "This account does not have workspace access.");
+      assert(node("#auth-detail").textContent.includes("add you to the Invoice Studio group"));
+      const session = requests.find((request) => request.path === "/api/session");
+      assert(session.options.headers.Authorization === "Bearer synthetic-token");
+      assert(!vm.runInContext("app.started", context));
+      return;
+    }
+    assert(!node("#microsoft-sign-in").hidden && node("#auth-retry").hidden);
+    assert(node("#auth-message").textContent.includes("work account"));
+    assert(node("#auth-detail").hidden === (scenario === "sign-in"));
+    assert(node("#auth-sign-out").hidden === (scenario === "sign-in"));
+    if (scenario === "redirect-error") assert(node("#auth-detail").textContent.includes("Invoice Studio group"));
+    await node("#microsoft-sign-in").emit("click");
+    assert(signIns.length === 1 && !node("#microsoft-sign-in").disabled);
+    await node("#auth-sign-out").emit("click");
+    assert(signOuts.length === 1 && !node("#microsoft-sign-in").hidden);
+    assert(requests.every((request) => !request.path.includes("password")));
+    return;
+  }
+  if (scenario === "users") {
+    // Read-only: a row per person who signed in, no buttons, no role selector, nothing that changes access.
+    vm.runInContext(fs.readFileSync(script, "utf8"), context);
+    context.fixture = { oid: "oid-me", email: hostileEmail, name: '<svg onload="alert(1)">', role: "admin",
+      first_login_at: "2026-10-01T09:00:00+00:00", last_login_at: "2026-10-29T09:00:00+00:00" };
+    context.other = { oid: "oid-2", email: "m@example.test", name: "", role: "member",
+      first_login_at: "2026-10-02T09:00:00+00:00", last_login_at: "2026-10-03T09:00:00+00:00" };
+    vm.runInContext("app.sessionUser = {uid: 'oid-me', role: 'admin'}; app.users = [fixture, other]; app.userGroups = {admin: 'IS Admins', member: ''}; renderUsers();", context);
+    const [mine, theirs] = node("#users-rows").children;
+    assert(mine.children.length === 5 && theirs.children.length === 5);
+    assert(mine.children[0].textContent === context.fixture.name + " (you)");
+    assert(mine.children[1].textContent === hostileEmail && mine.children[2].textContent === "Administrator");
+    assert(theirs.children[0].textContent === "—" && theirs.children[2].textContent === "Member");
+    const controls = (element) => element.children.flatMap((child) => [child, ...controls(child)]);
+    assert(!controls(node("#users-rows")).some((element) => ["BUTTON", "SELECT", "INPUT"].includes(element.tagName)));
+    const intro = node("#users-intro").textContent;
+    assert(intro.includes("“IS Admins”") && intro.includes("member group") && intro.includes("does not grant or remove access"));
+    vm.runInContext("app.users = []; renderUsers();", context);
+    assert(node("#users-rows").children[0].children[0].textContent === "Nobody has signed in yet.");
     return;
   }
   if (scenario === "batch-upload") {
@@ -337,132 +326,7 @@ async function main() {
     assert(!vm.runInContext("batchActive(app.batch)", context));
     return;
   }
-  if (scenario === "forgot") {
-    vm.runInContext(fs.readFileSync(script, "utf8"), context);
-    const requests = [];
-    let status = 200;
-    context.fetch = async (path, options) => { requests.push({ path, options }); return { ok: status < 400, status }; };
-    node("#auth-email").value = " someone@example.test ";
-    await vm.runInContext("resetPassword()", context);
-    assert(requests.length === 1 && requests[0].path === "/api/password/forgot");
-    assert(JSON.parse(requests[0].options.body).email === "someone@example.test");
-    assert(!("Authorization" in requests[0].options.headers) && requests[0].options.headers["X-Studio-Request"] === "1");
-    // The page must not promise an email: nothing is sent, the administrator hands the link over.
-    assert(node("#auth-message").textContent.includes("No email is sent"));
-    assert(node("#auth-detail").textContent.includes("administrator") && !node("#auth-detail").hidden);
-    assert(!node("#password-reset").disabled);
-    status = 429;
-    await vm.runInContext("resetPassword()", context);
-    assert(node("#auth-message").textContent === "Too many requests.");
-    node("#auth-email").value = "";
-    await vm.runInContext("resetPassword()", context);
-    assert(requests.length === 2 && node("#auth-email").focused);
-    return;
-  }
-
-  if (scenario === "missing" || scenario === "query-code") location.hash = "";
-  if (scenario === "query-code") location.search = "?oobCode=synthetic-action";
-  if (scenario === "fragment-and-query") location.search = "?irrelevant=value";
-  if (scenario === "module-missing" || scenario === "module-fails") window.InvoiceStudioAuth = undefined;
-  for (const selector of ["#sp-form", "#sp-sign-in", "#sp-detail", "#sp-retry"]) node(selector).hidden = true;
-  vm.runInContext(fs.readFileSync(script, "utf8"), context);
-  await document.DOMContentLoaded();
-  const privateStateIsClean = () => {
-    assert(storageTouches.length === 0, "password page accessed browser storage");
-    assert(location.hash === "" && location.search === "");
-    assert(!node("#sp-detail").textContent.includes("provider internals"));
-    assert(!node("#sp-detail").textContent.toLowerCase().includes("reload"));
-  };
-  privateStateIsClean();
-  if (scenario === "missing" || scenario === "query-code") {
-    assert(verifications === 0);
-    assert(node("#sp-form").hidden);
-    assert(node("#sp-retry").hidden);
-    assert(node("#sp-message").textContent.includes("incomplete"));
-    assert(document.activeElement === node("#sp-message"));
-    assert(replacements.length === (scenario === "query-code" ? 1 : 0));
-    return;
-  }
-  assert(replacements.length === 1 && replacements[0] === "/set-password");
-  if (terminalVerify[scenario]) {
-    assert(verifications === 1 && delays.length === 0);
-    assert(node("#sp-form").hidden);
-    assert(node("#sp-sign-in").hidden);
-    assert(node("#sp-retry").hidden);
-    assert(document.activeElement === node("#sp-message"));
-    assert(node("#sp-detail").textContent.includes(scenario === "disabled" ? "disabled" : "expired or was already used"));
-    return;
-  }
-  if (["network", "verify-transient-exhaust", "module-fails"].includes(scenario)) {
-    assert.deepEqual(delays, [2000, 4000, 8000, 15000]);
-    assert(!node("#sp-retry").hidden && !node("#sp-retry").disabled);
-    assert(node("#sp-form").hidden && node("#sp-sign-in").hidden);
-    assert(document.activeElement === node("#sp-message"));
-    if (scenario === "module-fails") assert(injectedScripts.length === 5 && verifications === 0);
-    else assert(verifications === 5);
-    if (scenario === "network") return;
-    recovered = true;
-    await node("#sp-retry").emit("click");
-    privateStateIsClean();
-    assert(node("#sp-retry").hidden && !node("#sp-form").hidden);
-    if (scenario === "module-fails") assert(injectedScripts.length === 6 && verifications === 1);
-    else assert(verifications === 6);
-  } else if (["verify-transient-success", "verify-other-auth-error"].includes(scenario)) {
-    assert(verifications === 3);
-    assert.deepEqual(delays, [2000, 4000]);
-  } else {
-    assert(verifications === 1 && delays.length === 0);
-  }
-  if (scenario === "module-missing") assert(injectedScripts.length === 1);
-  assert(injectedScripts.every((script) => script.removed));
-  assert(node("#sp-email").value === hostileEmail);
-  assert(!node("#sp-form").hidden);
-  node("#sp-password").value = node("#sp-confirm").value = "short";
-  await node("#sp-form").emit("submit");
-  assert(confirmations.length === 0);
-  assert(node("#sp-detail").textContent.includes("12 characters"));
-  assert(document.activeElement === node("#sp-message"));
-  node("#sp-password").value = "a sufficiently long password";
-  node("#sp-confirm").value = "a different long password";
-  await node("#sp-form").emit("submit");
-  assert(confirmations.length === 0);
-  assert(node("#sp-detail").textContent.includes("do not match"));
-  node("#sp-confirm").value = node("#sp-password").value;
-  delays.length = 0;
-  if (scenario === "confirm-module-missing") window.InvoiceStudioAuth = undefined;
-  await node("#sp-form").emit("submit");
-  privateStateIsClean();
-  if (["confirm-expired", "confirm-disabled", "weak"].includes(scenario)) {
-    assert(confirmations.length === 1 && delays.length === 0);
-    assert(node("#sp-form").hidden === (scenario !== "weak") && node("#sp-sign-in").hidden);
-    assert(node("#sp-detail").textContent.includes(scenario === "weak" ? "stronger password" : scenario === "confirm-disabled" ? "disabled" : "expired or was already used"));
-    assert(node("#sp-retry").hidden);
-    assert(document.activeElement === node("#sp-message"));
-    assert(!node("#sp-submit").disabled);
-    return;
-  }
-  if (scenario === "confirm-transient-exhaust") {
-    assert(confirmations.length === 5);
-    assert.deepEqual(delays, [2000, 4000, 8000, 15000]);
-    assert(!node("#sp-retry").hidden && !node("#sp-form").hidden);
-    assert(document.activeElement === node("#sp-message"));
-    recovered = true;
-    await node("#sp-retry").emit("click");
-    assert(confirmations.length === 6);
-  } else if (scenario === "confirm-transient-success") {
-    assert(confirmations.length === 3);
-    assert.deepEqual(delays, [2000, 4000]);
-  } else {
-    assert(confirmations.length === 1 && delays.length === 0);
-  }
-  if (scenario === "confirm-module-missing") assert(injectedScripts.length === 1);
-  assert(confirmations.every((password) => password === "a sufficiently long password"));
-  assert(node("#sp-password").value === "" && node("#sp-confirm").value === "");
-  assert(node("#sp-form").hidden && !node("#sp-sign-in").hidden);
-  assert(node("#sp-retry").hidden);
-  assert(!node("#sp-submit").disabled);
-  assert(document.activeElement === node("#sp-sign-in"));
-  privateStateIsClean();
+  throw Error(`unknown scenario ${scenario}`);
 }
 
 main().catch((error) => { process.stderr.write(error.message + "\n"); process.exitCode = 1; });

@@ -1,0 +1,12 @@
+{
+  "name": "inv-studio-entra-auth-bundle",
+  "private": true,
+  "description": "Rebuilds app/static/entra-auth.bundle.js from app/static/entra-auth-entry.js; see docs/RECOVERY.md.",
+  "scripts": {
+    "build": "esbuild --bundle --minify --format=iife < ../../app/static/entra-auth-entry.js > ../../app/static/entra-auth.bundle.js"
+  },
+  "devDependencies": {
+    "@azure/msal-browser": "5.26.0",
+    "esbuild": "0.25.3"
+  }
+}

@@ -59,10 +59,6 @@ body {
 .auth-button { width: 100%; margin-top: 18px; }
 .auth-button + .auth-button { margin-top: 7px; }
 .auth-button svg { width: 19px; fill: currentColor; stroke: none; }
-.password-sign-in { display: grid; gap: 10px; margin-top: 18px; text-align: left; }
-.password-sign-in label { font-size: 10px; }
-.password-sign-in .auth-button { margin-top: 2px; }
-.password-sign-in .link-button { justify-self: center; margin-top: 3px; }
 .auth-detail { margin-top: 13px !important; padding: 10px; color: var(--danger) !important; background: var(--danger-bg); border: 1px solid #efcac6; border-radius: 8px; }
 .auth-privacy { margin-top: 23px !important; padding-top: 17px; border-top: 1px solid var(--line); font-size: 9px !important; }
 
@@ -934,7 +930,3 @@ dialog:has(.fine-rules-dialog) { width: min(1180px, calc(100vw - 28px)); }
 /* Users (administrators) */
 .users-table { min-width: 760px; }
 .users-table td { font-size: 11px; vertical-align: middle; }
-.users-table select { padding: 5px 7px; font-size: 10px; }
-.user-note { display: block; margin-top: 3px; color: var(--warning); font-size: 9px; }
-.user-actions { display: flex; flex-wrap: wrap; gap: 4px; }
-.user-link-dialog textarea { width: 100%; min-height: 72px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 11px; word-break: break-all; resize: vertical; }

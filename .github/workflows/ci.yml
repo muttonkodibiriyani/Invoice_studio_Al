@@ -16,9 +16,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          cache-dependency-glob: pyproject.toml
       - name: Install
         run: |
-          uv venv --python 3.12
+          if [ ! -d .venv ]; then uv venv --python 3.12; fi
           uv pip install -e '.[test,cloud,azure]'
       - name: Ruff
         run: .venv/bin/ruff check .

@@ -6,7 +6,8 @@
 # deploy kit, docs. The script applies the upstream diff since that commit,
 # stages it and records the new upstream commit. It lists the files both
 # sides changed (OVERLAP), which need a by-hand check that the Azure behaviour
-# survived. It also confirms that every file that still differs from upstream
+# survived. Upstream changes to files Azure deleted are skipped and listed
+# (SKIPPED). It also confirms that every file that still differs from upstream
 # is an Azure change. --check does the listing only and changes nothing.
 # Nothing is committed or pushed.
 set -euo pipefail
@@ -28,6 +29,8 @@ git merge-base --is-ancestor "$base" "$target" || { echo "$ref does not descend 
 azure=$(git diff --name-only "$base" HEAD)
 upstream=$(git diff --name-only "$base" "$target")
 overlap=$(comm -12 <(sort <<<"$azure") <(sort <<<"$upstream") | sed '/^$/d')
+# A file Azure deleted (Firebase hosting, password links...) stays deleted.
+deleted=$(comm -12 <(git diff --name-only --diff-filter=D "$base" HEAD | sort) <(sort <<<"$upstream") | sed '/^$/d')
 
 echo "upstream $base..$target ($ref): $(sed '/^$/d' <<<"$upstream" | wc -l) files"
 echo "Azure changes since $base: $(sed '/^$/d' <<<"$azure" | wc -l) files"
@@ -37,10 +40,16 @@ if [ -n "$overlap" ]; then
 else
   echo "OVERLAP: none"
 fi
+if [ -n "$deleted" ]; then
+  echo "SKIPPED: deleted in Azure, so the upstream change is not applied. Carry it to the Azure replacement or say in the PR why it does not apply:"
+  sed 's/^/  /' <<<"$deleted"
+fi
 [ "$check" = 1 ] && exit 0
 [ "$base" = "$target" ] && { echo "already synced to $ref"; exit 0; }
 
-if ! git diff --binary "$base" "$target" | git apply --3way --index; then
+excludes=()
+while IFS= read -r f; do [ -n "$f" ] && excludes+=("--exclude=$f"); done <<<"$deleted"
+if ! git diff --binary "$base" "$target" | git apply --3way --index "${excludes[@]}"; then
   echo "apply stopped: resolve the conflicts above (a file Azure deleted stays deleted unless the PR says otherwise), then re-run the checks" >&2
   exit 1
 fi

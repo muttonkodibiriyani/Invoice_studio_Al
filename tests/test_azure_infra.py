@@ -414,3 +414,11 @@ def test_blob_and_registry_access_is_audited():
     assert "scope: registry" in registry
     for category in ("ContainerRegistryLoginEvents", "ContainerRegistryRepositoryEvents"):
         assert f"category: '{category}'" in registry
+
+
+def test_the_dockerfiles_build_without_buildkit():
+    # az acr build (the deploy workflow) uses the classic builder, which has no heredocs or RUN --mount.
+    for name in ("Dockerfile", "Dockerfile.app-layer"):
+        text = (ROOT / name).read_text()
+        assert not re.search(r"<<-?\s*['\"]?\w+", text), f"{name} has a heredoc"
+        assert "--mount" not in text and "# syntax=" not in text, f"{name} needs BuildKit"

@@ -375,6 +375,7 @@ Then set these in the GitHub repository (Settings → Secrets and variables → 
 | Variable | `ENTRA_CLIENT_ID` | `<ENTRA_APP_CLIENT_ID>`, the same as `entraClientId` |
 | Variable | `ENTRA_ADMIN_GROUP_NAME` | the same as `entraAdminGroupName` (empty if that is empty) |
 | Variable | `ENTRA_MEMBER_GROUP_NAME` | the same as `entraMemberGroupName` (empty if that is empty) |
+| Variable | `AZURE_AUTO_DEPLOY` | `true` to deploy every push to main whose CI run passed; anything else, or unset, keeps the workflow manual |
 
 None of the three secrets is a credential — they are identifiers — but keeping them as secrets is the
 convention and keeps them out of logs. The four `ENTRA_*` variables are public values. The workflow
@@ -384,15 +385,22 @@ building when they differ, or when the app still carries an old Firebase setting
 Add required reviewers to the `azure` environment
 (Settings → Environments → azure) so a deployment needs a human approval.
 
+**Automatic deploys.** Leave `AZURE_AUTO_DEPLOY` unset until the first deploy from Cloud Shell has gone
+live and passed the smoke test of §5. Then set it to `true`
+(`gh variable set AZURE_AUTO_DEPLOY --body true`). From then on every push to main whose CI run passed
+starts **Deploy to Azure** for the exact commit CI tested. It waits for the `azure` environment's
+reviewers, builds in ACR, makes the candidate and checks it, goes live as in §8 and stops the candidate.
+If the app does not answer `/health` after the switch, the run moves the traffic back to the revision that
+was live. The approval stands in for the hand smoke test, so reviewers approve only a change they would
+ship. To pause automatic deploys, set the variable to `false`.
+
 ## 5. Build the image and put it on a revision
 
 **The first image goes on with the script, once** ("The first image" below). Everything in this section
 before it is for every image after the first.
 
 Run **Actions → Deploy to Azure → Run workflow** from the branch you want to ship, leaving
-"Send all traffic to the new revision" **off**. Until the workflow change from task 01a182b3-4fac is
-applied, use the hand-build block below and §8 by hand instead: the workflow on main neither sets
-`INV_STUDIO_RECOVER_JOBS=0` nor creates the `-live` revision. With that change, the run:
+"Send all traffic to the new revision" **off**. The run:
 
 1. pins traffic to the revision that is live now, so the new one starts with no traffic;
 2. builds the image inside ACR (`az acr build`) — the image is about 5.6 GB with the OCR models, far
@@ -740,11 +748,11 @@ curl -s "$APP_URL/health"
 az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$CANDIDATE"
 ```
 
-Until the workflow change from task 01a182b3-4fac is applied, go live by hand as above; do not use the
-workflow's traffic switch. With that change, running the workflow with **"Send all traffic to the new
-revision" on** does the same in one run:
-candidate, then the `-live` revision from the same digest, then the traffic. It builds and tests
-nothing by hand in between, so use it only for an image already tested as a candidate (`image_tag`).
+Running the workflow with **"Send all traffic to the new revision" on** does the same in one run:
+candidate, then the `-live` revision from the same digest, each checked on `/health`, then the traffic,
+then it stops the candidate; if the app's `/health` fails after the switch it moves the traffic back. It
+tests nothing by hand in between, so use it only for an image already tested as a candidate (`image_tag`).
+An automatic run (§4, `AZURE_AUTO_DEPLOY`) always does this.
 
 ## 9. Roll back
 

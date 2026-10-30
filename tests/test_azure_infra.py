@@ -469,3 +469,11 @@ def test_the_environment_turns_internal_on_one_flag():
     assert "clientSource = internalEnvironment ? 'VirtualNetwork' : 'Internet'" in (INFRA / "network.bicep").read_text()
     for name in ("appEnvironmentStaticIp", "appEnvironmentDefaultDomain"):
         assert name in declared_outputs(main)
+
+
+def test_the_dockerfiles_build_without_buildkit():
+    # az acr build (the deploy workflow) uses the classic builder, which has no heredocs or RUN --mount.
+    for name in ("Dockerfile", "Dockerfile.app-layer"):
+        text = (ROOT / name).read_text()
+        assert not re.search(r"<<-?\s*['\"]?\w+", text), f"{name} has a heredoc"
+        assert "--mount" not in text and "# syntax=" not in text, f"{name} needs BuildKit"

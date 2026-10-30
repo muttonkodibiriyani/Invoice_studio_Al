@@ -88,7 +88,8 @@ def test_the_repository_audit_list_covers_every_constraint_and_the_packaging_too
 def test_accepted_advisories_become_ignore_arguments():
     text = (ROOT / "security" / "accepted-advisories.txt").read_text()
     ids = audit.accepted_ids(text)
-    assert ids and all(re.fullmatch(r"(GHSA(-[0-9a-z]{4}){3}|CVE-\d{4}-\d+|PYSEC-\d{4}-\d+)", i) for i in ids)
+    # The list may be empty: filelock 4.2.1 retired the advisories M6 accepted.
+    assert all(re.fullmatch(r"(GHSA(-[0-9a-z]{4}){3}|CVE-\d{4}-\d+|PYSEC-\d{4}-\d+)", i) for i in ids)
 
 
 def test_the_scan_baselines_are_valid_and_record_only_known_debt():

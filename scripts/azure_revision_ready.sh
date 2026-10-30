@@ -10,6 +10,15 @@
 set -euo pipefail
 app=$1 rg=$2 revision=$3
 
+# The template sets port 8080 and the /health probes only once it has run with a real image. An app still
+# on the placeholder (port 80, no probes) never makes the real image healthy.
+port=$(az containerapp show -n "$app" -g "$rg" --query "properties.configuration.ingress.targetPort" -o tsv)
+if [ "$port" != "8080" ]; then
+  echo "The app's ingress port is ${port:-unset}, not 8080: it is still set up for the placeholder image." >&2
+  echo "Put the first real image on with scripts/azure_deploy.py --image (docs/AZURE.md section 5) first." >&2
+  exit 1
+fi
+
 state=Unknown
 for _ in $(seq 1 60); do
   state=$(az containerapp revision show -n "$app" -g "$rg" --revision "$revision" \

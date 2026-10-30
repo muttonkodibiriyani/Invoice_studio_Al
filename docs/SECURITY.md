@@ -75,8 +75,9 @@ Where this is weaker:
 - **The security approval pack** read the code again at `26c3d30` and added N1 to N5.
 - **This re-check** read the code behind every "fixed" below at `ccc881d` and confirmed that each merge commit is on
   `main`. `pip-audit` on `constraints.txt` reported no known vulnerabilities at `d4b2394`, apart from the three
-  accepted `filelock` advisories (`security/accepted-advisories.txt`); `constraints.txt` has not changed since. torch
-  and torchvision are not on PyPI, so it skips them.
+  accepted `filelock` advisories. filelock then had nine more; `constraints.txt` moved to filelock 4.2.1, which fixes
+  all twelve, and `pip-audit` on `constraints.txt` and the Dockerfile's pins reported none on 30 Oct. torch and
+  torchvision are not on PyPI under their `+cpu` versions; the audit checks the same releases without the suffix.
 - **The engine checks** (`tools/security/`, #91 `191455c`) ran on 28 Oct against the installed readers and added
   N6 to N8. The image changes for N6 to N8 were not built here (no Docker build on the review host): the first
   image build proves them, and the engine checks run inside it confirm them (G5).
@@ -94,7 +95,7 @@ Each finding shows its severity (**H** high, **M** medium, **L** low).
 | M3 | M | A test-only sign-in shortcut was blocked on Google Cloud but not on Azure. | **Fixed**: #51 `8568bfc` (`app/authentication.py:45-46`). |
 | M4 | M | Uploads were first opened inside the API process, and readers had no resource limits. | **Fixed**: #69 `9424b62`, #78 `f126a9e`. **Rest deferred** by the coordinator: PDF splitting and AI page drawing in the API process, readers as the same user. No task. |
 | M5 | M | A new version under test could take over invoices the live version was processing. | **Fixed**: #72 `c4d90d1`, #79 `7ec7f9e`, #82 `3878804`. The matching change to the deploy workflow is posted on task `01a182b3-4fac` and needs the workflow permission (G4). |
-| M6 | M | Other libraries had known vulnerabilities. | **Fixed**: #60 `78b44bb`. **Accepted** by the coordinator: three `filelock` advisories in code nothing here calls. |
+| M6 | M | Other libraries had known vulnerabilities. | **Fixed**: #60 `78b44bb`. The three `filelock` advisories the coordinator had accepted, and nine later ones, are fixed by filelock 4.2.1 in `constraints.txt`; none is accepted now. A full image build proves the install. |
 | M7 | M | CI runs no security checks and does not install the pinned versions. | **Open.** `ci.yml` is unchanged. A patch is on task `01a181f9-3b1e`. It needs someone with the GitHub workflow permission (G4). |
 | M8 | M | The ChatGPT login export was an unencrypted file. | **Fixed**: #66 `4b2c64f`. Sealed under a one-time passphrase, and audited. |
 | N1 | M | On Azure, a deleted invoice stayed in storage for ever as an old file version. | **Fixed in the template**: #70 `a943a66`. Confirm after the first deploy: G6. |
@@ -153,7 +154,7 @@ service.
 6. A web firewall or an IP allow-list in front of the app.
 7. Accept two exceptions to the security standard: sign-in tokens kept in browser storage (Firebase's own library
    does this), and roles kept in the app instead of the identity provider.
-8. Sign off the coordinator's accepted risks: L9, L13, the `filelock` advisories, and the rest of M4.
+8. Sign off the coordinator's accepted risks: L9, L13, and the rest of M4.
 9. Turn on branch protection, so `main` needs a passing review and passing checks.
 10. Check the live Google Cloud bucket for a rule that expires old file versions. Without one, deleted invoices stay
     for ever: the N1 problem on Google Cloud. Nobody in this work had access to check.

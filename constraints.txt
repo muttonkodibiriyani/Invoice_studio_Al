@@ -29,9 +29,9 @@ docling==2.143.1
 et_xmlfile==2.0.0
 Faker==40.40.0
 fastapi==0.142.2
-# filelock stays on 3.x: the PyTorch CPU index, the only index the torch install step reads, has no 4.x.
-# Its 3 advisories are accepted as unreachable in security/accepted-advisories.txt (security review M6).
-filelock==3.32.3
+# filelock 4.2.1 fixes the 3 advisories accepted in M6 and 9 later ones. The Dockerfile installs it from PyPI
+# before the torch step, so that step (CPU index only) finds it installed; the CPU index also carries 4.2.1.
+filelock==4.2.1
 filetype==1.2.0
 frozenlist==1.8.0
 fsspec==2026.7.0

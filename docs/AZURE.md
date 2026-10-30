@@ -267,7 +267,8 @@ echo "$APP_URL"
 ```
 
 With no image given, the app starts on Microsoft's hello-world image, which is only there to fix the
-hostname before the real image exists. `curl "$APP_URL"` answers with a welcome page.
+hostname before the real image exists. `curl "$APP_URL"` answers with a welcome page. The first real
+image goes on with the same script and `--image` (§5, "The first image").
 
 The hostname does not change when the image does, so the redirect URI owner can already add `$APP_URL/`
 to the app registration (§6, step 3).
@@ -385,6 +386,9 @@ Add required reviewers to the `azure` environment
 
 ## 5. Build the image and put it on a revision
 
+**The first image goes on with the script, once** ("The first image" below). Everything in this section
+before it is for every image after the first.
+
 Run **Actions → Deploy to Azure → Run workflow** from the branch you want to ship, leaving
 "Send all traffic to the new revision" **off**. Until the workflow change from task 01a182b3-4fac is
 applied, use the hand-build block below and §8 by hand instead: the workflow on main neither sets
@@ -414,8 +418,8 @@ any traffic.
 **Smoke test: sign in, and one write must succeed.** Sign-in only works on an address registered as a
 redirect URI, and a revision address is not one, so the token comes from the browser on `$APP_URL` and
 is then sent to the revision address: the API checks the token, not the page it came from. On the
-**first** deployment `$APP_URL` still serves the hello-world image, so the redirect URI owner adds
-`$REV_URL/` as a second SPA redirect URI for the test and removes it after §8. Sign in as someone in
+**first** deployment, test the revision the script put on with `REV_URL=$APP_URL`: it already has the
+traffic and `$APP_URL/` is already a redirect URI. Sign in as someone in
 `<ENTRA_GROUP_ADMIN>`. The write saves the AI settings back unchanged, so it alters nothing; it passes
 only if the token verifies against the tenant's keys and the database takes a write.
 
@@ -474,6 +478,44 @@ the per-account limits still hold, but the request log's `ip` cannot be trusted.
 The first start of a revision is slow: Container Apps has to pull 5.6 GB and the OCR readers warm up.
 The startup probe allows about seven minutes. If a revision never becomes healthy, read the logs
 (step 9) before assuming the image is wrong.
+
+**The first image: put the real app on with the script.** The first deploy left the app on the
+hello-world image, on port 80 and with no startup probe. `az containerapp update --image`, by hand or
+from the workflow, keeps that port and the missing probe, so the first real revision would never become
+healthy. The first real image therefore goes on through the template: `--image` runs `main.bicep` again
+with `containerImage` set, which gives the revision port 8080 and the `/health` startup probe. It asks
+for no secret. It reads the database URL and the vault key from the vault (do §3 first), passes the same
+admin password and vault key, and passes `writeSecrets` false, so the database password and every secret
+in the vault stay as they are. It runs the whole preflight and the what-if, and asks you to type DEPLOY.
+
+```bash
+TAG=$(git rev-parse --short HEAD)
+az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \
+  --image "inv-studio:$TAG" --timeout 14400 .
+SERVER=$(az acr show -n "$ACR" --query loginServer -o tsv)
+DIGEST=$(az acr repository show -n "$ACR" --image "inv-studio:$TAG" --query digest -o tsv)
+echo "$SERVER/inv-studio@$DIGEST"                                  # ends in @sha256: and 64 hex digits
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env --image "$SERVER/inv-studio@$DIGEST"
+az containerapp revision list -n "$APP" -g "$RG" -o table \
+  --query "[].{revision:name,health:properties.healthState,traffic:properties.trafficWeight}"
+curl -fsS "$APP_URL/health"                                        # 200 once the new revision is Healthy
+```
+
+The script stops, with nothing changed, when the image is not named by digest or is not in this
+group's registry, when it cannot read the two secrets (§3 is not done), or when the database URL no
+longer logs in as the admin: §5a is done, so the real app is already on.
+
+On the first deployment nothing is live yet and no invoice is in flight, so the template's revision
+takes the traffic as soon as it is healthy and needs no candidate step. It does not set
+`INV_STUDIO_RECOVER_JOBS=0`, so it is already what §8 would make from a candidate. Run the smoke test
+above on it, with `REV_URL=$APP_URL`, then §5a, then go live by §8's checks: no `-live` revision is
+needed for this one image.
+
+**From then on the workflow deploys.** Every later image goes on through **Actions → Deploy to Azure**
+(or the hand-build block below) as a candidate, then §8. `az containerapp update --image` keeps the port
+and the probe the template set. Do not run the template again on the running app (`azure_deploy.py`
+without `--image`, `--rerun`, or §2 by hand): with no image it puts the hello-world image back, and with
+`writeSecrets` true it writes the vault secrets again.
 
 To build by hand instead of through the workflow:
 

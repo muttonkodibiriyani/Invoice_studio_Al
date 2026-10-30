@@ -19,6 +19,11 @@ USER_ID = "33333333-3333-3333-3333-333333333333"
 RG = "rg-test"
 SCOPE = f"/subscriptions/{SUB}/resourceGroups/{RG}"
 FERNET = "A" * 43 + "="
+ACR = "invstudioacrabc.azurecr.io"
+IMAGE = f"{ACR}/inv-studio@sha256:{'a' * 64}"
+ADMIN_PASSWORD = "admin-pa ss/word%1"
+ADMIN_URL = ("postgresql://invstudio:admin-pa%20ss%2Fword%251@db.postgres.database.azure.com:5432/invstudio"
+             "?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt")
 
 
 def load_script():
@@ -59,12 +64,16 @@ class FakeAz:
         params = bicep_parameters()
         self.calls = []
         self.params_seen = None
+        self.secrets = {"inv-studio-database-url": ADMIN_URL, "inv-studio-vault-key": FERNET}
         self.answers = {
             "bicep build": {"parameters": params},
             "account show": {"id": SUB, "tenantId": TENANT},
             "ad signed-in-user show": {"id": USER_ID, "userPrincipalName": "Tarkesh@example.com"},
             "group show": {"id": SCOPE, "location": "uaenorth"},
             "resource list": [],
+            "acr list": [ACR],
+            "keyvault list": ["v"],
+            "keyvault secret show": lambda args: self.secrets[args[args.index("-n") + 1]],
             "role assignment list": [
                 {"roleDefinitionId": f"/providers/x/roleDefinitions/{deploy.CONTRIBUTOR}", "condition": None},
                 {"roleDefinitionId": f"/providers/x/roleDefinitions/{deploy.RBAC_ADMIN}",
@@ -150,9 +159,26 @@ def test_every_kit_mapping_names_a_kit_line():
 
 def test_mapped_parameters_that_exist_today_are_in_main_bicep():
     declared = bicep_parameters()
-    for name in ("location", "namePrefix", "tags", "networkAddressPrefix", "foundryEndpoint",
-                 "foundryDeployment", "logRetentionInDays", "extraAllowedOrigins"):
+    for name in ("location", "namePrefix", "tags", "networkAddressPrefix", "logRetentionInDays",
+                 "extraAllowedOrigins"):
         assert name in declared
+
+
+def test_release_one_is_ai_off():
+    # Citadel's endpoint and deployment are record only: a filled endpoint would report Foundry connected on
+    # the placeholder key. Only these kit lines are mapped.
+    assert "CITADEL_ENDPOINT" in deploy.KIT_KEYS and "CITADEL_DEPLOYMENT" in deploy.KIT_KEYS
+    mapped = {name for name, _ in deploy.PARAMS.values()}
+    assert not mapped & {"foundryEndpoint", "foundryDeployment", "foundryApiKey"}
+    assert len(deploy.PARAMS) == 17
+    kit = KIT_EXAMPLE.read_text()
+    for key in ("CITADEL_ENDPOINT", "CITADEL_DEPLOYMENT"):
+        assert re.search(rf"^{key}=<{key}>\s+# H7  record only", kit, re.M)
+
+
+def test_admin_login_is_main_bicep_default():
+    text = (ROOT / "infra" / "azure" / "main.bicep").read_text()
+    assert f"param postgresAdminLogin string = '{deploy.ADMIN_LOGIN}'" in text
 
 
 def test_refuses_the_untouched_example_kit(tmp_path, capsys):
@@ -191,6 +217,9 @@ def _no_access(*args):
     ("group show", deploy.AzError("ResourceGroupNotFound"), f"resource group {RG} does not exist"),
     ("group show", {"id": SCOPE, "location": "westeurope"}, "not AZ_REGION"),
     ("resource list", [{"name": "leftover"}], "is not empty"),
+    ("resource list", [{"name": "kv", "type": "Microsoft.KeyVault/vaults"},
+                       {"name": "invstudio-api", "type": "Microsoft.App/containerApps"}],
+     "already holds the app invstudio-api"),
     ("role assignment list", [], "do not have Contributor"),
     ("role assignment list",
      [{"roleDefinitionId": f"/x/{deploy.CONTRIBUTOR}", "condition": None}], "cannot create role assignments"),
@@ -323,3 +352,88 @@ def test_secrets_are_checked_before_use(monkeypatch):
     monkeypatch.setattr(deploy.getpass, "getpass", lambda prompt: next(answers))
     with pytest.raises(deploy.Stop, match="not a Fernet key"):
         deploy.ask_secrets()
+
+
+def test_ordinary_mode_points_at_image_and_rerun_when_the_app_exists(tmp_path, capsys):
+    az = FakeAz()
+    az.answers["resource list"] = [{"name": "invstudio-api", "type": "Microsoft.App/containerApps"}]
+    assert run(tmp_path, az) == 1
+    err = stop_reason(capsys)
+    assert "--image" in err and "--rerun" in err
+    assert not az.created()
+
+
+# --image: the real app on the template's port and probe, with the secrets already in the vault
+
+def test_image_reads_the_secrets_and_changes_none(tmp_path, capsys):
+    az = FakeAz()
+    assert deploy.main(["--kit", str(filled_kit(tmp_path)), "--image", IMAGE], run=az,
+                       ask=lambda: pytest.fail("--image must not ask for secrets"),
+                       confirm=lambda prompt: "DEPLOY") == 0
+    assert az.created()
+    p = {k: v["value"] for k, v in az.params_seen.items()}
+    assert p["containerImage"] == IMAGE
+    assert p["writeSecrets"] is False
+    assert p["postgresAdminPassword"] == ADMIN_PASSWORD and p["vaultKey"] == FERNET
+    assert "foundryApiKey" not in p and "foundryEndpoint" not in p
+    reads = [c for c in az.calls if c[:3] == ("keyvault", "secret", "show")]
+    assert {c[c.index("-n") + 1] for c in reads} == {"inv-studio-database-url", "inv-studio-vault-key"}
+    assert all(c[c.index("--vault-name") + 1] == "v" for c in reads)
+    assert not any(c[:3] == ("keyvault", "secret", "set") for c in az.calls)
+    assert not any(c[:2] == ("resource", "list") for c in az.calls)  # no "empty" check
+    # The whole preflight and the policy what-if still ran.
+    for command in (("role",), ("provider",), ("rest",), ("deployment", "group", "validate"),
+                    ("deployment", "group", "what-if")):
+        assert any(c[:len(command)] == command for c in az.calls)
+    out = capsys.readouterr()
+    for secret in (ADMIN_PASSWORD, "admin-pa%20ss", FERNET):
+        assert secret not in out.out + out.err
+    assert "do not run this script again" in out.out
+
+
+def test_image_takes_the_vault_name_from_the_saved_outputs(tmp_path):
+    deploy.STATE.mkdir()
+    (deploy.STATE / "outputs.json").write_text(json.dumps({"vaultName": {"value": "saved-vault"}}))
+    az = FakeAz()
+    assert run(tmp_path, az, "--image", IMAGE) == 0
+    reads = [c for c in az.calls if c[:3] == ("keyvault", "secret", "show")]
+    assert reads and all(c[c.index("--vault-name") + 1] == "saved-vault" for c in reads)
+    assert not any(c[:2] == ("keyvault", "list") for c in az.calls)
+
+
+def test_image_still_needs_the_word_deploy(tmp_path, capsys):
+    az = FakeAz()
+    assert run(tmp_path, az, "--image", IMAGE, confirm="yes") == 1
+    assert "not confirmed" in stop_reason(capsys)
+    assert not az.created()
+
+
+def _unreadable(args):
+    raise deploy.AzError("ERROR: (Forbidden) Caller is not authorized to perform action")
+
+
+@pytest.mark.parametrize("image, change, reason", [
+    (f"{ACR}/inv-studio:abc1234", None, "is not <acr login server>/inv-studio@sha256"),
+    (f"{ACR}/inv-studio@sha256:{'a' * 63}", None, "is not <acr login server>/inv-studio@sha256"),
+    (f"other.azurecr.io/inv-studio@sha256:{'a' * 64}", None, "not in the registry of resource group"),
+    (IMAGE, ("secrets", "inv-studio-database-url",
+             ADMIN_URL.replace("invstudio:admin-pa%20ss%2Fword%251", "invstudio_app:x")),
+     "logs in as invstudio_app, not the admin"),
+    (IMAGE, ("answers", "keyvault secret show", _unreadable), "AZURE.md §3"),
+    (IMAGE, ("answers", "keyvault list", []), "found 0 Key Vaults"),
+    (IMAGE, ("secrets", "inv-studio-vault-key", "not-a-key"), "is not a Fernet key"),
+])
+def test_image_refusals_stop_before_any_create(tmp_path, capsys, image, change, reason):
+    az = FakeAz()
+    if change:
+        getattr(az, change[0])[change[1]] = change[2]
+    assert run(tmp_path, az, "--image", image) == 1
+    err = stop_reason(capsys)
+    assert reason in err and err.count("STOP:") == 1
+    assert not az.created()
+    assert not any(c[:3] == ("deployment", "group", "validate") for c in az.calls)
+
+
+def test_image_and_rerun_do_not_mix(tmp_path):
+    with pytest.raises(SystemExit):
+        run(tmp_path, FakeAz(), "--rerun", "--image", IMAGE)

@@ -447,6 +447,61 @@ def test_blob_and_registry_access_is_audited():
         assert f"category: '{category}'" in registry
 
 
+def test_the_spoke_range_comes_from_ipam_and_is_never_guessed():
+    # Access request H1: the /24 is the platform's IPAM answer. A default would be a guessed range that can
+    # overlap the hub, so the parameter is required and the example file carries the placeholder.
+    main = (INFRA / "main.bicep").read_text()
+    assert declared_params(main).get("networkAddressPrefix") is False
+    assert "<SPOKE_VNET_CIDR>" in main
+    assert '"networkAddressPrefix": { "value": "<SPOKE_VNET_CIDR>" }' in (INFRA / "main.parameters.example.json").read_text()
+    network = (INFRA / "network.bicep").read_text()
+    assert declared_params(network).get("addressPrefix") is False
+    assert not re.search(r"\b10\.\d+\.\d+\.\d+/\d+", main + network), "no address range is written into the template"
+
+
+def test_hub_peering_and_dns_are_optional_and_passed_through():
+    main = (INFRA / "main.bicep").read_text()
+    params = declared_params(main)
+    assert params.get("hubVnetId") is True and params.get("dnsServers") is True
+    assert re.search(r"^param hubVnetId string = ''$", main, re.MULTILINE)
+    assert re.search(r"^param dnsServers array = \[\]$", main, re.MULTILINE)
+    network = (INFRA / "network.bicep").read_text()
+    assert "virtualNetworkPeerings@" in network and "= if (!empty(hubVnetId))" in network
+    assert "useRemoteGateways: false" in network and "allowForwardedTraffic: true" in network
+    assert re.search(r"dhcpOptions: empty\(dnsServers\) \? null : \{\s+dnsServers: dnsServers", network)
+    for name in ("vnetName", "vnetId", "appsSubnetId", "endpointsSubnetId", "hubPeeringName"):
+        assert name in declared_outputs(main), f"main.bicep should output {name}"
+
+
+def test_both_subnets_have_an_nsg_that_denies_other_inbound():
+    network = (INFRA / "network.bicep").read_text()
+    for subnet in ("apps", "endpoints"):
+        block = network.split(f"name: '{subnet}'", 1)[1].split("\n      }\n", 1)[0]
+        assert f"id: {subnet}Nsg.id" in block, f"the {subnet} subnet has no NSG"
+        nsg = network.split(f"resource {subnet}Nsg ", 1)[1].split("\n}\n", 1)[0]
+        assert re.search(r"name: 'deny-all-other-inbound'\s+properties: \{\s+priority: 4096\s+direction: 'Inbound'\s+"
+                         r"access: 'Deny'", nsg), f"the {subnet} NSG must end in a deny-all inbound rule"
+    # A workload-profiles environment needs a delegated /27 or larger; private endpoints obey the NSG.
+    assert "var appsPrefix = cidrSubnet(addressPrefix, 27, 0)" in network
+    assert "privateEndpointNetworkPolicies: 'NetworkSecurityGroupEnabled'" in network
+    assert "'AzureLoadBalancer'" in network and "'30000-32767'" in network
+    assert "destinationPortRange: '5432'" in network
+
+
+def test_the_environment_turns_internal_on_one_flag():
+    main = (INFRA / "main.bicep").read_text()
+    assert re.search(r"^param internalEnvironment bool = false$", main, re.MULTILINE), \
+        "false keeps the public first deploy; the target redeploy sets true"
+    app = (INFRA / "containerapp.bicep").read_text()
+    assert "internal: internalEnvironment" in app
+    # In an internal environment, external ingress means reachable from the virtual network only. false
+    # would hide the app from the hub entry point and change its host name.
+    assert re.search(r"ingress: \{(?:\s+//[^\n]*)*\s+external: true", app)
+    assert "clientSource = internalEnvironment ? 'VirtualNetwork' : 'Internet'" in (INFRA / "network.bicep").read_text()
+    for name in ("appEnvironmentStaticIp", "appEnvironmentDefaultDomain"):
+        assert name in declared_outputs(main)
+
+
 def test_the_dockerfiles_build_without_buildkit():
     # az acr build (the deploy workflow) uses the classic builder, which has no heredocs or RUN --mount.
     for name in ("Dockerfile", "Dockerfile.app-layer"):

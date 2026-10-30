@@ -37,7 +37,7 @@ to busy; the next table shows how they add up.
 |---|---|---|---|---|
 | Container app and its environment | Runs the app: the web page, the API and the invoice readers. Cloud Run on Google | Required | 4 vCPU, 8 GiB, one copy, always on | US$93–310 |
 | PostgreSQL Flexible Server 16 | Keeps users, invoices, extracted data and the Excel workbooks. Cloud SQL on Google | Required | Standard_B2s (2 vCores, 4 GiB), 32 GB disk, 14 days of backups | US$62 |
-| Private network, private endpoint, private DNS zone | Lets the app reach the database while the database has no internet address | Required | `10.40.0.0/24`, two subnets, one endpoint | US$8 |
+| Private network, private endpoint, private DNS zone | Lets the app reach the database while the database has no internet address | Required | the IPAM /24, two subnets with NSGs, one endpoint | US$8 |
 | Blob Storage | Keeps the uploaded invoice files, supplier templates and learned files. Cloud Storage on Google | Required | Standard LRS, Hot, container `evidence` | US$0–3 |
 | Container Registry | Holds the app image (about 5.6 GB) and builds it | Required | Basic | US$5–8 |
 | Key Vault | Keeps the three secrets: database login, the key that encrypts stored AI credentials, the Foundry key | Required | Standard | under US$1 |
@@ -230,8 +230,12 @@ None of these is a credential, and none decides who gets in: that is the app rol
 (§6). The group *names* are display text; the groups' object ids are used only in Entra, when the roles
 are granted, and are not a deploy setting.
 
-`networkAddressPrefix` (default `10.40.0.0/24`) is the private network's address space; change it only
-if it would overlap a network this one is peered with later.
+`networkAddressPrefix` has no default: it is the /24 the platform's IPAM assigns (`<SPOKE_VNET_CIDR>`),
+so it cannot overlap the hub. The app subnet takes its first /27, the private endpoints its second.
+`hubVnetId` (`<HUB_VNET_ID>`) creates the spoke side of the hub peering; empty creates none.
+`dnsServers` (`["<HUB_DNS_IP>"]`) points the network at the hub's DNS; empty keeps Azure DNS.
+`internalEnvironment` is `false` for the first, public deploy; the target redeploy sets `true`, which
+takes the app's public address away and replaces the environment (it cannot change in place).
 
 The database has no public endpoint, so `psql` from a laptop does not reach it. Run database commands
 from inside the app container (`az containerapp exec -n "$APP" -g "$RG" --command bash`; the image has

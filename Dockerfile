@@ -4,6 +4,9 @@
 # is the single clean build that reproduces the same /opt/inv-studio tree and the same installed packages.
 # The base is pinned by digest (the multi-arch index, read from the Docker Hub registry API on 2026-10-30), so a
 # re-pushed tag cannot change the build. To move it: read the new index digest of the tag and replace both parts.
+# Approved base image: <APPROVED_BASE_IMAGE>@<APPROVED_BASE_IMAGE_DIGEST>. The platform has not named it yet;
+# until it does, the upstream image below is used. CI refuses an unpinned FROM (tools/security/check_base_image.py)
+# and scans this base for fixed HIGH/CRITICAL OS vulnerabilities (docs/CI_SECURITY.md).
 # 3.12.16 (built 2026-10-28): trivy 0.76.1 found no fixable HIGH/CRITICAL OS findings in it on 2026-10-30;
 # 3.12.12 (sha256:593bd06e...) had 39.
 FROM python:3.12.16-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337

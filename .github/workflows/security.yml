@@ -1,0 +1,140 @@
+# Security scans: SAST, dependency audit, secret scan, IaC scan and container scan. Each job fails on a
+# finding, and branch protection makes the job names required checks, so a finding blocks the merge.
+# What each job does, its baseline, and how to prove it blocks: docs/CI_SECURITY.md.
+#
+# Actions are pinned by commit SHA; downloaded tools by version and SHA-256; Python tools by version.
+# No secrets, no cloud sign-in: the token can only read the repository.
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.12.13"
+  BANDIT_VERSION: "1.9.4"
+  PIP_AUDIT_VERSION: "2.10.1"
+  CHECKOV_VERSION: "3.4.0"
+  BICEP_VERSION: "v0.48.1"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0"
+
+jobs:
+  sast:
+    name: sast
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: bandit (new findings beyond security/bandit-baseline.json fail)
+        run: uvx --from "bandit==${BANDIT_VERSION}" bandit -r app scripts tools -ll -ii -b security/bandit-baseline.json
+
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: List every pinned package (constraints.txt and the Dockerfile's own pins)
+        run: python3 -I tools/security/audit_requirements.py --out build/audit-requirements.txt
+      - name: pip-audit (advisories not in security/accepted-advisories.txt fail)
+        run: |
+          read -r -a ignore <<< "$(python3 -I tools/security/audit_requirements.py --ignore-args)"
+          uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit -r build/audit-requirements.txt \
+            --no-deps --disable-pip --progress-spinner off "${ignore[@]}"
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: gitleaks over the whole history (matches not in .gitleaksignore fail)
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --verbose .
+
+  iac-scan:
+    name: iac-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      # checkov's own Bicep parser cannot read network.bicep, so scan the compiled template (every module).
+      - name: Compile main.bicep to ARM
+        run: |
+          az bicep install --version "$BICEP_VERSION"
+          mkdir -p build/arm
+          az bicep build --file infra/azure/main.bicep --outfile build/arm/main.json
+      - name: checkov (failed checks not in security/checkov-baseline.json fail)
+        run: |
+          uvx --from "checkov==${CHECKOV_VERSION}" checkov -d build/arm --framework arm --quiet --compact \
+            --baseline security/checkov-baseline.json
+
+  container-scan:
+    name: container-scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Every base image is pinned by digest
+        run: python3 -I tools/security/check_base_image.py
+      - name: Install trivy
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+      # The built image (about 5.6 GB) is too large for a hosted runner and is built in ACR; its Python packages
+      # are covered by dependency-audit. The built-image scan moves to the in-network runner (docs/CI_SECURITY.md).
+      - name: trivy on the pinned base image (fixable HIGH/CRITICAL OS findings fail)
+        run: |
+          mapfile -t images < <(python3 -I tools/security/check_base_image.py --print-images | sort -u)
+          test "${#images[@]}" -gt 0
+          status=0
+          for image in "${images[@]}"; do
+            "$RUNNER_TEMP/trivy" image --scanners vuln --pkg-types os --ignore-unfixed \
+              --severity HIGH,CRITICAL --exit-code 1 --platform linux/amd64 "$image" || status=1
+          done
+          exit "$status"
+      - name: trivy on the Dockerfiles (HIGH/CRITICAL misconfigurations fail)
+        run: |
+          "$RUNNER_TEMP/trivy" config --misconfig-scanners dockerfile --severity HIGH,CRITICAL --exit-code 1 .

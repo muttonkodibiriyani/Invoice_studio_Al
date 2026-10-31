@@ -231,12 +231,13 @@ def _exact_header_role(header: Any) -> str | None:
             "item", "itemref", "itemreference", "itemno", "productreference", "productcode",
             "itemcode", "itemnumber", "articlecode", "articleno", "sku", "article",
         },
-        "qty": {"qty", "quantity", "qtyinpce", "qtypce"},
+        # A scan reads the Q of "Qty" as a.
+        "qty": {"qty", "aty", "quantity", "qtyinpce", "qtypce"},
         "uom": {"uom", "unit", "units", "unitofmeasure", "measureunit"},
         "price": {"price", "sellingprice", "unitprice", "priceperunit"},
         "net_amount": {
             "amount", "taxablevalue", "netamount", "netvalue", "lineamount", "totalprice",
-            "subtotal",
+            "subtotal", "valueexctax", "valueexcltax", "amountexctax", "amountexcltax",
         },
         "tax_rate": {"taxrate", "vatrate", "taxpercent"},
         "tax_amount": {"taxamount", "vatamount", "taxamt", "vatamt", "taxvalue", "vatvalue"},
@@ -483,6 +484,87 @@ def _unnamed_headings(
     return headings
 
 
+def _stacked_heading(row, below):
+    """A heading printed on two lines ("Unit" over "Price"), joined column by column.
+
+    `below` must hold only heading words, each under a word of `row` and just beneath it.
+    """
+    if not row or not below:
+        return None
+    height = median(float(w["box"][3]) - float(w["box"][1]) for w in row)
+    if any(re.search(r"\d", str(w["text"])) for w in below):
+        return None
+    words = [dict(w, box=list(w["box"]), bottom=w["box"][3]) for w in sorted(row, key=lambda w: float(w["box"][0]))]
+    for word in sorted(below, key=lambda w: float(w["box"][0])):
+        centre = (float(word["box"][0]) + float(word["box"][2])) / 2
+        spans = [(abs(centre - (float(w["box"][0]) + float(w["box"][2])) / 2), w) for w in words
+                 if float(w["box"][0]) - height <= centre <= float(w["box"][2]) + height]
+        if not spans:
+            return None
+        top = min(spans, key=lambda item: item[0])[1]
+        # Just beneath that word (a tilted scan moves each column by a different amount).
+        if not -height / 2 <= float(word["box"][1]) - float(top["bottom"]) <= height:
+            return None
+        top["text"] = f"{top['text']} {str(word['text']).strip()}"
+        top["box"] = [min(top["box"][0], word["box"][0]), top["box"][1],
+                      max(top["box"][2], word["box"][2]), max(top["box"][3], word["box"][3])]
+        top.pop("parent_text", None)
+    for word in words:
+        del word["bottom"]
+    return words
+
+
+def _split_heading(first, second):
+    """The words of `first` over a word of `second`, and `second` with the rest of `first`."""
+    if not first or not second:
+        return None
+    height = median(float(w["box"][3]) - float(w["box"][1]) for w in second)
+    if min(float(w["box"][1]) for w in second) - max(float(w["box"][3]) for w in first) > height:
+        return None
+
+    def over(word):
+        centre = (float(word["box"][0]) + float(word["box"][2])) / 2
+        return any(float(w["box"][0]) <= centre <= float(w["box"][2]) for w in second)
+
+    above = [w for w in first if over(w)]
+    moved = [w for w in first if not over(w)]
+    if (not above or not moved or any(_normalized(w["text"]) not in {"vat", "tax"} for w in above)
+            or any(_role(w["text"]) is None for w in moved)):
+        return None
+    heading = sorted([*second, *moved], key=lambda w: float(w["box"][0]))
+    return above, heading
+
+
+def _amount_heading_roles(above, row, roles):
+    """Name the amount columns of a heading whose "VAT" is printed over its "Amount".
+
+    A "VAT" or "Tax" printed alone just above an amount heading makes it the VAT amount
+    ("VAT" over "Amount"). Beside a VAT amount, a bare "Amount" heading is the line amount.
+    """
+    roles = list(roles)
+    if not row or not any(role[0] in {"description", "qty", "price"} for role in roles):
+        return roles
+    height = median(float(w["box"][3]) - float(w["box"][1]) for w in row)
+    top = min(float(w["box"][1]) for w in row)
+    if above and len(above) <= 3 and all(-height / 2 <= top - float(w["box"][3]) <= height for w in above):
+        for word in above:
+            if _normalized(word["text"]) not in {"vat", "tax"}:
+                continue
+            centre = (float(word["box"][0]) + float(word["box"][2])) / 2
+            for column, (role, left, right) in enumerate(roles):
+                if left <= centre <= right and _role(role[1:] if role.startswith("_") else role) in {
+                        "net_amount", "other_amount", None} and _normalized(role.lstrip("_")) in {
+                        "amount", "net amount", "net_amount"}:
+                    roles[column] = ("tax_amount", left, right)
+    named = {role for role, _left, _right in roles}
+    bare = [column for column, (role, _left, _right) in enumerate(roles)
+            if role.startswith("_") and _normalized(role[1:]) == "amount"]
+    if "tax_amount" in named and "net_amount" not in named and len(bare) == 1:
+        _role_name, left, right = roles[bare[0]]
+        roles[bare[0]] = ("net_amount", left, right)
+    return roles
+
+
 def _column_bounds(roles: list[tuple[str, float, float]]) -> list[float]:
     boundaries = []
     for left, right in zip(roles, roles[1:]):
@@ -579,6 +661,22 @@ def _mapped_row(row, roles, bounds, expected_serial=None):
         if number is not None and unit and float(units[0]["box"][0]) - float(cell[-1]["box"][2]) <= height:
             values[column] = _printed_cell(cell[:-1])
             values[column + 1] = f"{str(cell[-1]['text']).strip()} {values[column + 1]}"
+    # OCR can read a VAT amount and the line amount beside it as one word ("8.40168.00AED").
+    # Two figures of two decimals each, the first under the empty VAT amount heading, are both.
+    for column in range(len(roles) - 1):
+        if roles[column][0] != "tax_amount" or roles[column + 1][0] != "net_amount":
+            continue
+        # Or the line amount's thousands digits and comma end the VAT cell: "37.611 ," "752.25AED".
+        split = re.fullmatch(r"(\d[\d,]*\.\d{2})\s*(\d{1,3})\s*,", values[column] or "")
+        if split and re.fullmatch(r"\d{3}\.\d{2}\s*(?:[A-Za-z]{2,3})?", values[column + 1] or ""):
+            values[column] = split.group(1)
+            values[column + 1] = f"{split.group(2)},{values[column + 1]}"
+        if values[column]:
+            continue
+        glued = re.fullmatch(r"(\d[\d,]*\.\d{2})(\d[\d,]*\.\d{2})\s*([A-Za-z]{2,3})?", values[column + 1] or "")
+        if glued:
+            values[column] = glued.group(1)
+            values[column + 1] = glued.group(2) + (glued.group(3) or "")
     for column, role in enumerate(roles):
         if role[0] == "description" and values[column]:
             # OCR reads a printed size's 0 as O and l as I ("3OML", "10mI").
@@ -655,7 +753,21 @@ def _tables_from_measured_words(boxes: list[dict[str, Any]]) -> list[dict[str, A
         index = 0
         typical = median(max(1.0, w["box"][3] - w["box"][1]) for w in page_words) if page_words else 6.0
         while index < len(rows):
-            roles = previous["roles"] if inherited else _header_roles(rows[index])
+            roles = previous["roles"] if inherited else _amount_heading_roles(
+                rows[index - 1] if index else [], rows[index], _header_roles(rows[index]),
+            )
+            if not inherited and not required.issubset({r[0] for r in roles}) and index + 1 < len(rows):
+                # A skewed scan can put one heading word ("Description") on the row of a word
+                # printed over the heading ("VAT" over "Amount"): rejoin that heading.
+                split = _split_heading(rows[index], rows[index + 1])
+                stacked = _stacked_heading(rows[index], rows[index + 1])
+                for above, heading in ([split] if split else []) + ([([], stacked)] if stacked else []):
+                    joined = _amount_heading_roles(above, heading, _header_roles(heading))
+                    if required.issubset({r[0] for r in joined}):
+                        roles = joined
+                        rows[index + 1] = heading
+                        index += 1
+                        break
             if not required.issubset({r[0] for r in roles}):
                 index += 1
                 continue
@@ -747,7 +859,8 @@ def _decimal(value: Any) -> str | None:
     if negative:
         text = text[1:-1].strip()
     text = re.sub(r"^(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)\s+", "", text)
-    text = re.sub(r"\s+(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)$", "", text)
+    # A code after the figure may be glued to it and in any case: "212.75AED", "0.00aed".
+    text = re.sub(r"(?<=\d)\s*(?i:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)$", "", text)
     # OCR may split a thousands separator into its own token: "1 , 105.31".
     text = re.sub(r"(?<=\d)\s*,\s*(?=\d{3}(?:\D|$))", ",", text)
     # OCR may read a thousands comma as a point: "1.234.56" has no other reading than 1234.56.
@@ -872,6 +985,11 @@ def _description_facts(text: str) -> tuple[str | None, str | None]:
     """Separate explicit row metadata from the wrapped product name."""
     description = []
     skus = set()
+    # A bracketed code that opens the item text is the item code: "[300123456789T] Sample".
+    bracketed = re.match(r"\s*\[\s*([A-Za-z0-9][A-Za-z0-9./_-]{2,39})\s*\]\s*", text)
+    if bracketed:
+        skus.add(bracketed.group(1))
+        text = text[bracketed.end():]
     # Docling may flatten a cell's visual line breaks. Explicit metadata
     # labels still delimit values; they are not part of the product name.
     parts = re.split(r"\n|(?=\b(?:SKU|COO|country of origin|HS\s*code)\s*:)", text, flags=re.I)
@@ -1310,6 +1428,13 @@ def extract_invoice_from_tables(
             if unit and not values.get("uom"):
                 values["uom"] = unit
             if values.get("description"):
+                opening = re.match(r"\s*(\d{8}|\d{12,14})(?!\d)\s*", values["description"])
+                if opening and not values.get("gtin") and classify_barcode(opening.group(1))[0]:
+                    # A barcode read into the item text, often glued to it: "<GTIN>Hand Soap".
+                    values["gtin"] = classify_barcode(opening.group(1))[0]
+                    values["description"] = values["description"][opening.end():]
+                # A stray mark of the column rule can open the text: "/ Hand Soap".
+                values["description"] = re.sub(r"^[\s/|\\]+(?=[A-Za-z])", "", values["description"])
                 description, printed_sku = _description_facts(values["description"])
                 if description:
                     values["description"] = description
@@ -1320,6 +1445,10 @@ def extract_invoice_from_tables(
                         values.pop("sku", None)
                     else:
                         values["sku"] = printed_sku
+                    gtin, _unchecked, _reason = classify_barcode(printed_sku)
+                    if gtin and not values.get("gtin"):
+                        # An all-digit code that passes the GS1 check is also the barcode.
+                        values["gtin"] = gtin
             if part_code and not re.fullmatch(r"(?:\d{8}|\d{12,14})", part_code):
                 # Kept even when the description's printed code already set sku.
                 values["part_code"] = part_code

@@ -21,6 +21,7 @@ import pytest
 
 from app import vertex
 from app.docling_extract import (
+    _decimal,
     _header_roles,
     _resolve_printed_amount_column,
     _semantic_row_roles,
@@ -484,6 +485,73 @@ def test_a_unit_heading_is_the_unit_column_and_the_unit_of_unit_price_is_not():
         ("VAT", 494, 510), ("PRICE", 514, 540), (")", 542, 544),
     ])]))]
     assert "uom" not in bracketed and "price" in bracketed
+
+
+def test_a_bracketed_code_that_opens_the_item_text_is_the_item_code():
+    """"[3001234567892] Sample": the code is the sku, and a code passing the GS1 check the barcode too."""
+    invoice = extract_invoice_from_tables("", [], boxes=_measured_table(
+        [("Description", 100, 180), ("Qty", 470, 495), ("Unit Price", 560, 620), ("Amount", 680, 730)],
+        [[("[3001234567892] Sample body mist", 100, 380), ("2", 485, 495), ("40.00", 585, 620), ("80.00", 690, 730)],
+         [("[ZX-1042] Gift bag", 100, 300), ("1", 485, 495), ("5.00", 590, 620), ("5.00", 700, 730)]],
+    ))
+    first, second = invoice["lines"]
+    assert (first["sku"], first["gtin"], first["description"]) == ("3001234567892", "3001234567892", "Sample body mist")
+    assert (second["sku"], second.get("gtin"), second["description"]) == ("ZX-1042", None, "Gift bag")
+
+
+def test_a_barcode_read_into_the_item_text_is_the_barcode():
+    """The barcode column is empty and the code is glued to the name: the code is the barcode."""
+    invoice = extract_invoice_from_tables("", [], boxes=_measured_table(
+        [("Barcode", 100, 160), ("Description", 220, 300), ("Qty", 600, 625), ("Unit Price", 660, 720),
+         ("Amount", 780, 830)],
+        [[("6291000000013Body oil", 120, 400), ("3", 615, 625), ("10.00", 685, 720), ("30.00", 795, 830)],
+         [("6291000000020", 100, 200), ("/ Face balm", 220, 330), ("1", 615, 625), ("8.00", 690, 720),
+          ("8.00", 800, 830)]],
+    ))
+    assert [(line["gtin"], line["description"]) for line in invoice["lines"]] == [
+        ("6291000000013", "Body oil"), ("6291000000020", "Face balm")]
+
+
+def test_a_heading_printed_on_two_lines_on_a_tilted_scan_is_joined_column_by_column():
+    """"Unit" over "Price", "Value" over "Exc. Tax", "VAT" over "%" and "Amount", with the scan off square."""
+    header = [(300, [("Barcode", 100, 150), ("Description", 220, 295), ("Qty", 610, 630), ("Unit", 700, 725),
+                     ("Value", 800, 835), ("VAT", 880, 900), ("VAT", 960, 980), ("Total", 1050, 1080)]),
+              (316, [("Price", 700, 728), ("Exc.", 790, 815), ("Tax", 820, 840), ("%", 888, 892),
+                     ("Amount", 950, 1000), ("Amount", 1040, 1090)])]
+    item = [(345, [("6291000000013", 100, 200), ("Body", 220, 250), ("oil", 254, 270), ("6", 620, 630),
+                   ("10.00", 695, 728), ("60.00", 800, 835), ("5", 885, 892), ("3.00", 970, 1000),
+                   ("63.00", 1055, 1090)])]
+    invoice = extract_invoice_from_tables("", [], boxes=_tilt(_words(header + item, height=18), -0.012))
+    line, = invoice["lines"]
+    assert (line["gtin"], line["description"], line["qty"], line["price"], line["net_amount"], line["tax_amount"]) == (
+        "6291000000013", "Body oil", "6", "10.00", "60.00", "3.00")
+
+
+def test_a_vat_word_over_an_amount_heading_names_the_tax_column_and_glued_figures_are_split():
+    """"VAT" printed over one of two "Amount" headings; OCR reads the VAT and the line amount as one word."""
+    words = _words([
+        (284, [("VAT", 640, 662)]),
+        (300, [("Description", 100, 180), ("Qty", 400, 420), ("Price", 480, 515), ("Amount", 625, 680),
+               ("Amount", 740, 795)]),
+        (330, [("Hand cream", 100, 180), ("8", 410, 420), ("21.00", 480, 515), ("8.40168.00AED", 700, 795)]),
+        (352, [("Body lotion", 100, 180), ("50", 405, 420), ("20.89", 480, 515), ("37.611 ,", 640, 680),
+               ("752.25AED", 740, 795)]),
+    ])
+    invoice = extract_invoice_from_tables("", [], boxes=words)
+    assert [(line["tax_amount"], line["net_amount"]) for line in invoice["lines"]] == [
+        ("8.40", "168.00"), ("37.61", "1752.25")]
+
+
+@pytest.mark.parametrize("printed", ["212.75AED", "212.75aed", "212.75 AED"])
+def test_a_currency_code_after_a_figure_is_not_part_of_it(printed):
+    assert _decimal(printed) == "212.75"
+
+
+def test_a_qty_heading_read_as_aty_is_still_the_quantity():
+    roles = [role for role, _left, _right in _header_roles(_words([(300, [
+        ("Description", 140, 200), ("aty", 400, 420), ("Price", 460, 490),
+    ])]))]
+    assert roles == ["description", "qty", "price"]
 
 
 @pytest.mark.parametrize("second", [None, ("Net Amount", 600, 650)])

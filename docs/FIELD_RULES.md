@@ -10,13 +10,22 @@ the scorecard (`scripts/engine_scorecard.py`) all aim at these answers. All exam
 - Strings: trim, collapse whitespace runs to one space, keep the printed case and punctuation. (The scorecard
   case-folds, so case never decides a score.)
 
-## Numbers (net, tax, qty, price, net_amount)
+## Numbers (net, tax, qty, price, net_amount, tax_amount)
 
-- Plain decimal string: `.` as the decimal point, no thousands separators (`1,044.45` → `1044.45`), the printed
-  decimals kept (`9.00` stays `9.00`; KWD `1.250` stays `1.250`).
-- Strip a currency code or symbol beside the number (`950.40 AED` → `950.40`) and a unit glued to it
-  (`9.00 Units` → qty `9.00`, uom from `Units`).
-- Negative: `-12.00` or `(12.00)` → `-12.00`.
+- Plain decimal string: `.` as the point, no thousands separator, printed places kept (`9.00` stays `9.00`, KWD
+  `12.500` stays `12.500`), `-` for a negative. Implemented in `app/numbers.py`.
+- Accepted: `1,067.13`, `1,234,567`, `8 800.00`, `1.067,13`; a currency code or sign before or after, with or
+  without a space (AED USD EUR GBP KWD SAR QAR BHD OMR INR Dh Dhs KD SR QR BD RO); `-12.50`, `(12.50)`, `12.50-`,
+  Unicode minus; OCR noise: `O`/`o` among digits as 0, spaces around a separator (`1 , 105.31`), Arabic-Indic digits
+  and the Arabic decimal and thousands marks.
+- Separators: one comma + 3 digits groups thousands (`1,067` = 1067); one comma + 1-2 digits is the point
+  (`950,40`); one point is always the point (`1.067` = 1.067); one kind printed twice or more: the last is the point
+  unless its group has 3 digits (`2.480.00` = 2480.00, `1.234.567` = 1234567).
+- Not a number → `null`: a percent, two numbers in one cell (`12 3.50`), letters, a lone `O`, a comma + 4 or more
+  digits, more than 24 digits.
+- A unit glued to qty is split off (`9.00 Units` → qty `9.00`, uom from `Units`).
+- A line or total amount the layout reader reads is never negative: a bracketed figure there is a discount or
+  credit, not the field.
 - A printed `0.00` is a value: `0.00`, not `null`.
 
 ## Dates (date, date_printed)

@@ -10,13 +10,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from itertools import groupby
 from math import radians, tan
 from statistics import fmean, median
 from typing import Any, Iterable
 
 from app.models import Invoice, Line
+from app.numbers import to_decimal
 
 
 # An OCR reader may print a title's words with no space between them ("TaxInvoice"), so the
@@ -31,7 +32,6 @@ _PURCHASE_ORDER_HEADING = re.compile(r"(?im)^\s*purchase\s+order(?:\s+no\b[^\n]*
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]{0,79}$")
 # The same identifier as printed, with the single spaces between its parts kept.
 _SPACED_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]*(?: [A-Za-z0-9][A-Za-z0-9./_-]*){0,5}$")
-_PLAIN_NUMBER = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _GTIN = re.compile(r"(?i)\b(?:EAN|GTIN|UPC)\s*[:#-]?\s*([0-9][0-9 -]{6,22}[0-9])\b")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 # What separates a label from its value. A scan adds marks of its own between the two -
@@ -1243,41 +1243,10 @@ def _extract_money(lines: list[str], patterns: tuple[re.Pattern[str], ...]) -> D
     return next(iter(distinct))
 
 
-def _group_separators(value: str) -> str:
-    """One printed amount as a plain number, whichever separators it was printed with.
-
-    "1,234.56" and "1.234,56" are the same amount in two conventions, and a scan of either
-    reads the separators interchangeably: "2,480.00" comes back as "2.480.00" often enough
-    that rejecting it loses a line total that is plainly printed. With three or more groups
-    the separators are unambiguous, so only that case is read: every separator but the last
-    groups thousands, and the last one is the decimal point unless its group is a thousand.
-    """
-
-    if not re.fullmatch(r"[0-9][0-9.,]*", value):
-        return value
-    groups = value.replace(",", ".").split(".")
-    if len(groups) < 3 or any(not group for group in groups):
-        return value
-    if any(len(group) != 3 for group in groups[1:-1]) or len(groups[0]) > 3:
-        return value
-    if len(groups[-1]) == 3:
-        return "".join(groups)
-    if len(groups[-1]) in (1, 2):
-        return "".join(groups[:-1]) + "." + groups[-1]
-    return value
-
-
 def _parse_decimal(value: str) -> Decimal | None:
-    cleaned = _group_separators(value.strip()).replace(",", "")
-    if not _PLAIN_NUMBER.fullmatch(cleaned):
-        return None
-    try:
-        result = Decimal(cleaned)
-    except InvalidOperation:
-        return None
-    if not result.is_finite() or result < 0 or len(result.as_tuple().digits) > 24:
-        return None
-    return result
+    """A printed amount (app.numbers.to_decimal); a negative is never an amount the layout reads."""
+    result = to_decimal(value)
+    return result if result is not None and result >= 0 else None
 
 
 # A reader can return a thousands separator as a word of its own, so "1 , 028.80" arrives as

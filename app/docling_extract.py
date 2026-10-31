@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from itertools import groupby
 from statistics import fmean, median
 from typing import Any
 
 from app.layout_extract import is_packing_page
+from app.numbers import parse_number as _decimal
 from app.scan_guard import classify_barcode, lines_reconcile, tax_label_printed
 
 
@@ -699,34 +700,6 @@ def _tables_from_measured_words(boxes: list[dict[str, Any]]) -> list[dict[str, A
             if index < len(rows):
                 index += 1
     return result
-
-
-def _decimal(value: Any) -> str | None:
-    text = str(value if value is not None else "").strip().replace("\u00a0", " ")
-    if not text:
-        return None
-    negative = text.startswith("(") and text.endswith(")")
-    if negative:
-        text = text[1:-1].strip()
-    text = re.sub(r"^(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)\s+", "", text)
-    text = re.sub(r"\s+(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)$", "", text)
-    # OCR may split a thousands separator into its own token: "1 , 105.31".
-    text = re.sub(r"(?<=\d)\s*,\s*(?=\d{3}(?:\D|$))", ",", text)
-    # OCR may read a thousands comma as a point: "1.234.56" has no other reading than 1234.56.
-    if re.fullmatch(r"[-+]?\d{1,3}(?:\.\d{3})+\.\d{2}", text):
-        head, _, cents = text.rpartition(".")
-        text = head.replace(".", ",") + "." + cents
-    match = re.fullmatch(r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?: \d{3})+|\d+)(?:\.\d+)?", text)
-    if not match:
-        return None
-    number = match.group(0).replace(",", "").replace(" ", "")
-    try:
-        parsed = Decimal(number)
-    except InvalidOperation:
-        return None
-    if negative:
-        parsed = -abs(parsed)
-    return format(parsed, "f")
 
 
 def _gtin(value: Any) -> str | None:

@@ -33,6 +33,13 @@ _LOCAL_OCR_SLOTS=threading.BoundedSemaphore(LOCAL_OCR_CONCURRENCY)
 # large batch keeps moving while one scan is being OCR'd. Four fits the 4 vCPU / 8 GiB instance and provider limits.
 AI_CONCURRENCY=concurrency_from_env("INV_AI_CONCURRENCY",4,16)
 _AI_SLOTS=threading.BoundedSemaphore(AI_CONCURRENCY)
+# The upload's multi-invoice check (split_check) runs on a request thread, before the upload is queued. Its own
+# limit is far below the readers': a 20-page invoice checks in about 5 s, while a PDF whose page draws itself 2^40
+# times never finishes. At most this many run at once and one account holds all but one of them, so hostile
+# uploads cannot hold every request thread or CPU (attack pack F1). An upload over the cap is answered 429 at once.
+SPLIT_CHECK_CONCURRENCY=concurrency_from_env("INV_SPLIT_CHECK_CONCURRENCY",4,16)
+_split_checks={}  # account -> split checks running for it
+_split_checks_lock=threading.Lock()
 
 # A scan reader downloads its models the first time it runs. When a network refuses that download,
 # the reader cannot read anything until the network is fixed, and every later invoice would wait for
@@ -50,6 +57,10 @@ _models_blocked_lock=threading.Lock()
 
 class ReaderTimedOut(ValueError):
     """A reader process ran past its time limit and was stopped."""
+
+
+class ChecksBusy(Exception):
+    """Every split check slot this account may use is taken; the upload is answered 429, never queued unchecked."""
 
 
 class ReaderFailed(ValueError):
@@ -239,9 +250,9 @@ def reader_env():
     return env
 
 
-def local_read(engine,path,root,language="en",extra=()):
+def local_read(engine,path,root,language="en",extra=(),timeout=None):
     output=root/"work"/(uuid.uuid4().hex+".json")
-    timeout=int(os.getenv("INV_ENGINE_TIMEOUT","360" if engine=="paddleocr" else "240"))
+    timeout=timeout or int(os.getenv("INV_ENGINE_TIMEOUT","360" if engine=="paddleocr" else "240"))
     cmd=[sys.executable,"-m","app.ocr_worker","--engine",engine,"--file",str(path),"--output",str(output),
          "--templates",str(ROOT/"templates"),"--templates",str(root/"templates"),"--language",language,
          "--budget-seconds",str(timeout)]
@@ -267,22 +278,39 @@ def local_read(engine,path,root,language="en",extra=()):
     finally:output.unlink(missing_ok=True)
 
 
-def _work_file_read(data,suffix,extra,root):
+def _work_file_read(data,suffix,extra,root,timeout=None):
     """local_read over data written to a private (0o600) random work file, removed afterwards."""
     path=root/"work"/(uuid.uuid4().hex+suffix)
     path.touch(0o600)
     try:
         path.write_bytes(data)
-        return local_read("invoice2data",path,root,extra=extra)
+        return local_read("invoice2data",path,root,extra=extra,timeout=timeout)
     finally:path.unlink(missing_ok=True)
 
 
-def split_check(content,root):
-    """multi_invoice.analyse_pdf over an uploaded PDF, in a reader child under the readers' time limit.
+def split_check_seconds():
+    """The split check's time limit: INV_SPLIT_CHECK_TIMEOUT seconds, 20 when unset or not a number, 1 to 240."""
+    try:value=int(os.getenv("INV_SPLIT_CHECK_TIMEOUT","") or 20)
+    except ValueError:value=20
+    return max(1,min(240,value))
+
+
+def split_check(content,root,account=""):
+    """multi_invoice.analyse_pdf over an uploaded PDF, in a reader child under the split check's own time limit.
 
     The API process never parses the upload or runs the page-text patterns itself; it gets back the plain outcome.
+    Raises ChecksBusy when SPLIT_CHECK_CONCURRENCY checks are running, or all but one of them for this account.
     """
-    return _work_file_read(content,".pdf",("--split-check",),root)["split"]
+    with _split_checks_lock:
+        if sum(_split_checks.values())>=SPLIT_CHECK_CONCURRENCY or \
+                _split_checks.get(account,0)>=max(1,SPLIT_CHECK_CONCURRENCY-1):
+            raise ChecksBusy()
+        _split_checks[account]=_split_checks.get(account,0)+1
+    try:return _work_file_read(content,".pdf",("--split-check",),root,split_check_seconds())["split"]
+    finally:
+        with _split_checks_lock:
+            _split_checks[account]-=1
+            if not _split_checks[account]:del _split_checks[account]
 
 
 def stored_learn(text,boxes,tables,invoice,source_id,root):

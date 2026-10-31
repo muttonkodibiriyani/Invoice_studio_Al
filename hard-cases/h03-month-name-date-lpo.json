@@ -1,0 +1,39 @@
+{
+  "number": "CCF-TI-30551",
+  "supplier_name": "Coral Coast Foods FZE",
+  "date": "2026-10-04",
+  "date_printed": "04-Oct-2026",
+  "po": "LPO-77310",
+  "currency": "AED",
+  "net": "5076.00",
+  "tax": "253.80",
+  "lines": [
+    {
+      "sku": "CCF-501",
+      "gtin": "6292200501010",
+      "description": "Basmati rice premium 5 kg",
+      "uom": "BAG",
+      "qty": "60",
+      "price": "42.00",
+      "net_amount": "2520.00"
+    },
+    {
+      "sku": "CCF-512",
+      "gtin": "6292200512078",
+      "description": "Sunflower oil 1.8 L",
+      "uom": "BTL",
+      "qty": "120",
+      "price": "11.90",
+      "net_amount": "1428.00"
+    },
+    {
+      "sku": "CCF-530",
+      "gtin": "6292200530034",
+      "description": "Chickpeas canned 400 g",
+      "uom": "CAN",
+      "qty": "480",
+      "price": "2.35",
+      "net_amount": "1128.00"
+    }
+  ]
+}

@@ -232,7 +232,7 @@ def _exact_header_role(header: Any) -> str | None:
             "itemcode", "itemnumber", "articlecode", "articleno", "sku", "article",
         },
         "qty": {"qty", "quantity", "qtyinpce", "qtypce"},
-        "uom": {"uom", "unitofmeasure", "measureunit"},
+        "uom": {"uom", "unit", "units", "unitofmeasure", "measureunit"},
         "price": {"price", "sellingprice", "unitprice", "priceperunit"},
         "net_amount": {
             "amount", "taxablevalue", "netamount", "netvalue", "lineamount", "totalprice",
@@ -340,12 +340,25 @@ def _rows_from_words(words: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
 def _header_roles(row: list[dict[str, Any]]) -> list[tuple[str, float, float]]:
     found: dict[str, tuple[int, float, float]] = {}
     for start in range(len(row)):
-        for width in (1, 2, 3):
+        named = {
+            width: _exact_header_role(" ".join(str(cell["text"]) for cell in row[start : start + width]))
+            for width in (1, 2, 3) if start + width <= len(row)
+        }
+        for width, role in named.items():
             cells = row[start : start + width]
-            if len(cells) != width:
-                continue
-            role = _exact_header_role(" ".join(str(cell["text"]) for cell in cells))
             if role is None:
+                continue
+            # The first word of a longer heading is not a column of its own: the "Unit" of
+            # "Unit Price" heads no unit column, and kept as one it would hide the real one.
+            if any(other not in (None, role) for wider, other in named.items() if wider > width):
+                continue
+            # OCR can put a bracketed note inside "Unit (excl. VAT) Price"; that Unit opens the price.
+            if role == "uom" and any(
+                _normalized(word["text"]) == "price"
+                and float(word["box"][0]) - float(cells[-1]["box"][2])
+                <= 4 * (float(cells[-1]["box"][3]) - float(cells[-1]["box"][1]))
+                for word in row[start + width : start + width + 5]
+            ):
                 continue
             # The span is measured across the cells that carry the heading's own letters.
             # A stray "%" from the rate column beside it reads as nothing at all, so
@@ -541,6 +554,31 @@ def _mapped_row(row, roles, bounds, expected_serial=None):
                 and any(_decimal(word["text"]) is not None for word in cell[1:])):
             values[column] = str(cell[0]["text"]).strip()
             values[column + 1] = " ".join(str(word["text"]).strip() for word in cell[1:]).strip() or None
+    # A right-aligned "9.00 Units" can start left of its own heading, so its number lands at
+    # the end of the description cell and only the unit is left under Qty. A number ending
+    # that cell, one word space from a quantity cell holding nothing but a unit, is the quantity.
+    for column in range(len(roles) - 1):
+        if roles[column][0] != "description" or roles[column + 1][0] != "qty":
+            continue
+        cell = sorted((word for word in row
+                       if bounds[column] <= (float(word["box"][0]) + float(word["box"][2])) / 2 < bounds[column + 1]),
+                      key=lambda word: float(word["box"][0]))
+        units = sorted((word for word in row
+                        if bounds[column + 1] <= (float(word["box"][0]) + float(word["box"][2])) / 2 < bounds[column + 2]),
+                       key=lambda word: float(word["box"][0]))
+        if (cell and not units and float(cell[-1]["box"][2]) > roles[column + 1][1]
+                and all(_quantity(str(cell[-1]["text"]))) and len(str(cell[-1]["text"]).split()) == 2):
+            # A reader that keeps the whole "9.00 Units" as one cell: it reaches into the Qty heading.
+            values[column] = _printed_cell(cell[:-1])
+            values[column + 1] = str(cell[-1]["text"]).strip()
+            continue
+        if len(cell) < 2 or not units or _quantity(values[column + 1])[0] is not None:
+            continue
+        number, unit = _quantity(f"{str(cell[-1]['text']).strip()} {values[column + 1]}")
+        height = float(units[0]["box"][3]) - float(units[0]["box"][1])
+        if number is not None and unit and float(units[0]["box"][0]) - float(cell[-1]["box"][2]) <= height:
+            values[column] = _printed_cell(cell[:-1])
+            values[column + 1] = f"{str(cell[-1]['text']).strip()} {values[column + 1]}"
     for column, role in enumerate(roles):
         if role[0] == "description" and values[column]:
             # OCR reads a printed size's 0 as O and l as I ("3OML", "10mI").
@@ -661,7 +699,7 @@ def _tables_from_measured_words(boxes: list[dict[str, Any]]) -> list[dict[str, A
                 values, mapped = _mapped_row(row, roles, bounds, expected)
                 identity = any(mapped.get(role) for role in ("sku", "gtin", "part_code", "description"))
                 price = _decimal(mapped.get("price"))
-                qty = _decimal(mapped.get("qty"))
+                qty = _quantity(mapped.get("qty"))[0]
                 amount = _decimal(mapped.get("net_amount"))
                 serial_text = str(mapped.get("serial") or "").strip()
                 serial = int(serial_text) if re.fullmatch(r"[0-9]{1,6}", serial_text) else None
@@ -727,6 +765,21 @@ def _decimal(value: Any) -> str | None:
     if negative:
         parsed = -abs(parsed)
     return format(parsed, "f")
+
+
+_CURRENCIES = {"aed", "usd", "eur", "gbp", "kwd", "sar", "qar", "bhd", "omr"}
+
+
+def _quantity(value: Any) -> tuple[str | None, str | None]:
+    """A quantity cell's number, and the unit printed after it ("9.00 Units") if any."""
+    number = _decimal(value)
+    if number is not None:
+        return number, None
+    match = re.fullmatch(r"\s*(\S+)\s+([^\W\d_]{1,12})\.?\s*", str(value or ""))
+    if match is None or match.group(2).casefold() in _CURRENCIES:
+        return None, None
+    number = _decimal(match.group(1))
+    return (number, match.group(2)) if number is not None else (None, None)
 
 
 def _gtin(value: Any) -> str | None:
@@ -1177,6 +1230,10 @@ def extract_invoice_from_tables(
         for row_index, row in enumerate(rows):
             row_roles = _semantic_row_roles(row)
             if _is_line_header(row_roles):
+                amounts = [column for column, role in row_roles.items() if role in _LINE_AMOUNT_ROLES]
+                if len(amounts) == 1 and row_roles[amounts[0]] == "other_amount":
+                    # "Amount AED" is kept aside only beside another amount column; alone it is the line's.
+                    row_roles[amounts[0]] = "net_amount"
                 roles = row_roles
                 active_by_source[table_source] = roles, len(row)
                 amount_columns_by_source[table_source] = {
@@ -1208,8 +1265,14 @@ def extract_invoice_from_tables(
                 }:
                     continue
                 raw = row[column]
-                if role in {
-                    "qty", "price", "net_amount", "tax_amount", "other_amount", "gross_amount",
+                if role == "qty":
+                    parsed, unit = _quantity(raw)
+                    if parsed is not None:
+                        values["qty"] = parsed
+                    if unit:
+                        values["_qty_unit"] = unit
+                elif role in {
+                    "price", "net_amount", "tax_amount", "other_amount", "gross_amount",
                 }:
                     parsed = _decimal(raw)
                     if parsed is not None:
@@ -1243,6 +1306,9 @@ def extract_invoice_from_tables(
                             values["barcode_unchecked"] = unchecked
                 elif str(raw or "").strip():
                     values[role] = str(raw).strip()
+            unit = values.pop("_qty_unit", None)
+            if unit and not values.get("uom"):
+                values["uom"] = unit
             if values.get("description"):
                 description, printed_sku = _description_facts(values["description"])
                 if description:

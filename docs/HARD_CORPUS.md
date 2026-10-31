@@ -1,6 +1,6 @@
 # The hard-case corpus: synthetic invoices that are hard to read, with checked ground truth
 
-`hard-cases/` holds 20 cases for `scripts/engine_scorecard.py`: 12 printed PDFs and 8 scans of them. Each case is a
+`hard-cases/` holds 23 cases for `scripts/engine_scorecard.py`: 14 printed PDFs and 9 scans of them. Each case is a
 document and its expected JSON under the same stem, the flat layout of `samples/`:
 
 ```bash
@@ -33,7 +33,10 @@ lines[sku, gtin, description, uom, qty, price, net_amount]`.
 - `net` is the taxable amount before VAT, after any invoice discount. `tax` is the VAT amount; with no VAT line
   printed it is null, never 0.
 - Amounts are plain numbers at the decimals the invoice prints, with no thousands separators.
-- `description` is the whole item text; a cell wrapped over several rows is joined with single spaces.
+- `description` is the whole item text; a cell wrapped over several rows, or carried on in a row of its own under
+  the item, is joined with single spaces.
+- `uom` is the unit as printed, in its own column or after the number in the quantity cell (`9.00 Units`).
+- A subtotal, VAT or total row is never a line, even when it is printed as a row of the item table.
 - `gtin` is a printed barcode only when its GS1 check digit is right (the app's own rule): one that fails is null.
 - A field or column the invoice does not print is null, never `""`.
 
@@ -80,6 +83,8 @@ line, subtotal, discount and VAT was recomputed. Two VAT values sit on a half-ce
 | h10-bad-barcode | one printed barcode fails its check digit, so that line's `gtin` is null |
 | h11-description-only | no code, barcode or unit column, and no PO; lines are matched by description |
 | h12-buyer-printed-first | the bill-to party printed first and largest; the supplier only in a 'From' block and the footer |
+| h13-bordered-grid | every cell ruled; the unit inside the quantity cell (`9.00 Units`), right-aligned so it starts left of the Qty heading; subtotal, VAT and total as rows of the table |
+| h14-continuation-rows | a gift set's contents printed as a row of their own under the item, in the description column only; subtotal, VAT and total as table rows |
 | s01-scan-skewed-thousands | h01 at 150 dpi, skewed 1.6°, with noise |
 | s02-scan-jpeg-reordered | h07 skewed -2.4° and saved as JPEG quality 35 |
 | s03-image-only-pdf | h03 as a scanned PDF with no text layer |
@@ -88,6 +93,7 @@ line, subtotal, discount and VAT was recomputed. Two VAT values sit on a half-ce
 | s06-tiff-day-first | h04 as a greyscale TIFF |
 | s07-kwd-scan | h02 scanned: three-decimal amounts through OCR |
 | s08-discount-scan | h08 scanned |
+| s09-scan-bordered-grid | h13 scanned: OCR reads the ruled cells as separate boxes |
 
 ## Not covered yet
 

@@ -440,6 +440,60 @@ def test_a_bare_unit_opens_a_price_label_and_is_not_a_unit_of_measure():
     assert {"description", "qty", "price"} <= set(anchors)
 
 
+def _measured_table(header, rows, *, pitch=22):
+    """A header row and item rows as word boxes; each cell is (text, x0, x1), split into words at spaces."""
+    def cells(line):
+        out = []
+        for text, x0, x1 in line:
+            parts = text.split()
+            step = (x1 - x0) / len(parts)
+            out.extend((part, x0 + step * n, x0 + step * (n + 1) - 4) for n, part in enumerate(parts))
+        return out
+    return _words([(300, cells(header))] + [(330 + pitch * n, cells(row)) for n, row in enumerate(rows)])
+
+
+def test_a_quantity_printed_with_its_unit_is_the_quantity_and_the_unit():
+    """"9.00 Units" in the Qty cell: the number is the quantity, the word the line's unit as printed."""
+    invoice = extract_invoice_from_tables("", [], boxes=_measured_table(
+        [("Description", 100, 180), ("Qty", 470, 495), ("Unit Price", 560, 620), ("Amount", 680, 730)],
+        [[("Body lotion cocoa 200 ml", 100, 300), ("9.00 Units", 430, 495), ("18.50", 585, 620),
+          ("166.50", 690, 730)]],
+    ))
+    line = invoice["lines"][0]
+    assert (line["description"], line["qty"], line["uom"]) == ("Body lotion cocoa 200 ml", "9.00", "Units")
+
+
+def test_a_right_aligned_quantity_that_starts_under_the_description_is_still_the_quantity():
+    """The right-aligned "24.00 Units" starts left of the Qty heading; its number must not join the item text."""
+    invoice = extract_invoice_from_tables("", [], boxes=_measured_table(
+        [("Description", 100, 180), ("Qty", 470, 495), ("Unit Price", 560, 620), ("Amount", 680, 730)],
+        [[("Hand cream almond 75 ml", 100, 300), ("24.00", 440, 464), ("Units", 468, 495),
+          ("12.25", 585, 620), ("294.00", 690, 730)]],
+    ))
+    line = invoice["lines"][0]
+    assert (line["description"], line["qty"], line["uom"]) == ("Hand cream almond 75 ml", "24.00", "Units")
+
+
+def test_a_unit_heading_is_the_unit_column_and_the_unit_of_unit_price_is_not():
+    roles = [role for role, _left, _right in _header_roles(_words([(300, [
+        ("Unit", 100, 120), ("Description", 140, 200), ("Qty", 400, 420), ("Unit", 460, 480), ("Price", 484, 510),
+    ])]))]
+    assert roles == ["uom", "description", "qty", "price"]
+    bracketed = [role for role, _left, _right in _header_roles(_words([(300, [
+        ("Description", 140, 200), ("Qty", 400, 420), ("(", 440, 442), ("UNIT", 444, 470), ("excl", 474, 490),
+        ("VAT", 494, 510), ("PRICE", 514, 540), (")", 542, 544),
+    ])]))]
+    assert "uom" not in bracketed and "price" in bracketed
+
+
+@pytest.mark.parametrize("second", [None, ("Net Amount", 600, 650)])
+def test_an_amount_in_currency_column_is_the_line_amount_unless_another_amount_is_printed(second):
+    header = ["Description", "Qty", "Unit Price"] + ([second[0]] if second else []) + ["Amount AED"]
+    row = ["Puzzle", "36", "45.00"] + (["1700.00"] if second else []) + ["1,620.00"]
+    invoice = extract_invoice_from_tables("", [{"page": 1, "source": "pdfplumber", "rows": [header, row]}])
+    assert invoice["lines"][0]["net_amount"] == ("1700.00" if second else "1620.00")
+
+
 @pytest.mark.skipif(not os.environ.get("INV_OCR_EVAL_DIR"), reason="no local invoice set configured")
 def test_real_invoice_set_meets_the_field_thresholds():
     directory = Path(os.environ["INV_OCR_EVAL_DIR"])

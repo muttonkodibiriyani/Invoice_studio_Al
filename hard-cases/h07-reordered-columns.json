@@ -1,0 +1,39 @@
+{
+  "number": "NWT 004512",
+  "supplier_name": "Northwind Toys Trading LLC",
+  "date": "2026-10-09",
+  "date_printed": "09 Oct 2026",
+  "po": "70801",
+  "currency": "AED",
+  "net": "6291.00",
+  "tax": "314.55",
+  "lines": [
+    {
+      "sku": "NWT-PZ1000",
+      "gtin": "6296600010004",
+      "description": "Puzzle 1000 pieces city skyline",
+      "uom": "PCS",
+      "qty": "36",
+      "price": "45.00",
+      "net_amount": "1620.00"
+    },
+    {
+      "sku": "NWT-BLK250",
+      "gtin": "6296600025022",
+      "description": "Building blocks 250 pieces",
+      "uom": "PCS",
+      "qty": "24",
+      "price": "120.00",
+      "net_amount": "2880.00"
+    },
+    {
+      "sku": "NWT-CAR-RC",
+      "gtin": "6296600033010",
+      "description": "Remote control car 1:24",
+      "uom": "PCS",
+      "qty": "18",
+      "price": "99.50",
+      "net_amount": "1791.00"
+    }
+  ]
+}

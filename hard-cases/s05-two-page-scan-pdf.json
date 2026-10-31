@@ -1,0 +1,336 @@
+{
+  "number": "OHE-2026-4471",
+  "supplier_name": "Oasis Home Essentials LLC",
+  "date": "2026-10-21",
+  "date_printed": "21 October 2026",
+  "po": "70630",
+  "currency": "AED",
+  "net": "8194.20",
+  "tax": "409.71",
+  "lines": [
+    {
+      "sku": "OHE-100",
+      "gtin": "6294400001000",
+      "description": "Bath towel cotton white",
+      "uom": "PCS",
+      "qty": "12",
+      "price": "24.50",
+      "net_amount": "294.00"
+    },
+    {
+      "sku": "OHE-107",
+      "gtin": "6294400001079",
+      "description": "Bath towel cotton grey",
+      "uom": "PCS",
+      "qty": "8",
+      "price": "24.50",
+      "net_amount": "196.00"
+    },
+    {
+      "sku": "OHE-114",
+      "gtin": "6294400001147",
+      "description": "Bath towel cotton navy",
+      "uom": "PCS",
+      "qty": "6",
+      "price": "24.50",
+      "net_amount": "147.00"
+    },
+    {
+      "sku": "OHE-121",
+      "gtin": "6294400001215",
+      "description": "Bath towel cotton sand",
+      "uom": "PCS",
+      "qty": "10",
+      "price": "24.50",
+      "net_amount": "245.00"
+    },
+    {
+      "sku": "OHE-128",
+      "gtin": "6294400001284",
+      "description": "Bath towel cotton olive",
+      "uom": "PCS",
+      "qty": "4",
+      "price": "24.50",
+      "net_amount": "98.00"
+    },
+    {
+      "sku": "OHE-135",
+      "gtin": "6294400001352",
+      "description": "Bath towel cotton rose",
+      "uom": "PCS",
+      "qty": "2",
+      "price": "24.50",
+      "net_amount": "49.00"
+    },
+    {
+      "sku": "OHE-142",
+      "gtin": "6294400001420",
+      "description": "Hand towel cotton white",
+      "uom": "PCS",
+      "qty": "12",
+      "price": "9.75",
+      "net_amount": "117.00"
+    },
+    {
+      "sku": "OHE-149",
+      "gtin": "6294400001499",
+      "description": "Hand towel cotton grey",
+      "uom": "PCS",
+      "qty": "8",
+      "price": "9.75",
+      "net_amount": "78.00"
+    },
+    {
+      "sku": "OHE-156",
+      "gtin": "6294400001567",
+      "description": "Hand towel cotton navy",
+      "uom": "PCS",
+      "qty": "6",
+      "price": "9.75",
+      "net_amount": "58.50"
+    },
+    {
+      "sku": "OHE-163",
+      "gtin": "6294400001635",
+      "description": "Hand towel cotton sand",
+      "uom": "PCS",
+      "qty": "10",
+      "price": "9.75",
+      "net_amount": "97.50"
+    },
+    {
+      "sku": "OHE-170",
+      "gtin": "6294400001703",
+      "description": "Hand towel cotton olive",
+      "uom": "PCS",
+      "qty": "4",
+      "price": "9.75",
+      "net_amount": "39.00"
+    },
+    {
+      "sku": "OHE-177",
+      "gtin": "6294400001772",
+      "description": "Hand towel cotton rose",
+      "uom": "PCS",
+      "qty": "2",
+      "price": "9.75",
+      "net_amount": "19.50"
+    },
+    {
+      "sku": "OHE-184",
+      "gtin": "6294400001840",
+      "description": "Bed sheet set white",
+      "uom": "SET",
+      "qty": "12",
+      "price": "89.00",
+      "net_amount": "1068.00"
+    },
+    {
+      "sku": "OHE-191",
+      "gtin": "6294400001918",
+      "description": "Bed sheet set grey",
+      "uom": "SET",
+      "qty": "8",
+      "price": "89.00",
+      "net_amount": "712.00"
+    },
+    {
+      "sku": "OHE-198",
+      "gtin": "6294400001987",
+      "description": "Bed sheet set navy",
+      "uom": "SET",
+      "qty": "6",
+      "price": "89.00",
+      "net_amount": "534.00"
+    },
+    {
+      "sku": "OHE-205",
+      "gtin": "6294400002052",
+      "description": "Bed sheet set sand",
+      "uom": "SET",
+      "qty": "10",
+      "price": "89.00",
+      "net_amount": "890.00"
+    },
+    {
+      "sku": "OHE-212",
+      "gtin": "6294400002120",
+      "description": "Bed sheet set olive",
+      "uom": "SET",
+      "qty": "4",
+      "price": "89.00",
+      "net_amount": "356.00"
+    },
+    {
+      "sku": "OHE-219",
+      "gtin": "6294400002199",
+      "description": "Bed sheet set rose",
+      "uom": "SET",
+      "qty": "2",
+      "price": "89.00",
+      "net_amount": "178.00"
+    },
+    {
+      "sku": "OHE-226",
+      "gtin": "6294400002267",
+      "description": "Pillow microfibre white",
+      "uom": "PCS",
+      "qty": "12",
+      "price": "32.00",
+      "net_amount": "384.00"
+    },
+    {
+      "sku": "OHE-233",
+      "gtin": "6294400002335",
+      "description": "Pillow microfibre grey",
+      "uom": "PCS",
+      "qty": "8",
+      "price": "32.00",
+      "net_amount": "256.00"
+    },
+    {
+      "sku": "OHE-240",
+      "gtin": "6294400002403",
+      "description": "Pillow microfibre navy",
+      "uom": "PCS",
+      "qty": "6",
+      "price": "32.00",
+      "net_amount": "192.00"
+    },
+    {
+      "sku": "OHE-247",
+      "gtin": "6294400002472",
+      "description": "Pillow microfibre sand",
+      "uom": "PCS",
+      "qty": "10",
+      "price": "32.00",
+      "net_amount": "320.00"
+    },
+    {
+      "sku": "OHE-254",
+      "gtin": "6294400002540",
+      "description": "Pillow microfibre olive",
+      "uom": "PCS",
+      "qty": "4",
+      "price": "32.00",
+      "net_amount": "128.00"
+    },
+    {
+      "sku": "OHE-261",
+      "gtin": "6294400002618",
+      "description": "Pillow microfibre rose",
+      "uom": "PCS",
+      "qty": "2",
+      "price": "32.00",
+      "net_amount": "64.00"
+    },
+    {
+      "sku": "OHE-268",
+      "gtin": "6294400002687",
+      "description": "Storage basket white",
+      "uom": "PCS",
+      "qty": "12",
+      "price": "18.25",
+      "net_amount": "219.00"
+    },
+    {
+      "sku": "OHE-275",
+      "gtin": "6294400002755",
+      "description": "Storage basket grey",
+      "uom": "PCS",
+      "qty": "8",
+      "price": "18.25",
+      "net_amount": "146.00"
+    },
+    {
+      "sku": "OHE-282",
+      "gtin": "6294400002823",
+      "description": "Storage basket navy",
+      "uom": "PCS",
+      "qty": "6",
+      "price": "18.25",
+      "net_amount": "109.50"
+    },
+    {
+      "sku": "OHE-289",
+      "gtin": "6294400002892",
+      "description": "Storage basket sand",
+      "uom": "PCS",
+      "qty": "10",
+      "price": "18.25",
+      "net_amount": "182.50"
+    },
+    {
+      "sku": "OHE-296",
+      "gtin": "6294400002960",
+      "description": "Storage basket olive",
+      "uom": "PCS",
+      "qty": "4",
+      "price": "18.25",
+      "net_amount": "73.00"
+    },
+    {
+      "sku": "OHE-303",
+      "gtin": "6294400003035",
+      "description": "Storage basket rose",
+      "uom": "PCS",
+      "qty": "2",
+      "price": "18.25",
+      "net_amount": "36.50"
+    },
+    {
+      "sku": "OHE-310",
+      "gtin": "6294400003103",
+      "description": "Glass tumbler white",
+      "uom": "BOX",
+      "qty": "12",
+      "price": "21.60",
+      "net_amount": "259.20"
+    },
+    {
+      "sku": "OHE-317",
+      "gtin": "6294400003172",
+      "description": "Glass tumbler grey",
+      "uom": "BOX",
+      "qty": "8",
+      "price": "21.60",
+      "net_amount": "172.80"
+    },
+    {
+      "sku": "OHE-324",
+      "gtin": "6294400003240",
+      "description": "Glass tumbler navy",
+      "uom": "BOX",
+      "qty": "6",
+      "price": "21.60",
+      "net_amount": "129.60"
+    },
+    {
+      "sku": "OHE-331",
+      "gtin": "6294400003318",
+      "description": "Glass tumbler sand",
+      "uom": "BOX",
+      "qty": "10",
+      "price": "21.60",
+      "net_amount": "216.00"
+    },
+    {
+      "sku": "OHE-338",
+      "gtin": "6294400003387",
+      "description": "Glass tumbler olive",
+      "uom": "BOX",
+      "qty": "4",
+      "price": "21.60",
+      "net_amount": "86.40"
+    },
+    {
+      "sku": "OHE-345",
+      "gtin": "6294400003455",
+      "description": "Glass tumbler rose",
+      "uom": "BOX",
+      "qty": "2",
+      "price": "21.60",
+      "net_amount": "43.20"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "number": "GPT/2026/0917",
+  "supplier_name": "Gulf Pearl Trading Co. WLL",
+  "date": "2026-10-19",
+  "date_printed": "19/10/2026",
+  "po": "92017",
+  "currency": "KWD",
+  "net": "399.000",
+  "tax": null,
+  "lines": [
+    {
+      "sku": "GP-0071",
+      "gtin": "6281007000710",
+      "description": "Rose water spray 150 ml",
+      "uom": "PCS",
+      "qty": "48",
+      "price": "1.250",
+      "net_amount": "60.000"
+    },
+    {
+      "sku": "GP-0102",
+      "gtin": "6281007001021",
+      "description": "Oud hair mist 50 ml",
+      "uom": "PCS",
+      "qty": "24",
+      "price": "4.875",
+      "net_amount": "117.000"
+    },
+    {
+      "sku": "GP-0230",
+      "gtin": "6281007002301",
+      "description": "Gift set oud collection",
+      "uom": "SET",
+      "qty": "12",
+      "price": "18.500",
+      "net_amount": "222.000"
+    }
+  ]
+}

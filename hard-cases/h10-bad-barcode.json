@@ -1,0 +1,30 @@
+{
+  "number": "LBT-2026-0311",
+  "supplier_name": "Lumena Beauty Trading LLC",
+  "date": null,
+  "date_printed": "08/10/2026",
+  "po": "70003",
+  "currency": "AED",
+  "net": "888.00",
+  "tax": "44.40",
+  "lines": [
+    {
+      "sku": "LUM-SER30",
+      "gtin": "00012345678905",
+      "description": "Lumena serum 30 ml",
+      "uom": "EA",
+      "qty": "8",
+      "price": "60.00",
+      "net_amount": "480.00"
+    },
+    {
+      "sku": "LUM-TNR20",
+      "gtin": null,
+      "description": "Lumena toner 200 ml",
+      "uom": "EA",
+      "qty": "12",
+      "price": "34.00",
+      "net_amount": "408.00"
+    }
+  ]
+}

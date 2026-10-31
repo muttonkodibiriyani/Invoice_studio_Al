@@ -50,6 +50,7 @@ from app.layout_extract import (
 )
 from app.models import Invoice, parse_ai_output
 from app.ocr_worker import (
+    _trim_split_lines,
     _unreadable_hint,
     digital,
     spatial_text,
@@ -973,3 +974,37 @@ def test_an_unreadable_document_gives_nothing_of_the_document_away(tmp_path):
     path.write_bytes(b"%PDF-1.7\nBUYER LLC 70001234 1234.56\ntrailer<</Encrypt 9 0 R>>\n%%EOF")
     hint = _unreadable_hint(path)
     assert "BUYER" not in hint and "70001234" not in hint and "1234.56" not in hint
+
+
+def _ocr_line(text, box, words):
+    size = [1191, 1684]
+    line = {"text": text, "page": 1, "box": box, "size": size}
+    return line, [{"text": w, "page": 1, "box": b, "size": size, "geometry": "word", "parent_text": text}
+                  for w, b in words]
+
+
+def test_a_line_split_into_overlapping_ocr_boxes_loses_its_clipped_stem_and_repeated_colon():
+    """PaddleOCR split "Invoice: DEMO-2026-002" into two overlapping crops (samples/invoice-2.pdf):
+    the left one read the D's stem as "I", the right one read the colon again."""
+    lines = _trim_split_lines([
+        _ocr_line("Invoice:I", [76, 273, 160, 298],
+                  [("Invoice", [76, 273, 139, 298]), (":", [147, 273, 151, 298]), ("I", [156, 273, 160, 298])]),
+        _ocr_line(":DEMO-2026-002", [148, 273, 320, 298],
+                  [(":", [148, 273, 152, 298]), ("DEMO-2026-002", [160, 273, 320, 298])]),
+        _ocr_line("Supplier: I", [78, 319, 174, 345],
+                  [("Supplier", [78, 319, 156, 345]), (": ", [156, 319, 170, 345]), ("I", [170, 319, 174, 345])]),
+        _ocr_line("Lumena LLC", [174, 318, 445, 346],
+                  [("Lumena", [174, 318, 244, 346]), ("LLC", [412, 318, 445, 346])]),
+    ])
+    text = spatial_text([line for line, _ in lines])
+    assert text.splitlines() == ["Invoice: DEMO-2026-002", "Supplier: Lumena LLC"]
+    assert [w["text"] for _, words in lines for w in words] == ["Invoice", ":", "DEMO-2026-002", "Supplier", ": ", "Lumena", "LLC"]
+    assert lines[1][1][0]["parent_text"] == "DEMO-2026-002"
+
+
+def test_a_printed_lone_i_before_a_spaced_neighbour_is_kept():
+    lines = _trim_split_lines([
+        _ocr_line("Class I", [76, 273, 160, 298], [("Class", [76, 273, 130, 298]), ("I", [150, 273, 154, 298])]),
+        _ocr_line("Grade", [170, 273, 220, 298], [("Grade", [170, 273, 220, 298])]),
+    ])
+    assert lines[0][0]["text"] == "Class I"

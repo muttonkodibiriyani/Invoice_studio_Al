@@ -1,0 +1,39 @@
+{
+  "number": "PGC-1187",
+  "supplier_name": "Palm Grove Cleaning Services LLC",
+  "date": "2026-10-31",
+  "date_printed": "31 Oct 2026",
+  "po": null,
+  "currency": "AED",
+  "net": "4210.00",
+  "tax": "210.50",
+  "lines": [
+    {
+      "sku": null,
+      "gtin": null,
+      "description": "Deep cleaning store floor October",
+      "uom": null,
+      "qty": "1",
+      "price": "2400.00",
+      "net_amount": "2400.00"
+    },
+    {
+      "sku": null,
+      "gtin": null,
+      "description": "Window cleaning external",
+      "uom": null,
+      "qty": "2",
+      "price": "650.00",
+      "net_amount": "1300.00"
+    },
+    {
+      "sku": null,
+      "gtin": null,
+      "description": "Waste removal extra trips",
+      "uom": null,
+      "qty": "6",
+      "price": "85.00",
+      "net_amount": "510.00"
+    }
+  ]
+}

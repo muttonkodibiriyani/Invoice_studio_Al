@@ -1,0 +1,39 @@
+{
+  "number": "MMS-55120",
+  "supplier_name": "Meridian Medical Supplies LLC",
+  "date": "2026-10-15",
+  "date_printed": "15/10/2026",
+  "po": "70710",
+  "currency": "AED",
+  "net": "2102.50",
+  "tax": "105.13",
+  "lines": [
+    {
+      "sku": "MMS-GLV-M",
+      "gtin": "6295500012019",
+      "description": "Nitrile examination gloves powder free medium size blue box of 100",
+      "uom": "BOX",
+      "qty": "30",
+      "price": "28.00",
+      "net_amount": "840.00"
+    },
+    {
+      "sku": "MMS-MSK-3",
+      "gtin": "6295500012187",
+      "description": "Disposable face mask three ply ear loop with nose wire pack of 50",
+      "uom": "PKT",
+      "qty": "45",
+      "price": "12.50",
+      "net_amount": "562.50"
+    },
+    {
+      "sku": "MMS-THR-D",
+      "gtin": "6295500012255",
+      "description": "Digital thermometer",
+      "uom": "PCS",
+      "qty": "20",
+      "price": "35.00",
+      "net_amount": "700.00"
+    }
+  ]
+}

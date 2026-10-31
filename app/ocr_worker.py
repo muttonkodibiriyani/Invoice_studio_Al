@@ -292,6 +292,43 @@ def digital(path, with_tables=False):
     return ("\n".join(pages),boxes,tables) if with_tables else ("\n".join(pages),boxes)
 
 
+# PaddleOCR's detector can split one printed line into two overlapping boxes ("Invoice:" | "DEMO-...").
+# The left crop then runs into the next glyph's stem and reads it as a lone stroke ("Invoice:I"), and
+# the right crop can repeat punctuation the left one already read (":DEMO-..."). Both break label regexes.
+_STEM_GLYPHS={"I","l","|","!"}
+
+
+def _trim_split_lines(lines):
+    """Drop the clipped stem and the repeated punctuation where a line box overlaps its right neighbour.
+
+    lines: [(line_box, words)] of one page; words are that line's word boxes, left to right (may be empty).
+    """
+    def same_row(a,b):
+        top,bottom=max(a[1],b[1]),min(a[3],b[3])
+        return bottom-top>0.5*min(a[3]-a[1],b[3]-b[1])
+    positioned=[(line,words) for line,words in lines if line["box"] and words]
+    for line,words in positioned:
+        box=line["box"];height=box[3]-box[1]
+        right=[(other,ow) for other,ow in positioned if other is not line and other["box"][0]>box[0]
+               and same_row(box,other["box"])]
+        if not right:continue
+        neighbour,next_words=min(right,key=lambda item:item[0]["box"][0])
+        start=neighbour["box"][0]
+        last=words[-1]
+        # Only a crop that reaches into the neighbour (no printed space between them) clips a stem.
+        if len(words)>1 and last["text"].strip() in _STEM_GLYPHS and last["box"][2]>=start-0.1*height:
+            words.pop()
+            line["text"]=line["text"].rstrip()[:-1].rstrip()
+        first=next_words[0];lead=first["text"].strip()
+        if (len(next_words)>1 and lead and not any(c.isalnum() for c in lead)
+                and words[-1]["text"].strip()==lead and first["box"][0]<words[-1]["box"][2]):
+            next_words.pop(0)
+            neighbour["text"]=neighbour["text"].lstrip()[len(lead):].lstrip()
+    for line,words in lines:
+        for word in words:word["parent_text"]=line["text"]
+    return lines
+
+
 def paddle(path,language,*,render_scale=2,max_side=None):
     import pypdfium2 as pdfium
     import numpy as np
@@ -318,6 +355,7 @@ def paddle(path,language,*,render_scale=2,max_side=None):
                 image=ImageOps.exif_transpose(original).convert("RGB")
                 image_limit=3600 if render_scale>2 else 2600
                 image.thumbnail((image_limit,image_limit)); size=list(image.size)
+                page_lines=[]
                 for result in reader.predict(np.array(image),return_word_box=True):
                     res=result.json
                     if isinstance(res,str):res=json.loads(res)
@@ -327,16 +365,17 @@ def paddle(path,language,*,render_scale=2,max_side=None):
                         poly=polys[idx] if idx<len(polys) else []
                         box=[min(p[0] for p in poly),min(p[1] for p in poly),max(p[0] for p in poly),max(p[1] for p in poly)] if len(poly) else None
                         line_box={"text":value,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,"box":box,"size":size}
-                        line_boxes.append(line_box)
                         word_texts=res.get("text_word",[])
                         word_regions=res.get("text_word_boxes",[])
+                        words=[]
                         if idx<len(word_texts) and idx<len(word_regions) and len(word_texts[idx])==len(word_regions[idx]) and word_texts[idx]:
-                            for word,region in zip(word_texts[idx],word_regions[idx]):
-                                if len(region)!=4:continue
-                                boxes.append({"text":word,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,
-                                    "box":[float(v) for v in region],"size":size,"geometry":"word","parent_text":value})
-                            continue
-                        boxes.append(line_box)
+                            words=[{"text":word,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,
+                                    "box":[float(v) for v in region],"size":size,"geometry":"word","parent_text":value}
+                                   for word,region in zip(word_texts[idx],word_regions[idx]) if len(region)==4]
+                        page_lines.append((line_box,words))
+                for line_box,words in _trim_split_lines(page_lines):
+                    line_boxes.append(line_box)
+                    boxes.extend(words or [line_box])
     # Keep real text-line strings for templates; word geometry serves tables
     # without adding artificial spaces inside header labels or numeric fields.
     text=spatial_text(line_boxes)

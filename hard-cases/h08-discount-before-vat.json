@@ -1,0 +1,30 @@
+{
+  "number": "SLC-INV-2209",
+  "supplier_name": "Silverleaf Cosmetics FZ-LLC",
+  "date": "2026-10-27",
+  "date_printed": "27/10/2026",
+  "po": "70915",
+  "currency": "AED",
+  "net": "2437.50",
+  "tax": "121.88",
+  "lines": [
+    {
+      "sku": "SLC-LIP-07",
+      "gtin": "6297700007079",
+      "description": "Matte lipstick shade 07",
+      "uom": "PCS",
+      "qty": "50",
+      "price": "22.50",
+      "net_amount": "1125.00"
+    },
+    {
+      "sku": "SLC-FND-30",
+      "gtin": "6297700030053",
+      "description": "Liquid foundation 30 ml",
+      "uom": "PCS",
+      "qty": "25",
+      "price": "55.00",
+      "net_amount": "1375.00"
+    }
+  ]
+}

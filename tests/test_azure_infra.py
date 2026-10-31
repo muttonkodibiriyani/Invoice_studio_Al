@@ -225,7 +225,9 @@ def test_the_workflow_checks_the_entra_settings_before_it_builds():
     for var in ("ENTRA_TENANT_ID", "ENTRA_CLIENT_ID", "ENTRA_ADMIN_GROUP_NAME", "ENTRA_MEMBER_GROUP_NAME"):
         assert steps[check]["env"][var] == "${{ vars.%s }}" % var
     body = WORKFLOW.read_text()
-    assert "--set-env-vars" not in body and "--replace-env-vars" not in body
+    # The one exception is the candidate's job recovery switch (docs/AZURE.md section 8), never sign-in.
+    assert re.findall(r"--set-env-vars \S+", body) == ["--set-env-vars INV_STUDIO_RECOVER_JOBS=0"]
+    assert "--replace-env-vars" not in body
 
 
 def test_after_the_warm_up_the_models_are_read_only_and_the_model_hub_is_off():
@@ -324,10 +326,18 @@ def test_postgres_is_version_16():
     assert "param postgresVersion string = '16'" in text
 
 
-def test_the_deploy_workflow_only_runs_when_a_person_asks():
+def test_the_deploy_workflow_runs_on_request_or_after_ci_passes_on_main():
     workflow = yaml.safe_load(WORKFLOW.read_text())
     triggers = workflow[True] if True in workflow else workflow["on"]
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(triggers) == {"workflow_dispatch", "workflow_run"}
+    assert triggers["workflow_run"] == {"workflows": ["CI"], "types": ["completed"], "branches": ["main"]}
+    gate = " ".join(workflow["jobs"]["deploy"]["if"].split())
+    for condition in ("vars.AZURE_AUTO_DEPLOY == 'true'", "github.event.workflow_run.conclusion == 'success'",
+                      "github.event.workflow_run.event == 'push'"):
+        assert condition in gate, f"an automatic run needs {condition}"
+    assert workflow["jobs"]["deploy"]["environment"] == "azure", "the azure environment's reviewers gate every run"
+    checkout = workflow["jobs"]["deploy"]["steps"][0]
+    assert "github.event.workflow_run.head_sha" in checkout["with"]["ref"], "deploy the commit CI tested"
     assert workflow["permissions"]["id-token"] == "write"
     assert workflow["permissions"]["contents"] == "read"
     job = workflow["jobs"]["deploy"]
@@ -337,14 +347,35 @@ def test_the_deploy_workflow_only_runs_when_a_person_asks():
     assert "client-secret" not in body and "creds:" not in body, "no secret value in the workflow"
 
 
-def test_the_workflow_sends_no_traffic_unless_the_dispatch_asks():
+def test_traffic_moves_only_after_health_and_only_when_asked_or_automatic():
     workflow = yaml.safe_load(WORKFLOW.read_text())
     triggers = workflow[True] if True in workflow else workflow["on"]
     assert triggers["workflow_dispatch"]["inputs"]["send_traffic"]["default"] is False
     steps = workflow["jobs"]["deploy"]["steps"]
+    names = [step.get("name", "") for step in steps]
     traffic = [step for step in steps if "traffic set" in step.get("run", "")]
-    promote = [step for step in traffic if "inputs.send_traffic" in str(step.get("if", ""))]
-    assert len(promote) == 1, "exactly one step moves traffic, and only on request"
+    promote = [step for step in traffic if "steps.tag.outputs.send_traffic" in str(step.get("if", ""))]
+    assert len(promote) == 1, "exactly one step moves traffic to the new revision"
+    for check in ("Check the candidate is healthy", "Check the live revision is healthy"):
+        assert names.index(check) < steps.index(promote[0]), f"{check} comes before the traffic"
+        assert "scripts/azure_revision_ready.sh" in steps[names.index(check)]["run"]
+    assert "/health" in (ROOT / "scripts" / "azure_revision_ready.sh").read_text()
+
+
+def test_the_candidate_never_takes_over_jobs_and_the_live_revision_does():
+    steps = {step.get("name"): step for step in yaml.safe_load(WORKFLOW.read_text())["jobs"]["deploy"]["steps"]}
+    assert "--set-env-vars INV_STUDIO_RECOVER_JOBS=0" in steps["Create the candidate revision"]["run"]
+    live = steps["Create the live revision"]["run"]
+    assert "--remove-env-vars INV_STUDIO_RECOVER_JOBS" in live
+    assert "steps.revision.outputs.image" in live, "the live revision runs the candidate's digest"
+    assert "revision deactivate" in steps["Stop the candidate"]["run"]
+    rollback = steps["Roll back to the revision that was live"]
+    assert "failure()" in rollback["if"] and "steps.live.outputs.revision" in rollback["run"]
+
+
+def test_no_workflow_input_is_pasted_into_a_script():
+    for step in yaml.safe_load(WORKFLOW.read_text())["jobs"]["deploy"]["steps"]:
+        assert "inputs." not in step.get("run", ""), f"step {step.get('name')} pastes an input into its script"
 
 
 def test_the_outputs_the_runbook_reads_are_the_ones_the_template_produces():
@@ -414,3 +445,66 @@ def test_blob_and_registry_access_is_audited():
     assert "scope: registry" in registry
     for category in ("ContainerRegistryLoginEvents", "ContainerRegistryRepositoryEvents"):
         assert f"category: '{category}'" in registry
+
+
+def test_the_spoke_range_comes_from_ipam_and_is_never_guessed():
+    # Access request H1: the /24 is the platform's IPAM answer. A default would be a guessed range that can
+    # overlap the hub, so the parameter is required and the example file carries the placeholder.
+    main = (INFRA / "main.bicep").read_text()
+    assert declared_params(main).get("networkAddressPrefix") is False
+    assert "<SPOKE_VNET_CIDR>" in main
+    assert '"networkAddressPrefix": { "value": "<SPOKE_VNET_CIDR>" }' in (INFRA / "main.parameters.example.json").read_text()
+    network = (INFRA / "network.bicep").read_text()
+    assert declared_params(network).get("addressPrefix") is False
+    assert not re.search(r"\b10\.\d+\.\d+\.\d+/\d+", main + network), "no address range is written into the template"
+
+
+def test_hub_peering_and_dns_are_optional_and_passed_through():
+    main = (INFRA / "main.bicep").read_text()
+    params = declared_params(main)
+    assert params.get("hubVnetId") is True and params.get("dnsServers") is True
+    assert re.search(r"^param hubVnetId string = ''$", main, re.MULTILINE)
+    assert re.search(r"^param dnsServers array = \[\]$", main, re.MULTILINE)
+    network = (INFRA / "network.bicep").read_text()
+    assert "virtualNetworkPeerings@" in network and "= if (!empty(hubVnetId))" in network
+    assert "useRemoteGateways: false" in network and "allowForwardedTraffic: true" in network
+    assert re.search(r"dhcpOptions: empty\(dnsServers\) \? null : \{\s+dnsServers: dnsServers", network)
+    for name in ("vnetName", "vnetId", "appsSubnetId", "endpointsSubnetId", "hubPeeringName"):
+        assert name in declared_outputs(main), f"main.bicep should output {name}"
+
+
+def test_both_subnets_have_an_nsg_that_denies_other_inbound():
+    network = (INFRA / "network.bicep").read_text()
+    for subnet in ("apps", "endpoints"):
+        block = network.split(f"name: '{subnet}'", 1)[1].split("\n      }\n", 1)[0]
+        assert f"id: {subnet}Nsg.id" in block, f"the {subnet} subnet has no NSG"
+        nsg = network.split(f"resource {subnet}Nsg ", 1)[1].split("\n}\n", 1)[0]
+        assert re.search(r"name: 'deny-all-other-inbound'\s+properties: \{\s+priority: 4096\s+direction: 'Inbound'\s+"
+                         r"access: 'Deny'", nsg), f"the {subnet} NSG must end in a deny-all inbound rule"
+    # A workload-profiles environment needs a delegated /27 or larger; private endpoints obey the NSG.
+    assert "var appsPrefix = cidrSubnet(addressPrefix, 27, 0)" in network
+    assert "privateEndpointNetworkPolicies: 'NetworkSecurityGroupEnabled'" in network
+    assert "'AzureLoadBalancer'" in network and "'30000-32767'" in network
+    assert "destinationPortRange: '5432'" in network
+
+
+def test_the_environment_turns_internal_on_one_flag():
+    main = (INFRA / "main.bicep").read_text()
+    assert re.search(r"^param internalEnvironment bool = false$", main, re.MULTILINE), \
+        "false keeps the public first deploy; the target redeploy sets true"
+    app = (INFRA / "containerapp.bicep").read_text()
+    assert "internal: internalEnvironment" in app
+    # In an internal environment, external ingress means reachable from the virtual network only. false
+    # would hide the app from the hub entry point and change its host name.
+    assert re.search(r"ingress: \{(?:\s+//[^\n]*)*\s+external: true", app)
+    assert "clientSource = internalEnvironment ? 'VirtualNetwork' : 'Internet'" in (INFRA / "network.bicep").read_text()
+    for name in ("appEnvironmentStaticIp", "appEnvironmentDefaultDomain"):
+        assert name in declared_outputs(main)
+
+
+def test_the_dockerfiles_build_without_buildkit():
+    # az acr build (the deploy workflow) uses the classic builder, which has no heredocs or RUN --mount.
+    for name in ("Dockerfile", "Dockerfile.app-layer"):
+        text = (ROOT / name).read_text()
+        assert not re.search(r"<<-?\s*['\"]?\w+", text), f"{name} has a heredoc"
+        assert "--mount" not in text and "# syntax=" not in text, f"{name} needs BuildKit"

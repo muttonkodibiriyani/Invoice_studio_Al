@@ -7,3 +7,19 @@ b9c623f693127b2d5b540206bb988d15a29bfbf5:docs/live-image-history.jsonl:generic-a
 # Firebase web API key in the recovered Hosting init files, removed from the tree by PR #40; it stays in history.
 b9c623f693127b2d5b540206bb988d15a29bfbf5:hosting/public/__/firebase/init.json:gcp-api-key:2
 b9c623f693127b2d5b540206bb988d15a29bfbf5:hosting/public/__/firebase/init.js:gcp-api-key:3
+# The lines above are Inv_studio's history. This repository was imported as a fresh history (490f3f8), so the
+# same matches carry new commit ids here; reviewed 29 Oct 2026, none is a live secret.
+# Test fixtures: a made-up refresh token ("rt-secret-0123456789") and the public jwt.io sample token.
+490f3f8ae281f59e5271aaecadd420230d1d8473:tests/test_chatgpt_bundle.py:generic-api-key:8
+4b2c64fbbb969ac254cde60ea32ef6ff7523cfd3:tests/test_chatgpt_bundle.py:generic-api-key:8
+490f3f8ae281f59e5271aaecadd420230d1d8473:tests/test_settings_audit_and_error_headers.py:generic-api-key:42
+6fc69f0c12014c89e7520760a5ecd708e08bd7b5:tests/test_settings_audit_and_error_headers.py:generic-api-key:42
+490f3f8ae281f59e5271aaecadd420230d1d8473:tests/test_logging.py:jwt:35
+# The python base image's public release-signing GPG key fingerprint, in the recovered image history.
+490f3f8ae281f59e5271aaecadd420230d1d8473:docs/live-image-history.jsonl:generic-api-key:88
+# The id of Azure's built-in "User Access Administrator" role definition (public, the same in every tenant).
+4b6cff38e31bee915e5a9a8115e1bcbf90848b54:scripts/azure_deploy.py:generic-api-key:105
+6ec344164a102bc8cb3102ae8c3a84f41b0ac131:scripts/azure_deploy.py:generic-api-key:105
+# A minified variable name in the bundled MSAL sign-in script (app/static/entra-auth.bundle.js), not a key.
+a6039b49cb06e2a3968c4b16c5cde82332d0d554:app/static/entra-auth.bundle.js:generic-api-key:1
+29712212ce75a57791164346eb3e25cb760ccd99:app/static/entra-auth.bundle.js:generic-api-key:1

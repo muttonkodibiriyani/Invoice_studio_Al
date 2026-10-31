@@ -10,6 +10,8 @@ param userAssignedIdentityId string
 param userAssignedIdentityClientId string
 @description('The delegated subnet the environment runs in, so the app reaches the database privately.')
 param infrastructureSubnetId string
+@description('True: the environment is internal, so the app has no public address and is reached from the virtual network only. Fixed when the environment is created.')
+param internalEnvironment bool = false
 param registryLoginServer string
 param storageAccountName string
 param blobContainerName string
@@ -46,11 +48,13 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   location: location
   tags: tags
   properties: {
-    // A workload-profiles environment in our own subnet. External: the app keeps its public HTTPS
-    // address; only its outbound traffic and the private endpoints share the network.
+    // A workload-profiles environment in our own subnet. Not internal (the first POC deploy): the app
+    // keeps its public HTTPS address; only its outbound traffic and the private endpoints share the
+    // network. Internal (the target): the environment gets a private static IP in the apps subnet and
+    // no public address at all; users come in through the platform's entry point in the hub.
     vnetConfiguration: {
       infrastructureSubnetId: infrastructureSubnetId
-      internal: false
+      internal: internalEnvironment
     }
     workloadProfiles: [
       {
@@ -199,6 +203,10 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Multiple'
       maxInactiveRevisions: 10
       ingress: {
+        // external means "reachable from outside the environment", not "from the internet". In an
+        // internal environment it is reachable from the virtual network only, which the hub's entry
+        // point needs; false would limit the app to other apps in the same environment and give it an
+        // .internal. host name that the allowed origins and the startup probe do not use.
         external: true
         targetPort: targetPort
         transport: 'auto'
@@ -260,3 +268,5 @@ output appUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
 output appName string = app.name
 output appEnvironmentName string = environment.name
 output appAllowedOrigins string = originList
+output appEnvironmentStaticIp string = environment.properties.staticIp
+output appEnvironmentDefaultDomain string = environment.properties.defaultDomain

@@ -4,6 +4,8 @@
 # Dependencies, OCR models and everything outside /opt/inv-studio/app stay exactly as in BASE (no re-download,
 # no warm-up re-run). The old app/ is removed first, so files deleted in the commit do not linger.
 #   docker build -f Dockerfile.app-layer --build-arg BASE=<image>@sha256:<digest> -t <image>:<tag> .
+# BASE must be pinned by digest; check the value first with
+#   python3 tools/security/check_base_image.py Dockerfile.app-layer --build-arg BASE=<image>@sha256:<digest>
 ARG BASE
 FROM ${BASE}
 USER root

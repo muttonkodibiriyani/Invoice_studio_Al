@@ -58,8 +58,17 @@ param entraAdminGroupName string = ''
 @description('Display name of the Entra group granted the member app role. Shown on the Users screen only.')
 param entraMemberGroupName string = ''
 
-@description('Address space of the private network. The database is reachable only from inside it.')
-param networkAddressPrefix string = '10.40.0.0/24'
+@description('Address space of the spoke network: the /24 the platform\'s IPAM assigned (access request H1, <SPOKE_VNET_CIDR>, deploy kit line SPOKE_VNET_CIDR). No default on purpose: a guessed range can overlap the hub or another spoke. Apps take its first /27, private endpoints the second.')
+param networkAddressPrefix string
+
+@description('Resource id of the hub virtual network to peer with (access request H2, deploy kit HUB_VNET_ID). Empty creates no peering: no hub yet, or the platform creates both directions. The hub side is always the platform\'s.')
+param hubVnetId string = ''
+
+@description('DNS servers for the spoke network: the hub DNS server or Private DNS Resolver inbound IP (access request H2, deploy kit HUB_DNS_IP). Empty uses Azure-provided DNS. The hub resolver must then answer for privatelink.postgres.database.azure.com, or the app cannot find the database.')
+param dnsServers array = []
+
+@description('True makes the Container Apps environment internal: the app has no public address and is reached from the virtual network only, through the platform\'s entry point in the hub (access request H8). False (the default) keeps the public address the first POC deploy was agreed with; the target redeploy sets true. An environment cannot switch between the two in place: changing it replaces the environment and the app.')
+param internalEnvironment bool = false
 
 @description('True on the first deployment. Set it to false when re-running after rotating a secret with az keyvault secret set, so the rotation is kept.')
 param writeSecrets bool = true
@@ -121,6 +130,9 @@ module network 'network.bicep' = {
     location: location
     tags: tags
     addressPrefix: networkAddressPrefix
+    hubVnetId: hubVnetId
+    dnsServers: dnsServers
+    internalEnvironment: internalEnvironment
   }
 }
 
@@ -217,6 +229,7 @@ module containerapp 'containerapp.bicep' = {
     userAssignedIdentityId: identity.outputs.id
     userAssignedIdentityClientId: identity.outputs.clientId
     infrastructureSubnetId: network.outputs.appsSubnetId
+    internalEnvironment: internalEnvironment
     registryLoginServer: registry.outputs.loginServer
     storageAccountName: storage.outputs.storageAccountName
     blobContainerName: storage.outputs.blobContainerName
@@ -250,3 +263,12 @@ output databaseServerName string = postgres.outputs.postgresServerName
 output databaseHost string = postgres.outputs.fullyQualifiedDomainName
 output appIdentityClientId string = identity.outputs.clientId
 output appIdentityPrincipalId string = identity.outputs.principalId
+@description('With internalEnvironment, the private address every app name in the environment resolves to. The platform points a wildcard record for appEnvironmentDefaultDomain at it (access request H5) and its entry point at the app.')
+output appEnvironmentStaticIp string = containerapp.outputs.appEnvironmentStaticIp
+output appEnvironmentDefaultDomain string = containerapp.outputs.appEnvironmentDefaultDomain
+output vnetName string = network.outputs.vnetName
+output vnetId string = network.outputs.vnetId
+output appsSubnetId string = network.outputs.appsSubnetId
+output endpointsSubnetId string = network.outputs.endpointsSubnetId
+@description('The spoke side of the hub peering, for az network vnet peering show. Empty when hubVnetId is empty.')
+output hubPeeringName string = network.outputs.hubPeeringName

@@ -2,9 +2,14 @@
 # us-central1-docker.pkg.dev/productintelligence-beeb3/inv-studio/app@sha256:c91d782e... (tag del-b1fb54f,
 # amd64 manifest sha256:fdff1c4b...). The original build was 20+ incremental "COPY app" layers; this file
 # is the single clean build that reproduces the same /opt/inv-studio tree and the same installed packages.
-# The base is pinned by digest (the multi-arch index, read from the Docker Hub registry API on 2026-10-28), so a
+# The base is pinned by digest (the multi-arch index, read from the Docker Hub registry API on 2026-10-30), so a
 # re-pushed tag cannot change the build. To move it: read the new index digest of the tag and replace both parts.
-FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+# Approved base image: <APPROVED_BASE_IMAGE>@<APPROVED_BASE_IMAGE_DIGEST>. The platform has not named it yet;
+# until it does, the upstream image below is used. CI refuses an unpinned FROM (tools/security/check_base_image.py)
+# and scans this base for fixed HIGH/CRITICAL OS vulnerabilities (docs/CI_SECURITY.md).
+# 3.12.16 (built 2026-10-28): trivy 0.76.1 found no fixable HIGH/CRITICAL OS findings in it on 2026-10-30;
+# 3.12.12 (sha256:593bd06e...) had 39.
+FROM python:3.12.16-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 
 ARG TORCH_VERSION=2.14.1+cpu
 ARG TORCHVISION_VERSION=0.29.1+cpu
@@ -34,12 +39,14 @@ WORKDIR /opt/inv-studio
 # hashed lock for the whole set, including torch from download.pytorch.org (that index does publish sha256),
 # and cannot take the local '.[...]' installs or the forced numpy/opencv re-install, so the five steps below
 # must be rebuilt as one locked install, and that needs a full image build to prove.
+# filelock is installed from PyPI with pip, so the torch step (the CPU index only, which torch must come from)
+# finds the constrained version already installed.
 COPY constraints.txt /opt/build/constraints.txt
 ENV PIP_CONSTRAINT=/opt/build/constraints.txt
 COPY pyproject.toml LICENSE ./
 RUN mkdir -p app && touch app/__init__.py
 RUN python -m pip install --no-cache-dir \
-        pip==26.2.2 setuptools==84.2.1 wheel==0.48.0 \
+        pip==26.2.2 setuptools==84.2.1 wheel==0.48.0 filelock==4.2.1 \
     && python -m pip install --no-cache-dir --no-build-isolation '.[cloud,azure]' \
     && python -m pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
@@ -54,14 +61,13 @@ RUN python -m pip install --no-cache-dir \
 # The "Local Claude" provider shells out to the Claude Code CLI (app/providers.py).
 ARG CLAUDE_VERSION=2.1.285
 ARG CLAUDE_SHA256=33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29
-RUN python - <<'PY'
-import hashlib, os, pathlib, urllib.request
-url='https://downloads.claude.ai/claude-code-releases/'+os.environ['CLAUDE_VERSION']+'/linux-x64/claude'
-target=pathlib.Path('/usr/local/bin/claude')
-urllib.request.urlretrieve(url,target)
-assert hashlib.sha256(target.read_bytes()).hexdigest()==os.environ['CLAUDE_SHA256'], 'CLI checksum mismatch'
-target.chmod(0o755)
-PY
+# One python -c, not a heredoc: the classic builder that az acr build uses has no heredocs.
+RUN python -c "import hashlib, os, pathlib, urllib.request; \
+url = 'https://downloads.claude.ai/claude-code-releases/' + os.environ['CLAUDE_VERSION'] + '/linux-x64/claude'; \
+target = pathlib.Path('/usr/local/bin/claude'); \
+urllib.request.urlretrieve(url, target); \
+assert hashlib.sha256(target.read_bytes()).hexdigest() == os.environ['CLAUDE_SHA256'], 'CLI checksum mismatch'; \
+target.chmod(0o755)"
 ENV DISABLE_UPDATES=1
 RUN claude --version
 

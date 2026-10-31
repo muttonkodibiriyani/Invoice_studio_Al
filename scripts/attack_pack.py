@@ -100,7 +100,7 @@ MEMBER_REFUSED = [r for r in ROUTES if r[2] == "admin"]
 
 
 class Pack:
-    def __init__(self, url, admin=None, member=None, timeout=60, disruptive=False, keep=False, wait=900, out=print):
+    def __init__(self, url, admin=None, member=None, timeout=60, disruptive=False, keep=False, wait=900, out=lambda line: print(line, flush=True)):
         self.url = url.rstrip("/")
         self.host = urlparse(self.url).netloc
         self.https = self.url.startswith("https://")

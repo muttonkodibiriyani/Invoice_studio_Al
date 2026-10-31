@@ -58,7 +58,8 @@ trade name. Never the `Bill To` / `Ship To` / `Customer` party, an address line,
 **po**: the buyer's purchase order number. Labels: `PO`, `PO No`, `PO Number`, `P.O. #`, `Purchase Order`,
 `Customer PO`, `LPO`, `LPO No`, `LPO Ref`, `Order Ref`. Anywhere on the invoice: header, a header table cell under
 its heading, or a line under the item table on the last page. A leading document-type word joined to the number is
-dropped: `LPO-77310`, `PO 77310`, `PO#77310` → `77310`. Any other prefix is kept. Never `Source`, `SO`,
+dropped: `LPO-77310`, `PO 77310`, `PO#77310` → `77310`. Any other prefix is kept. The po is the one identifier
+token after the label: a note word after it (`70415 TESTER`) is dropped. An alphanumeric code is kept as printed. Never `Source`, `SO`,
 `Sales Order`, `Delivery Note`, `Quotation`.
 
 **currency**: ISO 4217 code. From a `Currency` cell, a code beside amounts or totals (`Total (AED)`, `950.40 AED`),

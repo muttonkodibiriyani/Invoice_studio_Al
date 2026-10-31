@@ -32,13 +32,13 @@ the scorecard (`scripts/engine_scorecard.py`) all aim at these answers. All exam
 The invoice date only: labels `Invoice Date`, `Date`, `Tax Invoice Date`, `Document Date`. Never `Due Date`,
 `Delivery Date`, `LPO Date`, `Order Date`.
 
-- `date_printed`: exactly as printed (`8/13/2026`, `04-Oct-2026`), whitespace collapsed. Null only if no invoice date.
+- `date_printed`: exactly as printed (`7/23/2026`, `04-Oct-2026`), whitespace collapsed. Null only if no invoice date.
 - `date`: ISO `YYYY-MM-DD`, decided **from that one printed date alone**:
   - month name (`04 Oct 2026`, `04-Oct-2026`, `Oct 4, 2026`) → that date;
   - year first (`2026/10/04`, `2026-10-04`) → that date;
   - numeric, year last, one leading part > 12 → that part is the day (`19/10/2026` → `2026-10-19`,
-    `8/13/2026` → `2026-08-13`);
-  - both leading parts equal (`09/09/2026`) → that date;
+    `7/23/2026` → `2026-07-23`);
+  - both leading parts equal (`03/03/2026`) → that date;
   - both ≤ 12 and different (`05/10/2026`) → **`null`** (date_printed still filled). This is the app's V-008 rule.
     Do not use the supplier's other invoices to decide: one supplier prints month-first on some invoices and
     day-first on others. Do not use other dates on the page either.
@@ -62,7 +62,7 @@ dropped: `LPO-77310`, `PO 77310`, `PO#77310` → `77310`. Any other prefix is ke
 token after the label: a note word after it (`70415 TESTER`) is dropped. An alphanumeric code is kept as printed. Never `Source`, `SO`,
 `Sales Order`, `Delivery Note`, `Quotation`.
 
-**currency**: ISO 4217 code. From a `Currency` cell, a code beside amounts or totals (`Total (AED)`, `950.40 AED`),
+**currency**: ISO 4217 code. From a `Currency` cell, a code beside amounts or totals (`Total (AED)`, `812.30 AED`),
 or the amount in words (`Dirham` → AED). Symbols: `Dhs`/`Dh`/`د.إ` → AED, `KD` → KWD, `SR` → SAR, `QR` → QAR,
 `BD` → BHD, `RO` → OMR. Not from the supplier's country.
 
@@ -75,6 +75,7 @@ taken after it). Discount after subtotal → net is the post-discount taxable fi
 ## Line building
 
 - One line per item row: a row that prints its own qty, price or amount. Lines are in printed order.
+- Columns are found by their heading words, never by position.
 - **Continuation rows**: text rows under an item row, up to the next item row, that print no qty/price/amount,
   belong to that line's description (joined with one space, in printed order, even when they repeat the name).
 - **Two-page tables**: the table continues on the next page. Repeated column headings, page headers and footers,
@@ -104,15 +105,17 @@ appended.
 
 **uom**: the unit, mapped onto the vocabulary below. From a `Unit`, `UOM`, `U.O.M`, `Unit of Measure` column, a unit
 word glued to qty, or a heading `Qty in CTN`. A `Size`, `Pack Size` or `Volume` column (`50ml`) is **not** a unit of
-measure. No unit printed → `null`.
+measure. No unit printed → `null`. A `Unit` / `Units` heading is the unit column; the `Unit` of `Unit Price`, or of a
+bracketed price heading (`Unit (excl. VAT) Price`), is not.
 
 **price**: the unit price before line discount and before VAT: `Unit Price`, `Rate`, `Price`, `Unit Price Excl.
-VAT`. With a `Disc.%` column, price is the printed list price (`192.00`), not the discounted one. A gift line with
+VAT`. With a `Disc.%` column, price is the printed list price (`164.00`), not the discounted one. A gift line with
 a 100% discount keeps its printed price (`0.98`).
 
 **net_amount**: the printed line amount after line discount, before VAT: `Amount`, `Value Exc. Tax`, `Net Amount`,
 `Taxable Amount`, `Amount Excl. VAT`. Never a `Total` / `Total Amount` column that includes VAT when an excl. column
-is printed. Only an incl.-VAT amount printed → `null` (never computed).
+is printed. Only an incl.-VAT amount printed → `null` (never computed). A lone `Amount <currency>` column
+(`Amount AED`) with no other line-amount column is net_amount.
 
 ## Unit-of-measure vocabulary
 
@@ -148,4 +151,4 @@ A unit not in the table: write it upper-cased as printed, and propose it here.
 - **Flagged truth**: hard cases h03 and s03 expect po `LPO-77310`; under the po rule it is `77310`. To be changed in
   `build_hard_corpus.py` by the header-field task.
 - `docs/HARD_CORPUS.md` "any other numeric date is day-first" is replaced by the date rule above (the part over 12
-  is the day, so `8/13/2026` is 13 August).
+  is the day, so `7/23/2026` is 23 July).

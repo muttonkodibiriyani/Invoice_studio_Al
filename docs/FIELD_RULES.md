@@ -23,7 +23,6 @@ the scorecard (`scripts/engine_scorecard.py`) all aim at these answers. All exam
   unless its group has 3 digits (`2.480.00` = 2480.00, `1.234.567` = 1234567).
 - Not a number → `null`: a percent, two numbers in one cell (`12 3.50`), letters, a lone `O`, a comma + 4 or more
   digits, more than 24 digits.
-- A unit glued to qty is split off (`9.00 Units` → qty `9.00`, uom from `Units`).
 - A line or total amount the layout reader reads is never negative: a bracketed figure there is a discount or
   credit, not the field.
 - A printed `0.00` is a value: `0.00`, not `null`.
@@ -99,7 +98,8 @@ sku and gtin). A code with a letter (`…T` = tester) is not a GTIN: gtin `null`
 `HS code:`) removed; wrapped cells and continuation rows joined with one space. A `Size` / `Volume` column is not
 appended.
 
-**qty**: the `Qty` / `Quantity` column number (see Numbers). A unit word glued to it goes to uom.
+**qty**: the `Qty` / `Quantity` column number (see Numbers). A cell `9.00 Units` is split before number parsing
+(qty `9.00`, uom from `Units`); the number parser itself returns null for it. The split belongs to the uom task.
 
 **uom**: the unit, mapped onto the vocabulary below. From a `Unit`, `UOM`, `U.O.M`, `Unit of Measure` column, a unit
 word glued to qty, or a heading `Qty in CTN`. A `Size`, `Pack Size` or `Volume` column (`50ml`) is **not** a unit of

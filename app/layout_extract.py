@@ -187,10 +187,13 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     invoice_date = _extract_date(lines)
     if po is None:
         po = compact_header.get("po")
-    if invoice_date is None:
-        invoice_date = compact_header.get("date")
+    if invoice_date is None and compact_header.get("date"):
+        invoice_date = _parse_date(compact_header["date"])
     if invoice_date is None:
         invoice_date = _spatial_labeled_date(rows)
+    column_date = _column_labeled_date(rows)
+    if invoice_date is None and column_date is not None:
+        invoice_date = _parse_date(column_date)
     currency = _extract_currency(lines)
     net_patterns = (
             re.compile(
@@ -265,7 +268,8 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         po=po,
         location=None,
         date=invoice_date,
-        date_printed=_extract_printed_date(source_lines) or _extract_printed_date(lines),
+        date_printed=_extract_printed_date(source_lines) or _extract_printed_date(lines) or column_date
+        or compact_header.get("date"),
         currency=currency,
         origin=None,
         market=None,
@@ -612,6 +616,42 @@ def _spatial_labeled_date(rows: list[tuple[int, list[_Word]]]) -> str | None:
     return _only_distinct(values)
 
 
+# A date as printed: numeric in any order, or with a month name.
+_PRINTED_DATE = re.compile(
+    r"(?i)\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|\d{1,2}(?:st|nd|rd|th)?[- /][A-Za-z]{3,9},?[- /]\d{2,4}"
+    r"|[A-Za-z]{3,9}\.? \d{1,2},? \d{4}"
+)
+
+
+def _column_labeled_date(rows: list[tuple[int, list[_Word]]]) -> str | None:
+    """The date printed under an "Invoice Date" column heading, as printed.
+
+    A header strip prints "Invoice Date  Due Date  Delivery Date" on one row and the dates on the row
+    below, so the value is the one under the heading's own span: the due and delivery dates sit under
+    theirs. Only the row just below counts.
+    """
+
+    values: list[str] = []
+    for index, (page, row) in enumerate(rows):
+        for start in range(len(row) - 1):
+            if " ".join(_normal(word.text) for word in row[start:start + 2]) not in {"invoice date", "document date"}:
+                continue
+            label = row[start:start + 2]
+            left, right = label[0].x0, label[-1].x1
+            slack = label[0].height
+            below = next(
+                (other for other_page, other in rows[index + 1:index + 2] if other_page == page), None
+            )
+            if not below or below[0].y0 - label[0].y1 > 3 * slack:
+                continue
+            under = [word for word in below if left - slack <= word.x <= right + slack]
+            printed = re.sub(r"\s*([-/.,])\s*", r"\1", " ".join(word.text for word in under)).strip()
+            printed = re.sub(r",(?=\d{4})", ", ", printed)
+            if _PRINTED_DATE.fullmatch(printed):
+                values.append(printed)
+    return _only_distinct(values)
+
+
 def _spatial_labeled_identifier(
     rows: list[tuple[int, list[_Word]]], labels: set[str]
 ) -> str | None:
@@ -938,8 +978,8 @@ def _spatial_compact_header(rows: list[tuple[int, list[_Word]]]) -> dict[str, st
                 )
                 if candidate is None:
                     continue
-                if field == "date":
-                    parsed = _parse_compact_header_date(candidate)
+                if field == "date":  # kept as printed: an ambiguous date still marks the block
+                    parsed = candidate if _parse_date(candidate) or _PRINTED_DATE.fullmatch(candidate) else None
                 else:
                     compact = candidate.replace(" ", "")
                     parsed = (
@@ -969,20 +1009,6 @@ def _spatial_compact_header(rows: list[tuple[int, list[_Word]]]) -> dict[str, st
             valid.append({field: next(iter(field_values)) for field, field_values in values.items()})
     distinct = {tuple(sorted(candidate.items())) for candidate in valid}
     return dict(next(iter(distinct))) if len(distinct) == 1 else {}
-
-
-def _parse_compact_header_date(value: str) -> str | None:
-    parsed = _parse_date(value)
-    if parsed is not None:
-        return parsed
-    day_first = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", value.strip())
-    if day_first is None:
-        return None
-    day, month, year = map(int, day_first.groups())
-    try:
-        return date(year, month, day).isoformat()
-    except ValueError:
-        return None
 
 
 def _unique_text(lines: list[str], patterns: tuple[re.Pattern[str], ...]) -> str | None:

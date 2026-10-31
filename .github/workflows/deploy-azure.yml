@@ -1,6 +1,13 @@
 # Builds the application image in Azure Container Registry and puts it on a new Container Apps
-# revision. Manual only: a build never goes live by itself, so the new revision gets no traffic
-# unless the dispatch asks for it.
+# revision.
+#
+# Two ways in:
+#   - automatic: every push to main whose CI run passes, once the repository variable
+#     AZURE_AUTO_DEPLOY is true (set it after the first deploy from Cloud Shell, docs/AZURE.md).
+#     The new revision gets traffic only when its /health answers 200; otherwise traffic stays
+#     on the revision that was live.
+#   - manual: Run workflow, for a chosen tag; traffic moves only when the dispatch asks for it.
+# Either way the job waits for the reviewers of the azure environment, when it has any.
 #
 # Sign-in uses OIDC federated credentials: no secret value is kept in the repository. What the
 # repository needs, and how to set it up, is in docs/AZURE.md.
@@ -10,6 +17,10 @@
 name: Deploy to Azure
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       image_tag:
@@ -32,21 +43,43 @@ concurrency:
 
 jobs:
   deploy:
+    # Automatic runs only for a passing CI run of a push to main, and only once auto-deploy is switched on.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.AZURE_AUTO_DEPLOY == 'true' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # Add required reviewers to this environment in the repository settings to gate go-live.
     environment: azure
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The commit CI tested, not whatever main points at by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Work out the tag
         id: tag
+        env:
+          # Passed through the environment, never pasted into the script (security review L1).
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          SEND_TRAFFIC: ${{ github.event_name == 'workflow_run' || inputs.send_traffic }}
         run: |
-          tag="${{ inputs.image_tag }}"
+          tag="$IMAGE_TAG"
           if [ -z "$tag" ]; then tag="$(git rev-parse --short HEAD)"; fi
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "::error::image_tag must be a Docker tag: letters, digits, _ . - and at most 128 characters"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           slug=$(printf '%s' "$tag" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
           echo "suffix=r$slug-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          if [ "$SEND_TRAFFIC" = "true" ]; then
+            echo "send_traffic=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "send_traffic=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Sign in to Azure
         uses: azure/login@v2
@@ -128,7 +161,9 @@ jobs:
             --timeout 14400 \
             .
 
-      - name: Create the new revision
+      # The candidate runs with INV_STUDIO_RECOVER_JOBS=0: it shares the live database and must not take
+      # over invoices the live revision is reading (docs/AZURE.md section 9, "Invoices in flight").
+      - name: Create the candidate revision
         id: revision
         run: |
           server=$(az acr show --name "${{ vars.AZURE_CONTAINER_REGISTRY }}" --query loginServer -o tsv)
@@ -148,37 +183,82 @@ jobs:
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
             --image "$server/inv-studio@$digest" \
             --revision-suffix "${{ steps.tag.outputs.suffix }}" \
+            --set-env-vars INV_STUDIO_RECOVER_JOBS=0 \
             --only-show-errors -o none
           new="${{ vars.AZURE_CONTAINER_APP }}--${{ steps.tag.outputs.suffix }}"
           echo "revision=$new" >> "$GITHUB_OUTPUT"
+          echo "image=$server/inv-studio@$digest" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for the new revision to be healthy
+      - name: Check the candidate is healthy
         run: |
-          for _ in $(seq 1 60); do
-            state=$(az containerapp revision show \
-              --revision "${{ steps.revision.outputs.revision }}" \
-              --name "${{ vars.AZURE_CONTAINER_APP }}" \
-              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-              --query "properties.healthState" -o tsv 2>/dev/null || echo Unknown)
-            echo "health: $state"
-            if [ "$state" = "Healthy" ]; then exit 0; fi
-            if [ "$state" = "Unhealthy" ]; then exit 1; fi
-            sleep 20
-          done
-          echo "The revision did not become healthy in 20 minutes." >&2
-          exit 1
+          scripts/azure_revision_ready.sh "${{ vars.AZURE_CONTAINER_APP }}" "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            "${{ steps.revision.outputs.revision }}"
 
-      - name: Send traffic to the new revision
-        if: ${{ inputs.send_traffic }}
+      # Go live as docs/AZURE.md section 8: a fresh revision from the same digest without
+      # INV_STUDIO_RECOVER_JOBS, checked on its own address, then the traffic, then the candidate stops.
+      - name: Create the live revision
+        id: live_revision
+        if: ${{ steps.tag.outputs.send_traffic == 'true' }}
+        run: |
+          az containerapp update \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${{ steps.revision.outputs.image }}" \
+            --revision-suffix "${{ steps.tag.outputs.suffix }}-live" \
+            --remove-env-vars INV_STUDIO_RECOVER_JOBS \
+            --only-show-errors -o none
+          echo "revision=${{ steps.revision.outputs.revision }}-live" >> "$GITHUB_OUTPUT"
+
+      - name: Check the live revision is healthy
+        if: ${{ steps.tag.outputs.send_traffic == 'true' }}
+        run: |
+          scripts/azure_revision_ready.sh "${{ vars.AZURE_CONTAINER_APP }}" "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            "${{ steps.live_revision.outputs.revision }}"
+
+      - name: Send traffic to the live revision
+        id: promote
+        if: ${{ steps.tag.outputs.send_traffic == 'true' }}
         run: |
           az containerapp ingress traffic set \
             --name "${{ vars.AZURE_CONTAINER_APP }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --revision-weight "${{ steps.revision.outputs.revision }}=100" \
+            --revision-weight "${{ steps.live_revision.outputs.revision }}=100" \
+            --only-show-errors -o none
+          app=$(az containerapp show \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          for _ in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://$app/health" || echo 000)
+            echo "https://$app/health: $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "The app did not answer /health with 200 after the switch." >&2
+          exit 1
+
+      - name: Stop the candidate
+        if: ${{ steps.tag.outputs.send_traffic == 'true' }}
+        run: |
+          az containerapp revision deactivate \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --revision "${{ steps.revision.outputs.revision }}" \
             --only-show-errors -o none
 
+      - name: Roll back to the revision that was live
+        if: ${{ failure() && steps.promote.conclusion == 'failure' && steps.live.outputs.revision != '' }}
+        run: |
+          az containerapp ingress traffic set \
+            --name "${{ vars.AZURE_CONTAINER_APP }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --revision-weight "${{ steps.live.outputs.revision }}=100" \
+            --only-show-errors -o none
+          echo "::error::Rolled traffic back to ${{ steps.live.outputs.revision }}."
+
       - name: Report
+        if: ${{ always() && steps.revision.outputs.revision != '' }}
         run: |
           app=$(az containerapp show \
             --name "${{ vars.AZURE_CONTAINER_APP }}" \
@@ -196,11 +276,12 @@ jobs:
             echo "|---|---|"
             echo "| Tag | \`${{ steps.tag.outputs.tag }}\` |"
             echo "| Digest | \`${{ steps.revision.outputs.digest }}\` |"
-            echo "| New revision | \`${{ steps.revision.outputs.revision }}\` |"
+            echo "| Candidate revision | \`${{ steps.revision.outputs.revision }}\` |"
+            echo "| Live revision | \`${{ steps.live_revision.outputs.revision }}\` |"
             echo "| Revision address | https://$revision |"
             echo "| App address | https://$app |"
             echo "| Previous revision | \`${{ steps.live.outputs.revision }}\` |"
-            echo "| Traffic moved | ${{ inputs.send_traffic }} |"
+            echo "| Traffic moved | ${{ steps.tag.outputs.send_traffic }} |"
             echo ""
             if [ -n "${{ steps.live.outputs.revision }}" ]; then
               echo "Roll back with:"

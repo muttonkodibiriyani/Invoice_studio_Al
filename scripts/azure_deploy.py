@@ -2,6 +2,8 @@
 
     python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env --check   # preflight only
     python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env           # preflight, then deploy
+    python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env \
+        --image <acr login server>/inv-studio@sha256:<digest>                         # put the real app on, once
 
 The kit is infra/azure/deploy-kit.example.env filled in from the platform team's answer to the access
 request. The preflight runs in this order and stops at the first check that fails, with that one reason,
@@ -10,7 +12,7 @@ before anything is created:
   kit        every placeholder filled, nothing missing or unknown; Entra in the public cloud
   tools      az and Bicep present
   sign-in    signed in, in the kit's tenant and subscription, as TARKESH_UPN
-  group      the resource group exists in AZ_REGION and is empty (--rerun skips "empty")
+  group      the resource group exists in AZ_REGION and is empty (--rerun and --image skip "empty")
   roles      Owner, or Contributor plus a role that can create role assignments for the template's three
   providers  every resource provider the template uses is Registered
   quota      PostgreSQL Standard_B2s offered in the region; no Container Apps quota already full
@@ -22,6 +24,15 @@ throwaway secrets that are never printed or stored, so it creates nothing and ne
 
 The database admin password and the vault key are asked for hidden. They go to az in a parameter file
 readable only by you, which is deleted when the script ends, and are never printed.
+
+--image puts the first real image on the app, once, after the first deploy left it on the hello-world
+image. It runs main.bicep again with containerImage set, so the template gives the revision port 8080 and
+the /health startup probe; `az containerapp update --image` alone keeps the placeholder's port 80 and no
+probe, and that revision never becomes healthy. It asks for no secret: it reads the database URL and the
+vault key from the vault (AZURE.md §3 gives you read access), passes the admin password from that URL and
+the same vault key, and writeSecrets false, so the database password and every vault secret stay as they
+are. It refuses once AZURE.md §5a has moved the app off the admin login: from then on the Deploy to Azure
+workflow puts images on.
 """
 import argparse
 import getpass
@@ -33,12 +44,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "infra" / "azure" / "main.bicep"
 STATE = Path.home() / "inv-studio-azure"
 DEPLOYMENT_NAME = "invstudio-infra"
+# main.bicep's postgresAdminLogin default; the script never passes it. The database URL logs in as it until §5a.
+ADMIN_LOGIN = "invstudio"
+DATABASE_URL_SECRET = "inv-studio-database-url"
+VAULT_KEY_SECRET = "inv-studio-vault-key"
+IMAGE_BY_DIGEST = re.compile(r"([a-z0-9][a-z0-9.-]*[a-z0-9](?::[0-9]+)?)/inv-studio@sha256:[0-9a-f]{64}")
 
 # The placeholders of the access request (tm8 doc 01a187ad-7fd4, v4), in its order. The kit has exactly these.
 KIT_KEYS = (
@@ -60,14 +77,15 @@ NOT_APPLICABLE = "n/a"
 
 # Kit value -> main.bicep parameter. A parameter main.bicep does not declare yet (the "(new)" lines of the
 # access request) is skipped with a note, and passed once the Entra or target-round change adds it.
+# CITADEL_ENDPOINT and CITADEL_DEPLOYMENT are record only: release 1 runs with AI off. With an endpoint set
+# the app reports Foundry connected on the placeholder key, and a Citadel host outside the allow-list of
+# app/azure_foundry.py makes configured() raise. AI is switched on later, by AZURE.md §7.
 STRING = lambda v: v  # noqa: E731
 PARAMS = {
     "AZ_REGION": ("location", STRING),
     "AZ_NAME_PREFIX": ("namePrefix", STRING),
     "AZ_REQUIRED_TAGS": ("tags", json.loads),
     "SPOKE_VNET_CIDR": ("networkAddressPrefix", STRING),
-    "CITADEL_ENDPOINT": ("foundryEndpoint", STRING),
-    "CITADEL_DEPLOYMENT": ("foundryDeployment", STRING),
     "LOG_RETENTION_DAYS": ("logRetentionInDays", int),
     "APP_HOSTNAME": ("extraAllowedOrigins", lambda v: [f"https://{v}"]),
     "AZ_TENANT_ID": ("entraTenantId", STRING),
@@ -161,10 +179,13 @@ def read_kit(path):
     return kit
 
 
-def parameters(kit, declared, pg_password, vault_key):
-    """The ARM parameter values for this kit, limited to what main.bicep declares, and the skipped names."""
-    values = {"postgresAdminPassword": pg_password, "vaultKey": vault_key, "containerImage": "",
-              "writeSecrets": True}
+def parameters(kit, declared, pg_password, vault_key, image=""):
+    """The ARM parameter values for this kit, limited to what main.bicep declares, and the skipped names.
+
+    With an image, writeSecrets is false: the vault keeps every secret it holds, and pg_password and
+    vault_key must be the ones already in use."""
+    values = {"postgresAdminPassword": pg_password, "vaultKey": vault_key, "containerImage": image,
+              "writeSecrets": not image}
     skipped = []
     for key, (name, convert) in PARAMS.items():
         if kit[key] == NOT_APPLICABLE:
@@ -206,6 +227,7 @@ def check_sign_in(kit, run):
 
 
 def check_group(kit, run, rerun):
+    """rerun is true for --rerun and --image: the group may hold resources."""
     group_name = kit["AZ_RESOURCE_GROUP"]
     try:
         group = run("group", "show", "-n", group_name)
@@ -216,11 +238,71 @@ def check_group(kit, run, rerun):
         raise Stop(f"resource group {group_name} is in {group['location']}, not AZ_REGION {kit['AZ_REGION']}")
     if not rerun:
         resources = run("resource", "list", "-g", group_name)
+        apps = [r["name"] for r in resources if r.get("type", "").lower() == "microsoft.app/containerapps"]
+        if apps:
+            raise Stop(f"resource group {group_name} already holds the app {apps[0]}: the first deploy is done. "
+                       "To put the real image on it, run with --image <server>/inv-studio@sha256:<digest> "
+                       "(AZURE.md §5); after a deploy that failed part-way, run with --rerun")
         if resources:
             raise Stop(f"resource group {group_name} is not empty ({len(resources)} resources, e.g. "
                        f"{resources[0]['name']}): this is the first deploy. After a failed first attempt use --rerun")
     ok(f"resource group {group_name} in {group['location']}" + ("" if rerun else ", empty"))
     return group["id"]
+
+
+def check_image(kit, image, run):
+    """The image is named by digest and lives in the group's own registry, the one the app pulls from."""
+    match = IMAGE_BY_DIGEST.fullmatch(image)
+    if not match:
+        raise Stop(f"--image {image} is not <acr login server>/inv-studio@sha256:<64 hex digits>: deploy by digest, "
+                   "never by tag (AZURE.md §5 shows how to read the digest)")
+    servers = [s.lower() for s in run("acr", "list", "-g", kit["AZ_RESOURCE_GROUP"], "--query", "[].loginServer") or []]
+    if match.group(1) not in servers:
+        raise Stop(f"--image is in {match.group(1)}, not in the registry of resource group "
+                   f"{kit['AZ_RESOURCE_GROUP']} ({', '.join(servers) or 'none'}), the only one the app can pull from")
+    ok(f"image by digest, in {match.group(1)}")
+
+
+def find_vault(kit, run):
+    """The vault the first deploy made: from its saved outputs, else the one Key Vault in the group."""
+    try:
+        return json.loads((STATE / "outputs.json").read_text())["vaultName"]["value"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    names = run("keyvault", "list", "-g", kit["AZ_RESOURCE_GROUP"], "--query", "[].name") or []
+    if len(names) != 1:
+        raise Stop(f"found {len(names)} Key Vaults in resource group {kit['AZ_RESOURCE_GROUP']}, not one: "
+                   "--image is for a group the first deploy has made (run it without --image first)")
+    return names[0]
+
+
+def read_secrets(kit, run):
+    """The admin password and vault key in use now, read from the vault. Never asked for, never printed."""
+    vault = find_vault(kit, run)
+    values = {}
+    for name in (DATABASE_URL_SECRET, VAULT_KEY_SECRET):
+        try:
+            values[name] = run("keyvault", "secret", "show", "--vault-name", vault, "-n", name, "--query", "value")
+        except AzError:
+            raise Stop(f"cannot read {name} from Key Vault {vault}: give yourself Key Vault Secrets Officer on it "
+                       "first (AZURE.md §3), then run this again") from None
+        if not isinstance(values[name], str) or not values[name]:
+            raise Stop(f"{name} in Key Vault {vault} is empty: do not re-run the template, ask for help")
+    url = urllib.parse.urlsplit(values[DATABASE_URL_SECRET])
+    user = urllib.parse.unquote(url.username or "")
+    if user != ADMIN_LOGIN:
+        raise Stop(f"the app's database URL logs in as {user or 'nobody'}, not the admin {ADMIN_LOGIN}: AZURE.md §5a "
+                   "is done, so the real app is already on. From now on the Deploy to Azure workflow puts images on "
+                   "(AZURE.md §5); do not re-run the template")
+    password = urllib.parse.unquote(url.password or "")
+    if len(password) < 12:
+        raise Stop(f"the database URL in Key Vault {vault} has no admin password of 12 or more characters: "
+                   "do not re-run the template, ask for help")
+    key = values[VAULT_KEY_SECRET]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}=", key):
+        raise Stop(f"{VAULT_KEY_SECRET} in Key Vault {vault} is not a Fernet key: do not re-run the template, ask for help")
+    ok(f"database admin password and vault key read from Key Vault {vault}; neither will change")
+    return password, key
 
 
 def check_roles(object_id, scope, run):
@@ -354,7 +436,10 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--kit", required=True, help="the filled deploy kit, e.g. ~/inv-studio-azure/deploy-kit.env")
     parser.add_argument("--check", action="store_true", help="preflight only, with throwaway secrets")
-    parser.add_argument("--rerun", action="store_true", help="the group is not empty: a first attempt failed")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--rerun", action="store_true", help="the group is not empty: a first attempt failed")
+    modes.add_argument("--image", metavar="SERVER/inv-studio@sha256:DIGEST",
+                       help="put the first real image on the app, keeping every secret (AZURE.md §5)")
     args = parser.parse_args(argv)
     params_file = None
     try:
@@ -369,15 +454,18 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
             raise Stop("Bicep cannot build main.bicep: " + _first_line(str(err))) from None
         ok("az and Bicep present, main.bicep builds")
         object_id = check_sign_in(kit, run)
-        scope = check_group(kit, run, args.rerun)
+        scope = check_group(kit, run, args.rerun or bool(args.image))
         check_roles(object_id, scope, run)
         check_providers(run)
         check_quota(kit, run)
-        if args.check:
+        if args.image:
+            check_image(kit, args.image, run)
+            pg, key = read_secrets(kit, run)
+        elif args.check:
             pg, key = secrets.token_urlsafe(24), secrets.token_urlsafe(32)[:43] + "="
         else:
             pg, key = ask()
-        values, skipped = parameters(kit, declared, pg, key)
+        values, skipped = parameters(kit, declared, pg, key, args.image or "")
         check_template(declared, values, skipped)
         params_file = write_params(values)
         check_policy(kit["AZ_RESOURCE_GROUP"], params_file, run)
@@ -387,7 +475,12 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
         if args.check:
             print("\nPreflight passed. Nothing was created. Run again without --check to deploy.")
             return 0
-        if confirm("\nType DEPLOY to create these resources (about 15 minutes; costs start now): ") != "DEPLOY":
+        if args.image:
+            prompt = (f"\nType DEPLOY to put {args.image} on the app. The template runs again with the same secrets; "
+                      "the new revision takes the traffic once it is healthy (up to about 15 minutes): ")
+        else:
+            prompt = "\nType DEPLOY to create these resources (about 15 minutes; costs start now): "
+        if confirm(prompt) != "DEPLOY":
             raise Stop("not confirmed; nothing was created")
         print("Deploying...")
         try:
@@ -398,13 +491,21 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
         except AzError as err:
             print(f"\nFAILED: the deployment stopped: {_first_line(str(err))}\n"
                   f"Read it with: az deployment operation group list -n {DEPLOYMENT_NAME} -g {kit['AZ_RESOURCE_GROUP']}"
-                  " --query \"[?properties.provisioningState=='Failed']\"\nFix it, then run again with --rerun.",
-                  file=sys.stderr)
+                  " --query \"[?properties.provisioningState=='Failed']\"\nFix it, then run again with "
+                  + ("the same --image." if args.image else "--rerun."), file=sys.stderr)
             return 2
         saved = save_outputs(kit["AZ_RESOURCE_GROUP"], outputs)
+        if args.image:
+            app = outputs["appName"]["value"]
+            print(f"\nThe real app is on {outputs['appUrl']['value']}. Wait until the newest revision is Healthy:\n"
+                  f"  az containerapp revision list -n {app} -g {kit['AZ_RESOURCE_GROUP']} -o table --query "
+                  "\"[].{revision:name,health:properties.healthState,traffic:properties.trafficWeight}\"\n"
+                  "Then the smoke test and §5a, §8 in docs/AZURE.md. From now on the Deploy to Azure workflow "
+                  "puts images on; do not run this script again.")
+            return 0
         print(f"\nDeployed. The names it made are in {saved}: source it.\nApp address: {outputs['appUrl']['value']}\n"
               f"Next: add {outputs['appUrl']['value']}/ as an SPA redirect URI on the Entra app "
-              f"{kit['ENTRA_APP_CLIENT_ID']} (runbook A7; or ask {kit['ENTRA_REDIRECT_URI_OWNER']})")
+              f"{kit['ENTRA_APP_CLIENT_ID']} (runbook A6a; or ask {kit['ENTRA_REDIRECT_URI_OWNER']})")
         return 0
     except Stop as stop:
         print(f"\nSTOP: {stop}", file=sys.stderr)

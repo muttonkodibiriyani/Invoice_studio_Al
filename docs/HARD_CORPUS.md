@@ -29,7 +29,8 @@ lines[sku, gtin, description, uom, qty, price, net_amount]`.
 - `date_printed` is the date exactly as printed. `date` is the same date in ISO 8601, with one exception: when
   both leading parts of a numeric date are 12 or less and differ (`05/10/2026`), `date` is null. The app keeps such a
   date only in `date_printed` and does not guess a locale (`app/fine_rules.py` `parse_printed_date`, V-008), so a
-  reader that guesses either way is wrong. Any other numeric date is day-first: `19/10/2026` is 19 October.
+  reader that guesses either way is wrong. Otherwise the part over 12 is the day: `19/10/2026` is 19 October,
+  `8/13/2026` is 13 August (`docs/FIELD_RULES.md`).
 - `net` is the taxable amount before VAT, after any invoice discount. `tax` is the VAT amount; with no VAT line
   printed it is null, never 0.
 - Amounts are plain numbers at the decimals the invoice prints, with no thousands separators.

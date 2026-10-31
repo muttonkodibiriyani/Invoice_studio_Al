@@ -44,7 +44,7 @@ member-against-admin sweep is skipped. Entra tokens last about an hour; the full
 | `load` | 200 reads of `/api/state`, 20 at a time. | No 5xx; health answers in the tail. p95 over 10 s is a WARN. |
 | `engines` | invoice2data, PaddleOCR and Docling installed in the image. The five golden samples read by the whole local chain (`auto`). Each engine forced alone: invoice2data on `invoice.pdf`, PaddleOCR and Docling on `invoice-scan.png`, Docling on `invoice.pdf` with native text off. | Each engine installed. Each golden sample read to exactly `samples/<name>.json` (text exact, amounts as numbers, the rule of `tests/test_golden_samples.py`), with no AI call. Each forced engine's own trace says `extracted` or `text_only`. An invoice in `error`, or still reading after `--wait`, fails. Times are since upload, so they include the queue. |
 | `disrupt` (opt-in) | 65 admin writes in a row (settings saved back unchanged); 205 processing plans. | The 61st write or earlier is 429; plans stop near 200 with 429; healthy after. **Side effects:** admin writes are blocked for a minute, and new uploads for everyone wait up to 10 minutes until the plans expire. |
-| `cleanup` | Deletes every invoice the run created. | 200. If it fails, delete the printed ids on the Invoices page. |
+| `cleanup` | Deletes every invoice the run created (after `--disruptive`, it waits out the write limit and tries once more). | 200. If it fails, delete the printed ids on the Invoices page. |
 
 ## What a failure means
 

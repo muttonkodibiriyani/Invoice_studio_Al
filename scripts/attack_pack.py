@@ -616,6 +616,10 @@ class Pack:
         if not items:
             return
         r = self.call("POST", "/api/jobs/delete", self.admin, json={"jobs": items, "confirm_permanent": True})
+        if r.status_code == 429:
+            # The disrupt group's write flood holds the admin write limit for a minute.
+            time.sleep(65)
+            r = self.call("POST", "/api/jobs/delete", self.admin, json={"jobs": items, "confirm_permanent": True})
         self.check("cleanup", f"the {len(items)} invoices this run created are deleted", r.status_code == 200, f"{r.status_code} {r.text[:120]}")
 
     # ---- run -----------------------------------------------------------------------------------------------------

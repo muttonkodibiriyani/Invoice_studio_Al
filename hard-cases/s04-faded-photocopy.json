@@ -1,0 +1,39 @@
+{
+  "number": "BHS-77031",
+  "supplier_name": "Blue Harbour Seafood LLC",
+  "date": "2026-10-30",
+  "date_printed": "30/10/2026",
+  "po": "71002",
+  "currency": "AED",
+  "net": "1293.09",
+  "tax": "64.65",
+  "lines": [
+    {
+      "sku": "BHS-HAM",
+      "gtin": null,
+      "description": "Hammour fillet fresh",
+      "uom": "KG",
+      "qty": "12.75",
+      "price": "48.125",
+      "net_amount": "613.59"
+    },
+    {
+      "sku": "BHS-SHR",
+      "gtin": null,
+      "description": "Tiger prawns large",
+      "uom": "KG",
+      "qty": "2.5",
+      "price": "86.400",
+      "net_amount": "216.00"
+    },
+    {
+      "sku": "BHS-SAL",
+      "gtin": null,
+      "description": "Salmon side Norwegian",
+      "uom": "KG",
+      "qty": "7.2",
+      "price": "64.375",
+      "net_amount": "463.50"
+    }
+  ]
+}

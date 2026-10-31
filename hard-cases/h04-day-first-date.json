@@ -1,0 +1,30 @@
+{
+  "number": "FRE-10093",
+  "supplier_name": "Falcon Ridge Electronics LLC",
+  "date": null,
+  "date_printed": "05/10/2026",
+  "po": "70522",
+  "currency": "AED",
+  "net": "6010.00",
+  "tax": "300.50",
+  "lines": [
+    {
+      "sku": "FRE-USB3",
+      "gtin": "6293300003015",
+      "description": "USB-C cable braided 1 m",
+      "uom": "PCS",
+      "qty": "150",
+      "price": "19.00",
+      "net_amount": "2850.00"
+    },
+    {
+      "sku": "FRE-PWB10",
+      "gtin": "6293300001103",
+      "description": "Power bank 10000 mAh",
+      "uom": "PCS",
+      "qty": "40",
+      "price": "79.00",
+      "net_amount": "3160.00"
+    }
+  ]
+}

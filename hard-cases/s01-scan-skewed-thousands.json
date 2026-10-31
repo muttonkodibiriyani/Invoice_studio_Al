@@ -1,0 +1,48 @@
+{
+  "number": "DSS-INV-88412",
+  "supplier_name": "Desert Sun Supplies LLC",
+  "date": null,
+  "date_printed": "12/10/2026",
+  "po": "70415",
+  "currency": "AED",
+  "net": "71810.00",
+  "tax": "3590.50",
+  "lines": [
+    {
+      "sku": "DSS-1102",
+      "gtin": "6291102001109",
+      "description": "Archive box lever arch A4",
+      "uom": "PCS",
+      "qty": "240",
+      "price": "14.75",
+      "net_amount": "3540.00"
+    },
+    {
+      "sku": "DSS-1150",
+      "gtin": "6291102001154",
+      "description": "Copy paper A4 80gsm 5-ream carton",
+      "uom": "CTN",
+      "qty": "180",
+      "price": "96.50",
+      "net_amount": "17370.00"
+    },
+    {
+      "sku": "DSS-2210",
+      "gtin": "6291102002212",
+      "description": "Whiteboard marker assorted 4-pack",
+      "uom": "PKT",
+      "qty": "1200",
+      "price": "6.25",
+      "net_amount": "7500.00"
+    },
+    {
+      "sku": "DSS-3075",
+      "gtin": "6291102003073",
+      "description": "Office chair mesh high back",
+      "uom": "PCS",
+      "qty": "35",
+      "price": "1240.00",
+      "net_amount": "43400.00"
+    }
+  ]
+}

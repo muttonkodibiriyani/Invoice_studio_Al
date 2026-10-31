@@ -37,7 +37,7 @@ to busy; the next table shows how they add up.
 |---|---|---|---|---|
 | Container app and its environment | Runs the app: the web page, the API and the invoice readers. Cloud Run on Google | Required | 4 vCPU, 8 GiB, one copy, always on | US$93–310 |
 | PostgreSQL Flexible Server 16 | Keeps users, invoices, extracted data and the Excel workbooks. Cloud SQL on Google | Required | Standard_B2s (2 vCores, 4 GiB), 32 GB disk, 14 days of backups | US$62 |
-| Private network, private endpoint, private DNS zone | Lets the app reach the database while the database has no internet address | Required | `10.40.0.0/24`, two subnets, one endpoint | US$8 |
+| Private network, private endpoint, private DNS zone | Lets the app reach the database while the database has no internet address | Required | the IPAM /24, two subnets with NSGs, one endpoint | US$8 |
 | Blob Storage | Keeps the uploaded invoice files, supplier templates and learned files. Cloud Storage on Google | Required | Standard LRS, Hot, container `evidence` | US$0–3 |
 | Container Registry | Holds the app image (about 5.6 GB) and builds it | Required | Basic | US$5–8 |
 | Key Vault | Keeps the three secrets: database login, the key that encrypts stored AI credentials, the Foundry key | Required | Standard | under US$1 |
@@ -230,8 +230,12 @@ None of these is a credential, and none decides who gets in: that is the app rol
 (§6). The group *names* are display text; the groups' object ids are used only in Entra, when the roles
 are granted, and are not a deploy setting.
 
-`networkAddressPrefix` (default `10.40.0.0/24`) is the private network's address space; change it only
-if it would overlap a network this one is peered with later.
+`networkAddressPrefix` has no default: it is the /24 the platform's IPAM assigns (`<SPOKE_VNET_CIDR>`),
+so it cannot overlap the hub. The app subnet takes its first /27, the private endpoints its second.
+`hubVnetId` (`<HUB_VNET_ID>`) creates the spoke side of the hub peering; empty creates none.
+`dnsServers` (`["<HUB_DNS_IP>"]`) points the network at the hub's DNS; empty keeps Azure DNS.
+`internalEnvironment` is `false` for the first, public deploy; the target redeploy sets `true`, which
+takes the app's public address away and replaces the environment (it cannot change in place).
 
 The database has no public endpoint, so `psql` from a laptop does not reach it. Run database commands
 from inside the app container (`az containerapp exec -n "$APP" -g "$RG" --command bash`; the image has
@@ -267,7 +271,8 @@ echo "$APP_URL"
 ```
 
 With no image given, the app starts on Microsoft's hello-world image, which is only there to fix the
-hostname before the real image exists. `curl "$APP_URL"` answers with a welcome page.
+hostname before the real image exists. `curl "$APP_URL"` answers with a welcome page. The first real
+image goes on with the same script and `--image` (§5, "The first image").
 
 The hostname does not change when the image does, so the redirect URI owner can already add `$APP_URL/`
 to the app registration (§6, step 3).
@@ -374,6 +379,7 @@ Then set these in the GitHub repository (Settings → Secrets and variables → 
 | Variable | `ENTRA_CLIENT_ID` | `<ENTRA_APP_CLIENT_ID>`, the same as `entraClientId` |
 | Variable | `ENTRA_ADMIN_GROUP_NAME` | the same as `entraAdminGroupName` (empty if that is empty) |
 | Variable | `ENTRA_MEMBER_GROUP_NAME` | the same as `entraMemberGroupName` (empty if that is empty) |
+| Variable | `AZURE_AUTO_DEPLOY` | `true` to deploy every push to main whose CI run passed; anything else, or unset, keeps the workflow manual |
 
 None of the three secrets is a credential — they are identifiers — but keeping them as secrets is the
 convention and keeps them out of logs. The four `ENTRA_*` variables are public values. The workflow
@@ -383,12 +389,22 @@ building when they differ, or when the app still carries an old Firebase setting
 Add required reviewers to the `azure` environment
 (Settings → Environments → azure) so a deployment needs a human approval.
 
+**Automatic deploys.** Leave `AZURE_AUTO_DEPLOY` unset until the first deploy from Cloud Shell has gone
+live and passed the smoke test of §5. Then set it to `true`
+(`gh variable set AZURE_AUTO_DEPLOY --body true`). From then on every push to main whose CI run passed
+starts **Deploy to Azure** for the exact commit CI tested. It waits for the `azure` environment's
+reviewers, builds in ACR, makes the candidate and checks it, goes live as in §8 and stops the candidate.
+If the app does not answer `/health` after the switch, the run moves the traffic back to the revision that
+was live. The approval stands in for the hand smoke test, so reviewers approve only a change they would
+ship. To pause automatic deploys, set the variable to `false`.
+
 ## 5. Build the image and put it on a revision
 
+**The first image goes on with the script, once** ("The first image" below). Everything in this section
+before it is for every image after the first.
+
 Run **Actions → Deploy to Azure → Run workflow** from the branch you want to ship, leaving
-"Send all traffic to the new revision" **off**. Until the workflow change from task 01a182b3-4fac is
-applied, use the hand-build block below and §8 by hand instead: the workflow on main neither sets
-`INV_STUDIO_RECOVER_JOBS=0` nor creates the `-live` revision. With that change, the run:
+"Send all traffic to the new revision" **off**. The run:
 
 1. pins traffic to the revision that is live now, so the new one starts with no traffic;
 2. builds the image inside ACR (`az acr build`) — the image is about 5.6 GB with the OCR models, far
@@ -414,8 +430,8 @@ any traffic.
 **Smoke test: sign in, and one write must succeed.** Sign-in only works on an address registered as a
 redirect URI, and a revision address is not one, so the token comes from the browser on `$APP_URL` and
 is then sent to the revision address: the API checks the token, not the page it came from. On the
-**first** deployment `$APP_URL` still serves the hello-world image, so the redirect URI owner adds
-`$REV_URL/` as a second SPA redirect URI for the test and removes it after §8. Sign in as someone in
+**first** deployment, test the revision the script put on with `REV_URL=$APP_URL`: it already has the
+traffic and `$APP_URL/` is already a redirect URI. Sign in as someone in
 `<ENTRA_GROUP_ADMIN>`. The write saves the AI settings back unchanged, so it alters nothing; it passes
 only if the token verifies against the tenant's keys and the database takes a write.
 
@@ -475,6 +491,44 @@ The first start of a revision is slow: Container Apps has to pull 5.6 GB and the
 The startup probe allows about seven minutes. If a revision never becomes healthy, read the logs
 (step 9) before assuming the image is wrong.
 
+**The first image: put the real app on with the script.** The first deploy left the app on the
+hello-world image, on port 80 and with no startup probe. `az containerapp update --image`, by hand or
+from the workflow, keeps that port and the missing probe, so the first real revision would never become
+healthy. The first real image therefore goes on through the template: `--image` runs `main.bicep` again
+with `containerImage` set, which gives the revision port 8080 and the `/health` startup probe. It asks
+for no secret. It reads the database URL and the vault key from the vault (do §3 first), passes the same
+admin password and vault key, and passes `writeSecrets` false, so the database password and every secret
+in the vault stay as they are. It runs the whole preflight and the what-if, and asks you to type DEPLOY.
+
+```bash
+TAG=$(git rev-parse --short HEAD)
+az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \
+  --image "inv-studio:$TAG" --timeout 14400 .
+SERVER=$(az acr show -n "$ACR" --query loginServer -o tsv)
+DIGEST=$(az acr repository show -n "$ACR" --image "inv-studio:$TAG" --query digest -o tsv)
+echo "$SERVER/inv-studio@$DIGEST"                                  # ends in @sha256: and 64 hex digits
+python3 scripts/azure_deploy.py --kit ~/inv-studio-azure/deploy-kit.env --image "$SERVER/inv-studio@$DIGEST"
+az containerapp revision list -n "$APP" -g "$RG" -o table \
+  --query "[].{revision:name,health:properties.healthState,traffic:properties.trafficWeight}"
+curl -fsS "$APP_URL/health"                                        # 200 once the new revision is Healthy
+```
+
+The script stops, with nothing changed, when the image is not named by digest or is not in this
+group's registry, when it cannot read the two secrets (§3 is not done), or when the database URL no
+longer logs in as the admin: §5a is done, so the real app is already on.
+
+On the first deployment nothing is live yet and no invoice is in flight, so the template's revision
+takes the traffic as soon as it is healthy and needs no candidate step. It does not set
+`INV_STUDIO_RECOVER_JOBS=0`, so it is already what §8 would make from a candidate. Run the smoke test
+above on it, with `REV_URL=$APP_URL`, then §5a, then go live by §8's checks: no `-live` revision is
+needed for this one image.
+
+**From then on the workflow deploys.** Every later image goes on through **Actions → Deploy to Azure**
+(or the hand-build block below) as a candidate, then §8. `az containerapp update --image` keeps the port
+and the probe the template set. Do not run the template again on the running app (`azure_deploy.py`
+without `--image`, `--rerun`, or §2 by hand): with no image it puts the hello-world image back, and with
+`writeSecrets` true it writes the vault secrets again.
+
 To build by hand instead of through the workflow, build from a clean checkout: `az acr build .` uploads the
 working tree as it is, so an untracked file under `app/` or `samples/` ends up in the image. To prove the
 three readers before pushing, build the same Dockerfile locally and read the samples with no network
@@ -483,6 +537,8 @@ three readers before pushing, build the same Dockerfile locally and read the sam
 ```bash
 docker run --rm --network none <image> python scripts/check_engines.py invoice2data paddleocr docling
 ```
+
+Then build and put it on:
 
 ```bash
 az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \
@@ -705,11 +761,11 @@ curl -s "$APP_URL/health"
 az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$CANDIDATE"
 ```
 
-Until the workflow change from task 01a182b3-4fac is applied, go live by hand as above; do not use the
-workflow's traffic switch. With that change, running the workflow with **"Send all traffic to the new
-revision" on** does the same in one run:
-candidate, then the `-live` revision from the same digest, then the traffic. It builds and tests
-nothing by hand in between, so use it only for an image already tested as a candidate (`image_tag`).
+Running the workflow with **"Send all traffic to the new revision" on** does the same in one run:
+candidate, then the `-live` revision from the same digest, each checked on `/health`, then the traffic,
+then it stops the candidate; if the app's `/health` fails after the switch it moves the traffic back. It
+tests nothing by hand in between, so use it only for an image already tested as a candidate (`image_tag`).
+An automatic run (§4, `AZURE_AUTO_DEPLOY`) always does this.
 
 ## 9. Roll back
 

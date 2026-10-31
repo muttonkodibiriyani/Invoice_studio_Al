@@ -475,7 +475,14 @@ The first start of a revision is slow: Container Apps has to pull 5.6 GB and the
 The startup probe allows about seven minutes. If a revision never becomes healthy, read the logs
 (step 9) before assuming the image is wrong.
 
-To build by hand instead of through the workflow:
+To build by hand instead of through the workflow, build from a clean checkout: `az acr build .` uploads the
+working tree as it is, so an untracked file under `app/` or `samples/` ends up in the image. To prove the
+three readers before pushing, build the same Dockerfile locally and read the samples with no network
+(about 75 s, exit code 0 only when invoice2data, PaddleOCR and Docling all read):
+
+```bash
+docker run --rm --network none <image> python scripts/check_engines.py invoice2data paddleocr docling
+```
 
 ```bash
 az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \

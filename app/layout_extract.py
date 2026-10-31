@@ -191,6 +191,10 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     )
     if po is None:
         po = _spatial_labeled_identifier(rows, {"lpo no", "lpo number", "po no", "po number"})
+    if po is None:
+        po = _identifier_below_label(
+            rows, {"purchase order", "purchase order no", "lpo no", "lpo number", "po no", "po number"}
+        )
     invoice_date = _extract_date(lines)
     if po is None:
         po = compact_header.get("po")
@@ -647,6 +651,49 @@ def _spatial_labeled_identifier(
                     ):
                         values.append(candidate)
                     break
+    return _only_distinct(values)
+
+
+def _identifier_below_label(
+    rows: list[tuple[int, list[_Word]]], labels: set[str]
+) -> str | None:
+    """Read the identifier printed under a header-table heading: "Purchase Order" over "70412".
+
+    The value is the one word in the next row down whose span overlaps the heading's, so the
+    cells of the neighbouring columns are never read for it.
+    """
+
+    values: list[str] = []
+    for row_index, (page, row) in enumerate(rows):
+        for start in range(len(row)):
+            for width in (3, 2):
+                end = start + width
+                if end > len(row):
+                    continue
+                label_words = row[start:end]
+                if _label_phrase(label_words) not in labels:
+                    continue
+                left = min(word.x0 for word in label_words)
+                right = max(word.x1 for word in label_words)
+                height = max(word.height for word in label_words)
+                below = next(
+                    (
+                        next_row for next_page, next_row in rows[row_index + 1 : row_index + 3]
+                        if next_page == page and 0 < _row_y(next_row) - _row_y(row) <= height * 4.0
+                    ),
+                    None,
+                )
+                if below is None:
+                    break
+                under = [word for word in below if word.x0 < right and word.x1 > left]
+                if len(under) == 1:
+                    candidate = under[0].text.strip().replace(" ", "")
+                    candidate = re.sub(r"(?i)^l?po\s*[-:#]?(?=[0-9])", "", candidate)
+                    if _SAFE_IDENTIFIER.fullmatch(candidate) and any(
+                        character.isdigit() for character in candidate
+                    ):
+                        values.append(candidate)
+                break
     return _only_distinct(values)
 
 

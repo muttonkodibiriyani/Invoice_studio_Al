@@ -168,3 +168,16 @@ def test_a_right_aligned_number_keeps_its_printed_space():
              word("004512", 517, 547, 70), word("Date:", 349, 375, 90), word("2026-10-24", 380, 430, 90)]
     text = "Sample LLC INVOICE\nInvoice Number NWT 004512\nDate: 2026-10-24\n"
     assert extract_invoice(text, boxes)["number"] == "NWT 004512"
+
+
+def test_a_po_printed_under_its_header_table_heading_is_read():
+    from app.layout_extract import extract_invoice
+
+    def word(text, x0, x1, y):
+        return {"text": text, "page": 1, "box": [x0, y, x1, y + 10], "size": [595, 842]}
+    boxes = [word("TAX", 250, 275, 30), word("INVOICE", 279, 330, 30),
+             word("Doc", 40, 60, 80), word("No", 63, 76, 80), word("Purchase", 200, 245, 80),
+             word("Order", 248, 275, 80), word("Salesman", 360, 410, 80),
+             word("PTX-20017", 40, 95, 96), word("PO-70412", 205, 255, 96), word("S12", 365, 385, 96)]
+    text = "TAX INVOICE\nDoc No Purchase Order Salesman\nPTX-20017 PO-70412 S12\n"
+    assert extract_invoice(text, boxes)["po"] == "70412"

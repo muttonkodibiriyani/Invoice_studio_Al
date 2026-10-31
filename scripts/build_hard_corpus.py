@@ -99,7 +99,7 @@ CASES = [
         "supplier": "Coral Coast Foods FZE", "address": "Warehouse 9, Synthetic Free Zone, Jebel Ali",
         "buyer": "Retail UAE", "number": "CCF-TI-30551", "number_label": "Tax Invoice No.",
         "date": "2026-10-04", "date_printed": "04-Oct-2026", "date_label": "Date of Supply",
-        "po": "LPO-77310", "po_label": "LPO Ref", "currency": "AED", "decimals": 2, "thousands": True,
+        "po": "77310", "po_printed": "LPO-77310", "po_label": "LPO Ref", "currency": "AED", "decimals": 2, "thousands": True,
         "vat": "5", "title": "TAX INVOICE", "lines": [
             L("CCF-501", gtin("629220050101"), "Basmati rice premium 5 kg", "BAG", "60", "42.00"),
             L("CCF-512", gtin("629220051207"), "Sunflower oil 1.8 L", "BTL", "120", "11.90"),
@@ -339,7 +339,7 @@ def printed_tokens(case):
     tokens = [case["supplier"], case["number"], case["date_printed"], case["currency"],
               printed(net, places, case["thousands"])]
     if case["po"]:
-        tokens.append(case["po"])
+        tokens.append(case.get("po_printed", case["po"]))
     if tax is not None:
         tokens.append(printed(tax, places, case["thousands"]))
     for line, amount in zip(case["lines"], amounts):
@@ -428,7 +428,7 @@ def draw_pdf(case, path):
             y -= 52
         fields = [(case["number_label"], case["number"]), (case["date_label"], case["date_printed"])]
         if case["po"]:
-            fields.append((case["po_label"], case["po"]))
+            fields.append((case["po_label"], case.get("po_printed", case["po"])))
         if "amount" in columns and case.get("header_box") == "right":
             fields.append(("Currency", case["currency"]))
         if case.get("header_box") == "right":

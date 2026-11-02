@@ -20,7 +20,7 @@ from typing import Any
 from app.reference_lookup import KINDS, MAX_LINE_BYTES, _expected_manifest, _record
 
 
-IMPORT_FORMAT_VERSION = "lookup-shadow.v2"
+IMPORT_FORMAT_VERSION = "lookup-shadow.v3"
 IMPORT_ADVISORY_LOCK = 4_285_711_449_731_903_217
 MAX_BATCH_BYTES = 16 * 1024 * 1024
 MAX_BATCH_TERMS = 50_000
@@ -372,8 +372,8 @@ def _validate_records(
         database.execute("PRAGMA synchronous=OFF")
         database.execute(
             """CREATE TABLE seen(
-                source_hash TEXT NOT NULL,sheet TEXT NOT NULL,row_number INTEGER NOT NULL,
-                PRIMARY KEY(source_hash,sheet,row_number)) WITHOUT ROWID"""
+                kind TEXT NOT NULL,source_hash TEXT NOT NULL,sheet TEXT NOT NULL,row_number INTEGER NOT NULL,
+                PRIMARY KEY(kind,source_hash,sheet,row_number)) WITHOUT ROWID"""
         )
         try:
             with gzip.open(archive_path, "rb") as source:
@@ -389,8 +389,8 @@ def _validate_records(
                     _, kind, source_hash, sheet, row_number, _, terms = prepared
                     try:
                         database.execute(
-                            "INSERT INTO seen VALUES (?,?,?)",
-                            (source_hash, sheet, row_number),
+                            "INSERT INTO seen VALUES (?,?,?,?)",
+                            (kind, source_hash, sheet, row_number),
                         )
                     except sqlite3.IntegrityError:
                         raise ValueError(
@@ -493,7 +493,7 @@ def _prepare_shadow(connection, names, archive_digest, identity):
         )
         connection.execute(
             f"""CREATE UNIQUE INDEX {names['rows_source']}
-                ON {names['rows']}(source_hash,sheet,row_number)"""
+                ON {names['rows']}(source_hash,sheet,row_number,kind)"""
         )
         connection.execute(
             f"""CREATE TABLE {names['meta']}(

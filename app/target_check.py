@@ -161,10 +161,21 @@ def store_rows(store):
     import json
 
     def read(sheet, number):
+        parts = sheet.split(":", 2)
         with store.connection() as connection:
-            found = connection.execute("SELECT payload FROM lookup_rows WHERE sheet=? AND row_number=?",
-                                       (sheet, number)).fetchone()
-        return (json.loads(found[0]).get("data") or {}) if found else None
+            if len(parts) == 3 and re.fullmatch(r"[a-f0-9]{64}", parts[0]) and parts[1] in ("item", "po", "location"):
+                source_hash, kind, sheet = parts
+                if kind == "location":
+                    sources = connection.execute("SELECT payload FROM lookup_sources").fetchall()
+                    candidates = [r for src in sources for r in json.loads(src[0]).get("master_catalog", {}).get("locations", [])
+                                  if r["source_hash"] == source_hash and r["source_sheet"] == sheet and r["source_row"] == number]
+                    return candidates[0]["data"] if len(candidates) == 1 else None
+                found = connection.execute("SELECT payload FROM lookup_rows WHERE source_hash=? AND kind=? AND sheet=? AND row_number=?",
+                                           (source_hash, kind, sheet, number)).fetchall()
+            else:
+                found = connection.execute("SELECT payload FROM lookup_rows WHERE sheet=? AND row_number=? LIMIT 2",
+                                           (sheet, number)).fetchall()
+        return (json.loads(found[0][0]).get("data") or {}) if len(found) == 1 else None
     return read
 
 
@@ -180,7 +191,7 @@ def store_site_rows(store, limit=50):
                 "SELECT r.payload FROM lookup_terms t JOIN lookup_rows r ON r.id=t.row_id "
                 "WHERE t.kind='item' AND t.term=? LIMIT ?", ("f:site:" + normalize_name(site), limit)).fetchall()
         rows = [json.loads(x[0]).get("data") or {} for x in found]
-        return [d for d in rows if str(d.get("SUPPLIER")) == str(site)]
+        return [d for d in rows if str(d.get("SUPPLIER SITE", d.get("SUPPLIER"))) == str(site)]
     return read
 
 
@@ -205,6 +216,13 @@ def check_evidence(value, evidence, sources, location=None):
         return (VERIFIED, "") if _norm(master.get("type", "")) == _norm(value) else (MISMATCH, "")
     if source == "Location-market mapping":
         return (VERIFIED, "") if _norm(master.get("market", "")) == _norm(value) else (MISMATCH, "")
+    if source == "Owner Store default (M4)":
+        return (VERIFIED, "") if value == "Store (S)" and master.get("type") in (None, "", "Store (S)") else (MISMATCH, "")
+    if source == "Master location directory":
+        rows = [sources.row(x) for x in refs]
+        names = " ".join(str(v) for r in rows if r for v in r.values())
+        warehouse = bool(re.search(r"(?i)\b(?:warehouse|w/h|wh)\b", names))
+        return (VERIFIED, "") if rows and all(rows) and warehouse and value == "Warehouse (W)" else (MISMATCH, "")
     if source == "prefix fallback":
         return MISMATCH, UNVERIFIABLE  # no owner table row and no written owner rule for the 800/380 prefix
     if source.endswith(SITE_DERIVATION):

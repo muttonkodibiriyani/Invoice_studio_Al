@@ -243,6 +243,11 @@ class CompatConnection:
         cursor=self.connection.execute(_translate_sql(sql),params or ())
         return CompatCursor(cursor)
 
+    def executemany(self,sql,rows):
+        cursor=self.connection.cursor()
+        cursor.executemany(_translate_sql(sql),rows)
+        return CompatCursor(cursor)
+
 
 class PostgresStore:
     """Store-compatible persistence backed by PostgreSQL and a GCS bucket or Azure container.

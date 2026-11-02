@@ -275,6 +275,7 @@ def register_item_master(app, store):
             # Sparse master PO blocks supplement richer existing GRN evidence, never erase it.
             old_sources = [json.loads(r[0]) for r in c.execute("SELECT payload FROM lookup_sources ORDER BY id")]
             prior_master_hashes = {h for src in old_sources if src.get("master_catalog") for h in src.get("source_hashes", [])}
+            prior_master_hashes.add(metadata["report"]["source_sha256"])
             richer = [json.loads(r[0]) for r in c.execute("SELECT payload FROM lookup_rows WHERE kind='po'")]
             richer = [r for r in richer if r["source_hash"] not in prior_master_hashes]
             if richer:

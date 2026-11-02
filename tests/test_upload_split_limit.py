@@ -105,7 +105,7 @@ def test_a_check_past_the_time_limit_is_stopped_and_the_upload_is_refused(tmp_pa
                       f"runpy.run_module('app.ocr_worker', run_name='__main__', alter_sys=True)\" \"$@\"\n")
     reader.chmod(0o700)
     monkeypatch.setattr(engines.sys, "executable", str(reader))
-    app, client, token = studio(tmp_path, monkeypatch, FakeReader(), INV_ENGINE_TIMEOUT="1")
+    app, client, token = studio(tmp_path, monkeypatch, FakeReader(), INV_SPLIT_CHECK_TIMEOUT="1")
     started = time.monotonic()
     response = upload(client, token, "bound.pdf", BOUND)
     assert time.monotonic() - started < 30

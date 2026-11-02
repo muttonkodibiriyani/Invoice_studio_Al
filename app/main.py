@@ -29,7 +29,7 @@ from .authentication import EntraIdentity, actor
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
 from .users import UserDirectory
-from .engines import AI_CONCURRENCY, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
+from .engines import AI_CONCURRENCY, ChecksBusy, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
 from .learned import LearnedStore
 from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook
 from . import costs
@@ -649,9 +649,12 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             parts=[(content,Path(filename).name[:200],{})];refusal=None
             if suffix==".pdf":
                 from .multi_invoice import outcome_from, part_filename, split_note, split_pdf
-                # The split check parses the upload, so it runs in a reader child under the readers' limits. A child
+                # The split check parses the upload, so it runs in a reader child under its own limit and cap. A child
                 # that is stopped or fails refuses the upload: it is never queued unchecked.
-                try:outcome=outcome_from(split_check(content,store.root))
+                try:outcome=outcome_from(split_check(content,store.root,actor.get()))
+                except ChecksBusy:
+                    raise HTTPException(429,"Several PDFs are being checked right now. Try again in a few seconds.",
+                                        headers={"Retry-After":"5"}) from None
                 except Exception as exc:
                     store.audit("upload_refused",{"stage":"split_check","error_type":type(exc).__name__,
                                                   "sha256":hashlib.sha256(content).hexdigest()})

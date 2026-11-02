@@ -48,6 +48,7 @@ Live traffic stayed on `inv-studio-api-00099-7n2` throughout.
 | One reader subprocess | 240 s, 360 s for PaddleOCR (`INV_ENGINE_TIMEOUT`) | `app/engines.py` |
 | One reader subprocess, CPU time | the larger of 300 s and 4 × its timeout; address space uncapped unless `INV_STUDIO_READER_MAX_AS_MB` is set | `app/engines.py`, `app/sandbox.py` |
 | One job's checks subprocess (`app/job_worker.py`) | each stretch of its own work within `INV_ENGINE_TIMEOUT`, CPU time as a reader; one message to the app at most 64 MB (`INV_STUDIO_JOB_MESSAGE_MB`; blank, 0 or invalid means the default) | `app/engines.py` (`process_job`) |
+| Upload's multi-invoice check subprocess (pdfplumber) | 20 s (`INV_SPLIT_CHECK_TIMEOUT`, 1 to 240); 4 at once (`INV_SPLIT_CHECK_CONCURRENCY`), all but one per account; 429 past the cap | `app/engines.py` (`split_check`) |
 | Upload check subprocess (pdfium, Pillow) | 10 s CPU, 512 MB address space, 20 s wall clock | `app/upload_check.py` |
 | One AI request | 240 s HTTP timeout, 4 pages per chunk | `app/vertex.py` |
 | Upload size | 12 MB, 413 above it | `app/main.py` (`MAX_UPLOAD`) |

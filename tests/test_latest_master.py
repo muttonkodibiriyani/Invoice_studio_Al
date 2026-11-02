@@ -343,3 +343,15 @@ def test_explicit_alphabetic_vpn_is_not_rejected(description):
     from app.fine_rules import vpn_candidates
     values=vpn_candidates(Line(description=description))
     assert values and values[0]["value"] in {"ROSE","STYLE-A"}
+
+
+def test_owner_target_entries_cannot_bypass_missing_master_receipt_association(client, owner, app):
+    activate(client, owner)
+    result=run(app.state.store, invoice(po="UNKNOWN",qty=99))
+    assert result["receipt_controls"] == {"known":False,"capacities":[],"demand":{}}
+    entries={"header":{"site":"101","po":"450001","location":"1200","location_type":"Store (S)","taxCode":"PV5"},
+             "lines":{"1":{"Item":"100000001","Quantity":"99","Unit Cost":"50","Unit Tax Code":"PV5"}}}
+    view=rules_view(result,"",[],entries=entries)
+    validation=rules_validation(view,reviewed=True)
+    assert not validation["ready"] and validation["allocations"] == []
+    assert any(i["level"]=="hard" and i["code"]=="Receipt Evidence" for i in validation["issues"])

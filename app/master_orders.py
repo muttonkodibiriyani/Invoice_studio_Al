@@ -49,7 +49,8 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     if not catalog:
         return None
     outcome = {"order": None, "source": None, "group": None, "validation": [], "status": "Missing PO",
-               "candidates": 0, "malformed": 0}
+               "candidates": 0, "malformed": 0,
+               "receipt_controls": {"known": False, "capacities": [], "demand": {}}}
     if not supplier_site or not parents:
         run.exception("Missing PO", "Supplier site and matched items are required for the master order bridge", "M4")
         return outcome

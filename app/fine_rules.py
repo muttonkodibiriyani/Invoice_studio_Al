@@ -440,10 +440,7 @@ def barcode_candidates(line):
 
 
 def vpn_candidates(line):
-    """ITM-003 / ITM-004: VPN column, else only a leading six-digit number in the description.
-
-    Other numbers in the description are never VPN candidates (owner rule sheet, ITM-004).
-    """
+    """M3 supersedes ITM-004: explicit VPN, labeled/bracketed code, then a leading code."""
     if text(getattr(line, "sku", None)):
         return [{"value": text(line.sku), "origin": "VPN column", "primary": True}]
     description = text(getattr(line, "description", None))
@@ -451,7 +448,7 @@ def vpn_candidates(line):
     bracketed = re.match(r"\s*\[([A-Za-z0-9][A-Za-z0-9./_-]*)\]", description)
     leading = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9./_-]*)", description)
     match = labeled or bracketed or leading
-    if match and any(c.isdigit() for c in match.group(1)):
+    if match and (labeled or bracketed or any(c.isdigit() for c in match.group(1))):
         return [{"value": match.group(1), "origin": "description code", "primary": True}]
     return []
 
@@ -1770,14 +1767,12 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     # Supplier discovery uses issuer evidence, followed by scoped product search.
     buyer_page, buyer_rows = buyer_party(scan)
     candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows)
-    first_names = {r_site for c in candidates for r_site in
-                   (text(r.get("SUPPLIER")) for r in source.items_by_supplier_name(c["name"])) if r_site}
     # Resolve the issuer/site or approved family before any product search (M2).
     probe = Run(invoice, config, filename)
     deliver_to = deliver_to_location(invoice, scan, config)
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
                                                   owner_supplier_code)
-    sites = {probe_site} if probe_site else (set(probe_family) if probe_family else (first_names or None))
+    sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
                                                           owner_supplier_code)

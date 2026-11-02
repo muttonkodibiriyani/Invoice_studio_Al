@@ -46,7 +46,7 @@ def scalar(cell):
     if isinstance(value, (int, float)):
         if not math.isfinite(value) or abs(value) >= 10 ** 15:
             raise ValueError("numeric identifier may have lost precision")
-        value = int(value) if value.is_integer() else value
+        value = int(value) if isinstance(value, float) and value.is_integer() else value
     text = str(value).strip()
     if len(text) > 2000:
         raise ValueError("cell exceeds supported length")

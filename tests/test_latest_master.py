@@ -289,3 +289,57 @@ def test_reopened_selected_workbook_exact_layout_types_formats_blanks_and_keys()
     assert all(book["Details"].cell(n,3).value is None for n in (2,3,4))
     assert all(book["Details"].cell(n,c).number_format == "0.0000" for n in (2,3,4) for c in (4,5))
     assert book["Header"]["H2"].number_format == "0.0000" and book["Tax_Breakdown"]["C2"].value == 100
+
+
+def test_ambiguous_vpn_requires_exact_corroboration_and_description_is_review_only():
+    source = RowsSource([{"VPN": "SAME-1", "ITEM_PARENT": "P1", "SUPPLIER": "A", "BARCODE": "00012345678905", "ITEM_DESC": "Red rose"},
+                         {"VPN": "SAME-1", "ITEM_PARENT": "P2", "SUPPLIER": "A", "BARCODE": "00012345678912", "ITEM_DESC": "Blue rose"}])
+    for line, parent in [(Line(sku="SAME-1", description="Rose"), None),
+                         (Line(sku="SAME-1", gtin="00012345678905", description="Red rose"), "P1")]:
+        matched = match_line(Run(Invoice(lines=[line]), RulesConfig(), "synthetic.pdf"), 1, line, source, {"A"})
+        assert matched["parent"] == parent
+    line = Line(description="Rose red", qty=2)
+    candidate = match_line(Run(Invoice(lines=[line]), RulesConfig(), "synthetic.pdf"), 1, line, source, {"A"})
+    assert candidate["parent"] is None and candidate["method"] == "Description candidate"
+
+
+def test_unrelated_supplier_ambiguity_is_not_resolved_by_global_item_search():
+    source = RowsSource([{"VPN": "ONE-1", "ITEM_PARENT": "P1", "SUPPLIER": "A", "SUPPLIER_NAME": "Synthetic Co", "ITEM_DESC": "Rose"},
+                         {"VPN": "TWO-2", "ITEM_PARENT": "P2", "SUPPLIER": "B", "SUPPLIER_NAME": "Synthetic Co", "ITEM_DESC": "Blue"}])
+    inv = Invoice(supplier_name="Synthetic Co", lines=[Line(sku="ONE-1", description="Rose")])
+    result = run_invoice(inv, source, text_value="Synthetic Co\nINVOICE\nRose")
+    assert result["header"]["Supplier Site"] == ""
+    assert result["lines"][0]["Item"] == ""
+
+
+def test_receipt_final_edited_quantity_and_scope_must_match_capacity(client, owner, app):
+    rich_receipt(app.state.store)
+    activate(client, owner)
+    view = rules_view(run(app.state.store), "", [])
+    view["issues"] = []  # Isolate reservation logic from printed cell verification.
+    view["fields"]["po"]["value"] = "ANOTHER-ORDER"
+    assert not rules_validation(view, reviewed=True)["ready"]
+    view["fields"]["po"]["value"] = "450001"
+    view["lines"][0]["cells"]["Quantity"]["value"] = "3"
+    assert not rules_validation(view, reviewed=True)["ready"]
+
+
+def test_item_master_body_limit_is_endpoint_specific(client, owner, monkeypatch):
+    import app.master_catalog as module
+    called=[]
+    def inspected(content):
+        called.append(len(content))
+        raise module.HTTPException(400, "synthetic parser reached")
+    monkeypatch.setattr(module, "inspect_workbook", inspected)
+    content=b"x"*12_600_000
+    accepted=client.post("/api/item-master/validate", headers=bearer(owner), files={"file": ("master.xlsx",content)})
+    assert accepted.status_code==400 and called==[len(content)]
+    refused=client.post("/api/invoices", headers=bearer(owner), files={"file": ("invoice.pdf",content)})
+    assert refused.status_code==413
+
+
+@pytest.mark.parametrize("description", ["VPN: ROSE", "[ROSE] Synthetic item", "VPN: STYLE-A"])
+def test_explicit_alphabetic_vpn_is_not_rejected(description):
+    from app.fine_rules import vpn_candidates
+    values=vpn_candidates(Line(description=description))
+    assert values and values[0]["value"] in {"ROSE","STYLE-A"}

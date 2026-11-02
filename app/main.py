@@ -38,7 +38,7 @@ from .extraction_draft import extraction_workbook, extraction_batch_workbook
 from .drafts import ManualDraftRequest, build_draft_workbook, draft_filename, draft_public_metadata
 from .deletion import DeletionError, delete_invoices, remove_uploads
 from .reference_lookup import ReferenceLookup
-from .master_catalog import register_item_master
+from .master_catalog import MAX_BYTES as MAX_MASTER_UPLOAD, register_item_master
 from .fine_rules import RulesConfig, decide_feedback, feedback_entry, ocr_read, run_batch
 from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
@@ -360,7 +360,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                     return finish(JSONResponse({"detail":"Cross-origin requests are not accepted"},403))
                 try:size=int(request.headers.get("content-length","0"))
                 except ValueError:return finish(JSONResponse({"detail":"Invalid content length"},400))
-                if size>MAX_UPLOAD+200000:return finish(JSONResponse({"detail":"Maximum upload size is 12 MB"},413))
+                upload_limit=MAX_MASTER_UPLOAD if request.url.path=="/api/item-master/validate" else MAX_UPLOAD
+                if size>upload_limit+200000:return finish(JSONResponse({"detail":f"Maximum upload size is {upload_limit//1000000} MB"},413))
             actor_token=actor.set(claims["uid"] if claims else ("anonymous" if identity.cloud else "local-operator"))
             try:response=await call_next(request)
             except Exception:

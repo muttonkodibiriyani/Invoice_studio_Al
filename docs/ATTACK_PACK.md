@@ -71,14 +71,14 @@ cloud mode, with all three readers installed (31 Oct 2026): no FAIL; the warning
 
 | | Sev | Finding | Where |
 |---|---|---|---|
-| F1 | M | A 1 KB PDF whose page draws itself 2^40 times holds its upload request for the full 240 s reader limit before it is refused. The multi-invoice check runs per request in its own child with no cap on how many run at once, and the upload route waits for it on the request threads. A signed-in member sending a few dozen such files at once can hold every request thread and burn every CPU for four minutes: the app stops answering everyone. | `app/main.py` `submit` → `engines.split_check`; limit `INV_ENGINE_TIMEOUT` 240 s |
+| F1 | M | A 1 KB PDF whose page draws itself 2^40 times held its upload request for the full 240 s reader limit before it was refused. The multi-invoice check ran per request in its own child with no cap on how many ran at once, and the upload route waits for it on the request threads. A signed-in member sending a few dozen such files at once could hold every request thread and burn every CPU for four minutes. **Fixed**: the check has its own 20 s limit (`INV_SPLIT_CHECK_TIMEOUT`), at most 4 run at once (`INV_SPLIT_CHECK_CONCURRENCY`) and one account holds at most 3; an upload past the cap is answered 429 at once (`tests/test_upload_split_cap.py`). | `app/engines.py` `split_check` |
 | F2 | L | A confirmed processing plan is not tied to the person who made it: anyone signed in who has the plan token can upload under it. The token is a 256-bit secret that only its maker's browser sees, so this is defence in depth. | `app/main.py` `require_plan` |
 
 ## What the pack does not do
 
 - It does not change AI connections, settings, rules, references or templates, and does not try SSRF through the
   AI endpoint setting: on production those writes would change what real invoices go through.
-- It does not flood the processing queue or the request threads (F1): that would take the app down for everyone.
+- It does not flood the processing queue or the multi-invoice check (F1): `tests/test_upload_split_cap.py` proves the cap.
 - It does not check the UI. Open the invoice named `attack-pack-<img ...>.pdf` with `--keep` and confirm the name
   shows as text, with no picture box and no alert.
 - It does not read the app's log. After a run, check that the `ip` in the request log is your public address

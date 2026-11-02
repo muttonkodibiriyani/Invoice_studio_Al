@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
 STUDIO = {"X-Studio-Request": "1"}
 MAX_UPLOAD = 12_000_000
-# An upload request may hold a hostile PDF for the multi-invoice check's reader limit (240 s, app/engines.py), so the
-# pack waits longer than that before calling the request hung.
+# An upload request may hold a hostile PDF for the multi-invoice check's limit (20 s by default, up to 240 s with
+# INV_SPLIT_CHECK_TIMEOUT, app/engines.py), so the pack waits longer than that before calling the request hung.
 UPLOAD_TIMEOUT = 300
 SLOW = 45  # seconds after which a refused upload still passes, but is reported as a warning
 LOCAL_ONLY = {"engine": "auto", "ai_fallback": False, "ai_cross_check": False}

@@ -1,0 +1,30 @@
+{
+  "number": "ALL-90215",
+  "supplier_name": "Amber Line Logistics LLC",
+  "date": "2026-10-18",
+  "date_printed": "18/10/2026",
+  "po": "71150",
+  "currency": "AED",
+  "net": "9250.00",
+  "tax": "462.50",
+  "lines": [
+    {
+      "sku": "ALL-PAL-EU",
+      "gtin": null,
+      "description": "Euro pallet wooden",
+      "uom": "PCS",
+      "qty": "200",
+      "price": "38.00",
+      "net_amount": "7600.00"
+    },
+    {
+      "sku": "ALL-STR-50",
+      "gtin": null,
+      "description": "Stretch film 500 mm roll",
+      "uom": "ROL",
+      "qty": "60",
+      "price": "27.50",
+      "net_amount": "1650.00"
+    }
+  ]
+}

@@ -100,6 +100,9 @@ RUN set -e; \
     done
 USER 1000:1000
 ENV HF_HUB_OFFLINE=1
+# Proves the baked readers with no network (docs/AZURE.md §5):
+#   docker run --rm --network none <image> python scripts/check_engines.py invoice2data paddleocr docling
+COPY scripts/check_engines.py ./scripts/check_engines.py
 EXPOSE 8080
 STOPSIGNAL SIGTERM
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]

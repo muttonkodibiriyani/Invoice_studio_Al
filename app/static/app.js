@@ -2770,7 +2770,7 @@ async function prepareDemo() {
     if (!sample) throw new Error("Demo invoice metadata is unavailable.");
     await requestPreflight({
       kind: "demo",
-      options: { engine: "auto", prefer_native_text: true, ai_fallback: true, provider: "openai", model: "", language: "en" },
+      options: { engine: "auto", prefer_native_text: true, ai_fallback: app.state.settings?.ai_fallback !== false, provider: "openai", model: "", language: "en" },
       files: [{ name: sample.name, size: sample.size }],
     });
   } catch (error) {
@@ -3647,7 +3647,7 @@ function bindEvents() {
       ? app.preferNativeText
       : options.prefer_native_text !== false;
     setNativeTextPreference(preferNativeText, { remember: false });
-    $("#retry-ai-fallback").checked = aiOnly || options.ai_fallback !== false;
+    $("#retry-ai-fallback").checked = app.state?.settings?.ai_fallback !== false && (aiOnly || options.ai_fallback !== false);
     $("#retry-provider").value = options.provider || "openai";
     $("#retry-model").value = options.model || "";
     $("#retry-dialog").showModal();

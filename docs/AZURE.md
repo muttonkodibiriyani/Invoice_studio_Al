@@ -529,7 +529,16 @@ and the probe the template set. Do not run the template again on the running app
 without `--image`, `--rerun`, or §2 by hand): with no image it puts the hello-world image back, and with
 `writeSecrets` true it writes the vault secrets again.
 
-To build by hand instead of through the workflow:
+To build by hand instead of through the workflow, build from a clean checkout: `az acr build .` uploads the
+working tree as it is, so an untracked file under `app/` or `samples/` ends up in the image. To prove the
+three readers before pushing, build the same Dockerfile locally and read the samples with no network
+(about 75 s, exit code 0 only when invoice2data, PaddleOCR and Docling all read):
+
+```bash
+docker run --rm --network none <image> python scripts/check_engines.py invoice2data paddleocr docling
+```
+
+Then build and put it on:
 
 ```bash
 az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \

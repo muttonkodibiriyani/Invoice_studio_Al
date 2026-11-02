@@ -396,6 +396,11 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def policy(c=None):return Policy.model_validate(store.get("policy",{},c))
     def rule_signature(opts):
         return hashlib.sha256(json.dumps({"options":opts.model_dump(),"references":references().get("version"),"policy":policy().model_dump(mode="json")},sort_keys=True).encode()).hexdigest()
+    def ai_off():return store.get("settings",Settings().model_dump()).get("ai_fallback") is False
+    def refuse_ai_when_off(opts):
+        # Security pack N9: the admin's AI setting binds every read, not only the upload dialog's defaults; options are never changed silently.
+        if ai_off() and (opts.ai_fallback or opts.ai_cross_check or opts.engine=="ai"):
+            raise HTTPException(403,"An administrator has turned AI off. Turn off AI fallback and AI cross-check, choose a local engine, and review the plan again.")
     def require_plan(token,opts,filename,size):
         with plans_lock:
             plan=plans.get(token)
@@ -620,6 +625,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         finally:track(jid);slots.release()
 
     def submit(content,filename,opts,token):
+        refuse_ai_when_off(opts)
         if not slots.acquire(blocking=False):raise HTTPException(429,QUEUE_FULL)
         try:
             suffix=Path(filename).suffix.lower()
@@ -755,7 +761,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/preflight")
     @access(MEMBER)
     def preflight(body:Preflight):
-        warnings=[];blocking=[];opts=body.options
+        warnings=[];blocking=[];opts=body.options;refuse_ai_when_off(opts)
         if opts.engine=="invoice2data":warnings.append("invoice2data reads native text and supplier templates. Scanned PDFs and images use PaddleOCR locally as the input reader; the trace names both components.")
         if opts.engine in ("auto","invoice2data","paddleocr"):
             warnings.append("Short scanned PDFs with unread quantities or prices may receive one higher-resolution local OCR pass, within a six-minute reader limit. It is retained only when consistency checks improve; all values still require review. Local OCR files wait their turn to keep the workspace responsive.")
@@ -948,7 +954,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/retry")
     @access(MEMBER)
     def retry(jid:str,body:Retry):
-        j=job_or_404(jid);assert_editable(j)
+        j=job_or_404(jid);assert_editable(j);refuse_ai_when_off(body.options)
         if not slots.acquire(blocking=False):raise HTTPException(429,QUEUE_FULL)
         try:
             with plans_lock:
@@ -1285,7 +1291,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/demo")
     @access(ADMIN)
     def demo(body:DemoRequest):
-        content=(ROOT/"samples/invoice.pdf").read_bytes();name="SYNTHETIC-demo-invoice.pdf";opts=ProcessingOptions()
+        content=(ROOT/"samples/invoice.pdf").read_bytes();name="SYNTHETIC-demo-invoice.pdf";opts=ProcessingOptions(ai_fallback=not ai_off())
         return submit(content,name,opts,body.preflight_token)
 
     @app.get("/api/samples/reference.xlsx")
@@ -1614,7 +1620,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def save_settings(body:Settings):
         if body.provider not in AI_PROVIDERS:raise ValueError("Unknown provider")
-        # Security pack N3: these settings decide whether an invoice may go to an AI service, so a change is audited.
+        # Security pack N3: a change is audited. ai_fallback off refuses every AI read (N9, refuse_ai_when_off); provider and model are only defaults.
         with store.connection(True) as c:
             before=store.get("settings",Settings().model_dump(),c)
             store.set("settings",body.model_dump(),c)

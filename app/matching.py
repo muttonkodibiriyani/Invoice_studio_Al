@@ -284,7 +284,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None):
         issues.append({"code":str(e.get("Exception Type") or "Exception"),"message":str(e.get("Description") or ""),
                        "owner":str(e.get("Owner") or ""),"line":e.get("Line No.") or None,"rule":str(e.get("Rule ID") or ""),
                        "evidence":str(e.get("Candidates / Evidence") or ""),"blocking":bool(e.get("blocking",True)),
-                       "level":"hard" if e.get("Rule ID")=="M4-RECEIPT" else "review" if e.get("blocking",True) else "warning",
+                       "level":"hard" if e.get("Rule ID") in ("M4-RECEIPT","ALG-028") else "review" if e.get("blocking",True) else "warning",
                        "check":str(e.get("Check ID") or ""),"type":str(e.get("Engine Type") or "")})
     # RULES raises its own ITEM-LINE-95 exception when lines exist; add ours only when it did not.
     if below and not any(i["rule"]=="ITEM-LINE-95" for i in issues):

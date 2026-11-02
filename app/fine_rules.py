@@ -681,22 +681,19 @@ def item_barcode(row):
 def variant_parents(line, rows, eligible):
     """Only exact description/explicit variant evidence can settle an ambiguous VPN."""
     printed = normalize_description(line.description)
-    exact = {text(r.get("ITEM_PARENT")) for r in rows
-             if normalize_description(r.get("ITEM_DESC")) == printed and printed}
-    if len(exact & eligible) == 1:
-        return exact & eligible
     tokens = set(printed.split())
-    # Unknown attributes remain compatible. Evidence may exclude only an explicit contradiction.
+    columns = ("SUPP_SIZE", "SUPP_COLOR", "SUPP_SCENT")
+    # A dimension is evidenced only when an actual candidate value is printed.
+    # Missing source or invoice attributes remain compatible, rather than becoming contradictions.
+    printed_values = {column: {normalize_description(row.get(column)) for row in rows
+                              if text(row.get(column)) and set(normalize_description(row.get(column)).split()) <= tokens}
+                      for column in columns}
     compatible = set()
-    decided = False
     for row in rows:
-        attributes = [normalize_description(row.get(c)) for c in ("SUPP_SIZE", "SUPP_COLOR", "SUPP_SCENT")
-                      if text(row.get(c))]
-        if not attributes or all(set(a.split()) <= tokens for a in attributes):
+        if all(not text(row.get(column)) or not printed_values[column] or
+               normalize_description(row.get(column)) in printed_values[column] for column in columns):
             compatible.add(text(row.get("ITEM_PARENT")))
-        if attributes and all(set(a.split()) <= tokens for a in attributes):
-            decided = True
-    return compatible & eligible if decided and len(compatible & eligible) == 1 else eligible
+    return compatible & eligible if any(printed_values.values()) and len(compatible & eligible) == 1 else eligible
 
 
 def match_line(run, n, line, source, sites=None):
@@ -1550,11 +1547,16 @@ def resolve_tax_code(run, market, document_date):
     """
     invoice = run.invoice
     printed = text(invoice.taxCode)
-    if printed or not market or not run.config.vat_codes:
-        return printed
+    if not market or not run.config.vat_codes:
+        if printed:
+            run.exception("Tax Code", "Printed tax code has no approved receiving-market VAT context", "R-016", owner="Tax reviewer")
+        return ""
     vat = run.config.vat_codes.get(text(market).upper())
     if not vat:
         run.exception("Tax Code", f"No C/PV VAT code for the {market} VAT region", "R-016", owner="Tax reviewer")
+        return ""
+    if printed and printed != vat["code"]:
+        run.exception("Tax Code", "Printed tax code conflicts with the approved receiving-market VAT mapping", "R-016", owner="Tax reviewer")
         return ""
     if not document_date or document_date < vat["active_from"].isoformat():
         run.exception("Tax Code", f"VAT code {vat['code']} applies from {vat['active_from'].isoformat()}; "
@@ -1860,7 +1862,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
 
     # Line outputs (ALG-021/022/026/027).
     tax_code = resolve_tax_code(run, market, document_date)
-    tax_source = "Reviewed invoice tax code" if text(invoice.taxCode) else "Owner VAT code table (C/PV), receiving market"
+    tax_source = "Owner VAT code table (C/PV), receiving market"
     lines_out = []
     discount = invoice_discount(invoice, scan)
     for line, m in zip(invoice.lines, matches):
@@ -2022,6 +2024,7 @@ def run_batch(entries, source, config=None):
             result = {"status": "Blocked", "filename": entry.get("filename", ""), "transaction": transaction,
                       "header": {"Document": text(entry["invoice"].number), "Validation Status": "Blocked"},
                       "lines": [], "workbench": [], "lineage": [], "pogrn_validation": [], "raw_invoice": [],
+                      "receipt_controls": {"known": False, "capacities": [], "demand": {}},
                       "tax": [], "exceptions": [{"Exception ID": "EX-001", "Invoice Number": text(entry["invoice"].number),
                                                  "Line No.": "", "Exception Type": "Processing", "Description": str(error)[:300],
                                                  "Candidates / Evidence": "", "Proposed Resolution": "", "Owner": "Support",

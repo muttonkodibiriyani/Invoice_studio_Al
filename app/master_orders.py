@@ -11,11 +11,20 @@ def destination(invoice, scan, directory, config):
     candidates = []
     printed = text(invoice.location)
     delivery = []
+    start_label = re.compile(r"(?i)\b(?:deliver(?:y)?\s*(?:to|address)|ship\s*to)\b\s*:?")
+    boundary = re.compile(r"(?i)^\s*(?:bill(?:ing)?\s*to|sold\s*to|supplier|vendor|invoice|tax\s*invoice|tel(?:ephone)?|phone|email|fax|contact|account|vat|trn|date|p\.?o\.?|purchase\s*order|item|description|qty|quantity|unit|subtotal|total)\b")
+    inline_boundary = re.compile(r"(?i)\b(?:bill(?:ing)?\s*to|sold\s*to|supplier\s*(?:tel|phone|email)|invoice\s*(?:no|number)|tel(?:ephone)?|phone|email|fax|vat|trn)\s*:")
     for page in scan["pages"].values():
         lines = page.splitlines()
         for index, line in enumerate(lines):
-            if re.search(r"(?i)\b(?:deliver(?:y)?\s*(?:to|address)|ship\s*to)\b", line):
-                delivery.append(" ".join(lines[index:index + 4]))
+            label = start_label.search(line)
+            if label:
+                block = [inline_boundary.split(line[label.end():], maxsplit=1)[0]]
+                for following in lines[index + 1:index + 4]:
+                    if boundary.search(following):
+                        break
+                    block.append(inline_boundary.split(following, maxsplit=1)[0])
+                delivery.append(" ".join(block))
     for row in directory:
         data = row["data"]
         values = [text(data.get(c)) for c in ("LOCATION NUMBER", "LOCATION NAME", "LOCATION NAME 2")]

@@ -355,3 +355,49 @@ def test_owner_target_entries_cannot_bypass_missing_master_receipt_association(c
     validation=rules_validation(view,reviewed=True)
     assert not validation["ready"] and validation["allocations"] == []
     assert any(i["level"]=="hard" and i["code"]=="Receipt Evidence" for i in validation["issues"])
+
+
+def test_computation_failure_cannot_be_confirmed_into_final_export():
+    from app.fine_rules import run_batch
+    class BrokenSource(RowsSource):
+        def items_by_supplier_name(self, value):
+            raise ValueError("synthetic bounded lookup failure")
+    result=run_batch([{"invoice":invoice()}],BrokenSource(),RulesConfig())[0]
+    view=rules_view(result,"",[],entries={"header":{"site":"101","po":"450001","location":"1200","location_type":"Store (S)","date":"2026-11-01","net":"100","tax":"5","taxCode":"PV5"}})
+    validation=rules_validation(view,reviewed=True)
+    assert not validation["ready"] and validation["allocations"]==[]
+    assert any(i["rule"]=="ALG-028" and i["level"]=="hard" and i["blocking"] for i in validation["issues"] if "rule" in i)
+
+
+@pytest.mark.parametrize("market,when,tax,rate,printed,expected", [
+    ("ARE","2026-11-01","5","5",None,"PV5"),
+    ("ARE","2026-11-01","0","0",None,"PV5"),
+    (None,"2026-11-01","5","5","PV5",""),
+    ("ARE",None,"5","5",None,""),
+    ("ARE","2019-01-01","5","5",None,""),
+    ("ARE","2026-11-01",None,"5",None,""),
+    ("ARE","2026-11-01","5","5","ILLUSTRATIVE-CODE",""),
+])
+def test_vat_uses_approved_country_date_rate_and_printed_context(market,when,tax,rate,printed,expected):
+    from app.fine_rules import resolve_tax_code
+    settings=config()
+    settings["vat_codes"][0]["rate"]=rate
+    inv=Invoice(net="100",tax=tax,taxCode=printed)
+    actual=resolve_tax_code(Run(inv,RulesConfig.from_dict(settings),"synthetic.pdf"),market,when)
+    assert actual==expected
+
+
+@pytest.mark.parametrize("text", ["Deliver To: Unrecognized depot\nBill To: Synthetic Store", "Ship To: Unrecognized depot\nSupplier Tel: 12"])
+def test_delivery_region_ends_before_other_party_or_contact(text):
+    directory=[{"source_hash":HASH,"source_sheet":"Master","source_row":2,
+                "data":{"LOCATION NUMBER":"12","LOCATION NAME":"Synthetic Store"}}]
+    assert destination(Invoice(location="12"),{"pages":{1:text}},directory,RulesConfig()) is None
+
+
+def test_missing_printed_variant_dimension_remains_unknown():
+    from app.fine_rules import variant_parents
+    rows=[{"ITEM_PARENT":"P1","SUPP_COLOR":"red","SUPP_SIZE":""},
+          {"ITEM_PARENT":"P2","SUPP_COLOR":"red","SUPP_SIZE":"M"}]
+    assert variant_parents(Line(description="Rose red"),rows,{"P1","P2"})=={"P1","P2"}
+    colors=[{"ITEM_PARENT":"P1","SUPP_COLOR":"red"},{"ITEM_PARENT":"P2","SUPP_COLOR":"blue"}]
+    assert variant_parents(Line(description="Rose red"),colors,{"P1","P2"})=={"P1"}

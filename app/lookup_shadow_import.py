@@ -20,7 +20,7 @@ from typing import Any
 from app.reference_lookup import KINDS, MAX_LINE_BYTES, _expected_manifest, _record
 
 
-IMPORT_FORMAT_VERSION = "lookup-shadow.v2"
+IMPORT_FORMAT_VERSION = "lookup-shadow.v3"
 IMPORT_ADVISORY_LOCK = 4_285_711_449_731_903_217
 MAX_BATCH_BYTES = 16 * 1024 * 1024
 MAX_BATCH_TERMS = 50_000

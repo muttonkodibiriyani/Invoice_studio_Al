@@ -446,9 +446,13 @@ def vpn_candidates(line):
     """
     if text(getattr(line, "sku", None)):
         return [{"value": text(line.sku), "origin": "VPN column", "primary": True}]
-    leading = re.match(r"\s*(\d+)(?!\d)", text(getattr(line, "description", None)))
-    if leading and len(leading.group(1)) == 6:
-        return [{"value": leading.group(1), "origin": "description start", "primary": True}]
+    description = text(getattr(line, "description", None))
+    labeled = re.search(r"(?i)\b(?:VPN|supplier\s*(?:code|item)|part\s*(?:no|number))\s*[:#-]?\s*([A-Z0-9][A-Z0-9./_-]*)", description)
+    bracketed = re.match(r"\s*\[([A-Za-z0-9][A-Za-z0-9./_-]*)\]", description)
+    leading = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9./_-]*)", description)
+    match = labeled or bracketed or leading
+    if match and any(c.isdigit() for c in match.group(1)):
+        return [{"value": match.group(1), "origin": "description code", "primary": True}]
     return []
 
 
@@ -585,11 +589,10 @@ def _unique_parents(rows):
 
 
 def _constrain(rows, sites):
-    """ALG-018 / R-015: restrict to the matched supplier where possible."""
+    """M2: an established supplier scope never falls back to another supplier's rows."""
     if not sites:
-        return rows, False
-    narrowed = [r for r in rows if text(r.get("SUPPLIER")) in sites]
-    return (narrowed, True) if narrowed else (rows, False)
+        return [], False
+    return [r for r in rows if text(r.get("SUPPLIER")) in sites], True
 
 
 OCR_SWAPS = {"I": "1", "1": "I", "O": "0", "0": "O"}
@@ -673,6 +676,32 @@ def variant_upc(line):
     return variant_code(line)[0]
 
 
+def item_barcode(row):
+    """Explicit BARCODE in the new master; legacy catalogs declared ITEM as their barcode."""
+    return strip_ult(row.get("BARCODE") if "BARCODE" in row else row.get("ITEM"))
+
+
+def variant_parents(line, rows, eligible):
+    """Only exact description/explicit variant evidence can settle an ambiguous VPN."""
+    printed = normalize_description(line.description)
+    exact = {text(r.get("ITEM_PARENT")) for r in rows
+             if normalize_description(r.get("ITEM_DESC")) == printed and printed}
+    if len(exact & eligible) == 1:
+        return exact & eligible
+    tokens = set(printed.split())
+    # Unknown attributes remain compatible. Evidence may exclude only an explicit contradiction.
+    compatible = set()
+    decided = False
+    for row in rows:
+        attributes = [normalize_description(row.get(c)) for c in ("SUPP_SIZE", "SUPP_COLOR", "SUPP_SCENT")
+                      if text(row.get(c))]
+        if not attributes or all(set(a.split()) <= tokens for a in attributes):
+            compatible.add(text(row.get("ITEM_PARENT")))
+        if attributes and all(set(a.split()) <= tokens for a in attributes):
+            decided = True
+    return compatible & eligible if decided and len(compatible & eligible) == 1 else eligible
+
+
 def match_line(run, n, line, source, sites=None):
     """R-003/R-005/R-015, ALG-015..ALG-021, ALG-027, ALG-029: one invoice line to one ITEM_PARENT."""
     barcodes = barcode_candidates(line)
@@ -681,16 +710,21 @@ def match_line(run, n, line, source, sites=None):
               "checks": {"barcode": "Not available", "vpn": "Not available", "description": "Not available"},
               "status": "Exception", "description_score": None, "candidates": []}
 
+    if not sites:
+        run.exception("Supplier Exception", "Resolve the invoice issuer before searching items", "M2", n)
+        return result
     barcode_hits = {}
     for candidate in barcodes:
-        rows = [r for r in source.items_by_barcode(candidate["value"]) if strip_ult(r.get("ITEM")) == candidate["value"]]
+        rows = [r for r in source.items_by_barcode(candidate["value"]) if item_barcode(r) == candidate["value"]]
+        rows = _constrain(rows, sites)[0]
         if rows:
             barcode_hits[candidate["value"]] = (candidate, rows)
     # D102: a complete printed barcode that fails the GTIN check digit is never in gtin. It counts only as an exact
-    # Item Master code; otherwise the UPC stays empty with the misprint reason and the VPN route follows (D87).
+    # Item Master barcode; otherwise the UPC stays empty with the misprint reason.
     unchecked = "" if text(getattr(line, "gtin", None)) else normalize_barcode(getattr(line, "barcode_unchecked", None))
     if unchecked:
-        rows = [r for r in source.items_by_barcode(unchecked) if strip_ult(r.get("ITEM")) == unchecked]
+        rows = [r for r in source.items_by_barcode(unchecked) if item_barcode(r) == unchecked]
+        rows = _constrain(rows, sites)[0]
         if rows:
             candidate = {"value": unchecked, "origin": "unchecked barcode", "printed": unchecked}
             barcodes = barcodes + [candidate]
@@ -702,6 +736,7 @@ def match_line(run, n, line, source, sites=None):
     vpn_hits = {}
     for candidate in vpns:
         rows = [r for r in source.items_by_vpn(candidate["value"]) if text(r.get("VPN")) == candidate["value"]]
+        rows = _constrain(rows, sites)[0]
         if rows:
             vpn_hits[candidate["value"]] = (candidate, rows)
     ocr = None
@@ -716,7 +751,8 @@ def match_line(run, n, line, source, sites=None):
     core, printed = variant_code(line)
     if not barcode_hits and not vpn_hits and not ocr and core:
         # Only after both exact routes found nothing; the whole master must agree on one ITEM_PARENT.
-        rows = [r for r in source.items_by_barcode(core) if strip_ult(r.get("ITEM")) == core]
+        rows = [r for r in source.items_by_barcode(core) if item_barcode(r) == core]
+        rows = _constrain(rows, sites)[0]
         if len(_unique_parents(rows)) == 1:
             supplier_code = {"value": core, "origin": "supplier variant", "printed": printed}
             barcodes = barcodes + [supplier_code]
@@ -730,26 +766,39 @@ def match_line(run, n, line, source, sites=None):
     usable_vpn = vpn_hits
     vpn_parents = {p for _, rows in usable_vpn.values() for p in _unique_parents(_constrain(rows, sites)[0])}
 
-    # D87 (owner): barcode, then the supplier item code (VPN), then the description, last and review only. A barcode
-    # found only inside the description text ranks after the VPN column; it still decides when no VPN column hits.
-    column_vpn = any(c["origin"] == "VPN column" for c, _ in usable_vpn.values())
-    text_barcode = barcode_hits and all(c["origin"] == "description" for c, _ in barcode_hits.values())
-    ranked_barcode = set() if text_barcode and column_vpn else barcode_parents
-
+    # Independent exact identifiers retain their own evidence; an incidental description barcode
+    # cannot conceal a contradictory dedicated barcode (or another exact description identifier).
+    exact_sets = [set(_unique_parents(rows)) for _, rows in [*barcode_hits.values(), *usable_vpn.values()] if rows]
+    if exact_sets and not set.intersection(*exact_sets):
+        result["exception"] = run.exception("Item Conflict", "Independent exact identifiers disagree", "ALG-020", n,
+                                            owner="Item steward")
+        result["candidates"] = sorted(set.union(*exact_sets))
+        return result
+    # M3 supersedes D87: VPN first within the issuer scope. Exact contradictory identifiers hold.
     parent = None
-    if len(ranked_barcode) == 1:
-        parent, result["method"], rule = next(iter(ranked_barcode)), "Barcode exact", "ALG-016"
-    elif len(ranked_barcode) > 1:
+    compatible = vpn_parents & barcode_parents if vpn_parents and barcode_parents else vpn_parents
+    if vpn_parents and barcode_parents and not compatible:
+        result["exception"] = run.exception("Item Conflict", "Exact VPN and barcode identify different parents",
+                                            "ALG-020", n, owner="Item steward")
+        result["candidates"] = sorted(vpn_parents | barcode_parents)
+        return result
+    if vpn_parents:
+        if len(compatible) > 1:
+            compatible = variant_parents(line, [r for _, rows in usable_vpn.values()
+                                                for r in _constrain(rows, sites)[0]], compatible)
+        if len(compatible) == 1:
+            parent, result["method"], rule = next(iter(compatible)), "VPN exact", "ALG-018"
+        else:
+            run.exception("Item Exception", "VPN matches more than one compatible ITEM_PARENT", "ALG-018", n,
+                          evidence=", ".join(sorted(vpn_parents)), owner="Item steward")
+            result["candidates"] = sorted(vpn_parents)
+            return result
+    elif len(barcode_parents) == 1:
+        parent, result["method"], rule = next(iter(barcode_parents)), "Barcode exact", "ALG-016"
+    elif len(barcode_parents) > 1:
         run.exception("Item Exception", "Barcode matches more than one ITEM_PARENT", "ALG-016", n,
                       evidence=", ".join(sorted(barcode_parents)), owner="Item steward")
         result["candidates"] = sorted(barcode_parents)
-        return result
-    elif len(vpn_parents) == 1:
-        parent, result["method"], rule = next(iter(vpn_parents)), "VPN exact", "ALG-018"
-    elif len(vpn_parents) > 1:
-        run.exception("Item Exception", "VPN matches more than one ITEM_PARENT", "ALG-018", n,
-                      evidence=", ".join(sorted(vpn_parents)), owner="Item steward")
-        result["candidates"] = sorted(vpn_parents)
         return result
     if parent is None:
         # ALG-019: description route produces review candidates only (R-005, V-009 open).
@@ -759,7 +808,10 @@ def match_line(run, n, line, source, sites=None):
             score = description_score(line.description, row, removed)
             if score > 0:
                 scored.append((score, text(row.get("ITEM_PARENT"))))
-        scored.sort(reverse=True)
+        best = {}
+        for score, candidate_parent in scored:
+            best[candidate_parent] = max(score, best.get(candidate_parent, 0))
+        scored = sorted(((score, parent) for parent, score in best.items()), reverse=True)
         result["candidates"] = [f"{p} ({s:.2f})" for s, p in scored[:5]]
         result["method"] = "Description candidate" if scored else None
         reason = ("No exact barcode or VPN match; description candidates need manual approval"
@@ -778,13 +830,11 @@ def match_line(run, n, line, source, sites=None):
         return result
 
     rows = _constrain(source.items_by_parent(parent), sites)[0]
-    rows = [r for r in rows if text(r.get("ITEM_PARENT")) == parent] or \
-        [r for _, hit in list(barcode_hits.values()) + list(usable_vpn.values()) for r in hit
-         if text(r.get("ITEM_PARENT")) == parent]
+    rows = [r for r in rows if text(r.get("ITEM_PARENT")) == parent]
     result.update(parent=parent, rows=rows)
 
     # ALG-020 triple assurance. Barcode and VPN are primary; description only supports.
-    parent_barcodes = {strip_ult(r.get("ITEM")) for r in rows}
+    parent_barcodes = {item_barcode(r) for r in rows}
     parent_vpns = {text(r.get("VPN")) for r in rows}
     hit_barcode = next((c["value"] for c in barcodes if c["value"] in parent_barcodes), None)
     column_barcode = next((c["value"] for c in barcodes if c["origin"] == "barcode column"), None)
@@ -1260,6 +1310,11 @@ def resolve_po(run, source, keys, invoice_qty, invoice_value, supplier_site, nam
     Zero or several candidates leave it empty and flagged; never the closest. With zero, POG-008 may still take the
     one order holding every matched item at its ordered quantity (not received), always for owner review.
     """
+    if hasattr(source, "master_catalog"):
+        from .master_orders import resolve
+        master = resolve(run, source, supplier_site, name_master, set(parents), invoiced)
+        if master is not None:
+            return master
     invoice = run.invoice
     printed = text(invoice.po)
     currency = text(invoice.currency) or None
@@ -1646,7 +1701,7 @@ def item_resolution(run, matches, group):
     """Owner form 01a10c4f item-line check: lines with one ITEM_PARENT whose quantity agrees with the accepted
     PO/GRN rows of that item (C-11), over all lines. Below 95 % the owner validates."""
     received = defaultdict(lambda: None)
-    for row in (group or {}).get("_rows", ()):
+    for row in (() if (group or {}).get("_receipt_identity_unknown") else (group or {}).get("_rows", ())):
         qty = to_decimal(row.get("QTY_RECEIVED"))
         if qty is not None:
             parent = text(row.get("RMS_ITEM_ID"))
@@ -1712,18 +1767,16 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         document_date = dates["parsed"]
         run.trace("Document Date", document_date, "ALG-004", "Invoice Document Date", original=dates["raw"])
 
-    # Supplier discovery over the whole document, then items, then supplier linkage.
+    # Supplier discovery uses issuer evidence, followed by scoped product search.
     buyer_page, buyer_rows = buyer_party(scan)
     candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows)
     first_names = {r_site for c in candidates for r_site in
                    (text(r.get("SUPPLIER")) for r in source.items_by_supplier_name(c["name"])) if r_site}
-    # A probe pass finds the supplier from unambiguous lines; the recorded pass then
-    # constrains every line by that supplier (ALG-018 / R-015).
+    # Resolve the issuer/site or approved family before any product search (M2).
     probe = Run(invoice, config, filename)
-    probe_matches = [match_line(probe, n, line, source, first_names or None) for n, line in enumerate(invoice.lines, 1)]
     deliver_to = deliver_to_location(invoice, scan, config)
-    probe_site, _, probe_family = resolve_supplier(probe, source, probe_matches, candidates, deliver_to,
-                                                        owner_supplier_code)
+    probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
+                                                  owner_supplier_code)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else (first_names or None))
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
@@ -1760,6 +1813,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         if m["status"] == "Matched":
             prior = invoiced.get(m["parent"], Decimal(0))
             invoiced[m["parent"]] = None if prior is None or line.qty is None else prior + line.qty
+    run.master_text, run.master_boxes = text_value, boxes
     po = resolve_po(run, source, keys, invoice_qty, invoice_value, supplier_site, raw_name, master_name, parents,
                     invoiced)
     group = po["group"]
@@ -1789,12 +1843,14 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         if location and not market:
             run.exception("Market Mapping", "No approved market for the accepted location", "POG-004",
                           evidence=group["Exception Reason"], owner="Business")
-        run.trace("Location", location, "ALG-011", f"{ORDERED_NOT_RECEIVED_SOURCE}: LOCATION"
-                  if group["PO Source"] == ORDERED_NOT_RECEIVED else "Accepted POGRN LOCATION",
-                  reference=group["POGRN Row Reference"])
+        destination = group.get("_master_destination")
+        run.trace("Location", location, "ALG-011", "Master location directory LOCATION NUMBER" if destination else
+                  f"{ORDERED_NOT_RECEIVED_SOURCE}: LOCATION" if group["PO Source"] == ORDERED_NOT_RECEIVED else
+                  "Accepted POGRN LOCATION", reference=destination["refs"] if destination else group["POGRN Row Reference"])
         run.trace("Location Type", loc_type, "ALG-014" if group["_location_type"].get("source") == "location master"
                   else ("ALG-012" if loc_type == WAREHOUSE else "ALG-013"), group["_location_type"].get("source", ""),
-                  original=location)
+                  original=location, reference=destination["refs"] if destination and
+                  group["_location_type"].get("source") == "Master location directory" else "")
         run.trace("Market", market, "R-027", "Location-market mapping", original=location)
     elif po["status"] != "Location ambiguous":
         run.exception("Location ID", "Location waits for an accepted POGRN order (never from Item Master)",
@@ -1909,6 +1965,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "receipt_date": check_receipt_dates(po, order_date, document_date),
         "ebs_supplier_code": key or "/".join(sorted(keys)), "entity_hint": hint, "config_version": config.version,
         "item_resolution": resolution, "po_candidates": po["candidates"],
+        **({"receipt_controls": po["receipt_controls"]} if "receipt_controls" in po else {}),
         "supplier_site_candidates": [] if supplier_site and not run.owner_pick else run.site_candidates,
     }
 
@@ -2020,11 +2077,11 @@ class RowsSource:
     """In-memory Item Master / POGRN rows (tests and small uploads)."""
 
     def __init__(self, items=(), pogrn=()):
-        self.items = [dict(r) for r in items]
+        self.items = [{**dict(r), "SUPPLIER": r.get("SUPPLIER SITE", r.get("SUPPLIER"))} for r in items]
         self.pogrn = [dict(r) for r in pogrn]
 
     def items_by_barcode(self, value):
-        return [r for r in self.items if strip_ult(r.get("ITEM")) == value]
+        return [r for r in self.items if item_barcode(r) == value]
 
     def items_by_vpn(self, value):
         return [r for r in self.items if text(r.get("VPN")) == value]
@@ -2037,7 +2094,8 @@ class RowsSource:
 
     def items_by_supplier_name(self, value):
         key = re.sub(r"[^\w]", "", fold(value))
-        return [r for r in self.items if key and re.sub(r"[^\w]", "", fold(r.get("SUPPLIER_NAME"))) == key]
+        return [r for r in self.items if key and any(re.sub(r"[^\w]", "", fold(r.get(c))) == key
+                                                   for c in ("SUPPLIER_NAME", "SUPPLIER SITE NAME"))]
 
     def items_by_description(self, value, sites=None):
         tokens = set(normalize_description(value).split())

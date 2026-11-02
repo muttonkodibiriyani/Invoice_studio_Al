@@ -52,7 +52,10 @@ class LookupRulesSource:
         for row in found:
             payload = json.loads(row["payload"])
             data = dict(payload.get("data") or {})
-            data["_ref"] = f"{row['sheet']}!{row['row_number']}"
+            if any("quarant" in f.lower() for f in payload.get("flags", [])):
+                continue
+            data["SUPPLIER"] = data.get("SUPPLIER SITE", data.get("SUPPLIER"))
+            data["_ref"] = f"{payload['source_hash']}:{kind}:{row['sheet']}!{row['row_number']}"
             rows.append(data)
         self._cache[key] = rows
         return rows
@@ -73,8 +76,8 @@ class LookupRulesSource:
         value = normalize_name(value)
         return self._rows("item", [f"f:supplier:{value}"]) if value else []
 
-    def items_by_site(self, value, limit=20):
-        # A few rows are enough: the site's SUPPLIER_NAME is the same on all of them (checked by the caller).
+    def items_by_site(self, value, limit=None):
+        # Semantic uniqueness requires every scoped row, never an arbitrary first-page sample.
         value = normalize_name(value)
         return self._rows("item", [f"f:site:{value}"], limit) if value else []
 
@@ -91,3 +94,21 @@ class LookupRulesSource:
     def pogrn_by_order(self, value):
         value = normalize_identifier(value)
         return self._rows("po", [f"f:po:{value}"]) if value else []
+
+    def master_catalog(self):
+        with self.store.connection() as c:
+            sources = [json.loads(r[0]) for r in c.execute("SELECT payload FROM lookup_sources ORDER BY id")]
+        return next((s["master_catalog"] for s in sources if s.get("master_catalog")), None)
+
+    def master_orders(self, parents, sites):
+        rows = self._rows("po", [f"x:internal_item:{normalize_identifier(p)}" for p in parents])
+        accepted = []
+        for row in rows:
+            # Only the PO barcode and parent are joined. Adjacent worksheet supplier/location cells are independent.
+            item_rows = self.items_by_barcode(row.get("BARCODE_1", ""))
+            bridge = [r for r in item_rows if str(r.get("SUPPLIER")) in sites and
+                      str(r.get("ITEM_PARENT")) == str(row.get("RMS_ITEM_ID")) and
+                      str(r.get("BARCODE")) == str(row.get("BARCODE_1"))]
+            if bridge:
+                accepted.append({**row, "_bridge_refs": [r["_ref"] for r in bridge]})
+        return accepted

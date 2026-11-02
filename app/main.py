@@ -38,6 +38,7 @@ from .extraction_draft import extraction_workbook, extraction_batch_workbook
 from .drafts import ManualDraftRequest, build_draft_workbook, draft_filename, draft_public_metadata
 from .deletion import DeletionError, delete_invoices, remove_uploads
 from .reference_lookup import ReferenceLookup
+from .master_catalog import register_item_master
 from .fine_rules import RulesConfig, decide_feedback, feedback_entry, ocr_read, run_batch
 from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
@@ -249,6 +250,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                              remove=getattr(store,"remove_blob",None) if identity.cloud else None)
     auth=ChatGPTAuth(store);providers=Providers(store,auth,learned)
     lookup=ReferenceLookup(store)
+    register_item_master(app,store)
     products=ProductCandidates(lookup)
     # Admission is separate from processing: a batch is accepted whole, up to INV_STUDIO_MAX_QUEUED unfinished jobs
     # (queued or processing) on this instance, and the jobs wait their turn in the pool instead of being refused.
@@ -440,18 +442,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         return hashlib.sha256(json.dumps([store.get("fine_rules_config",{},c),sources,target_upc(c)],sort_keys=True,default=str).encode()).hexdigest()
     def compute_rules(invoice,j,entries=None):
         """ONE fine-rules run for this invoice; review fields, banner and download all read its view."""
-        with store.connection() as c:config=store.get("fine_rules_config",{},c);signature=rules_signature(c)
-        entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
-        if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
-        # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
-        entry["ocr_lines"]=ocr_read(j)
-        result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
-        entries=j.get("owner_entries") if entries is None else entries
-        view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
-        view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
-        entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
-        attach_target_check(view,config,tc.TextChecks(stored_text_checks(j)),entries,attribution)
-        return view
+        checks=stored_text_checks(j)
+        with store.connection(True) as catalog_lock:
+            config=store.get("fine_rules_config",{},catalog_lock);signature=rules_signature(catalog_lock)
+            entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
+            if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
+            # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
+            entry["ocr_lines"]=ocr_read(j)
+            result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
+            entries=j.get("owner_entries") if entries is None else entries
+            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
+            view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
+            entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
+            attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
+            return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
         (engines.text_checks) and kept on the job under a hash of that text, so each text is checked once. A
@@ -510,6 +514,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         with store.connection(True) as c:
             current=job_or_404(jid,c)
             if current["revision"]!=j["revision"] or evidence_hash(current)!=view["evidence_hash"]:return
+            if rules_signature(c)!=view["signature"]:return
             current["text_checks"]=checks
             view["revision"]=current["revision"]
             # New review-level issues from changed tables were not seen by the reviewer: ask for a fresh confirm.
@@ -928,6 +933,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
+            if view is not None and view["signature"]!=rules_signature(c):
+                raise HTTPException(409,"Catalog or rules changed. Refresh before confirming review.")
             body.invoice=carry_unchecked(body.invoice,j["invoice"])
             inv,provenance=enrich(body.invoice,references(c)) if demo_references else (body.invoice,[])
             before=j["invoice"]
@@ -980,6 +987,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if j.get("export_id"):return {"id":j["export_id"],"url":"/api/exports/"+j["export_id"]}
             assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before exporting.")
+            if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
+                                        j["rules"].get("evidence_hash") != evidence_hash(j)):
+                raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
             evaluate(j,c)
             if not j["validation"]["ready"]:raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
             inv=Invoice.model_validate(j["invoice"]);eid=uuid.uuid4().hex
@@ -995,8 +1005,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
-                         "allocations":[],"evidence":evidence.get(1,{}),"target_check":target[1]}
-            c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,key(inv),jid,json.dumps(receipt),content))
+                         "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1]}
+            c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
         learn_later(j)
         return {"id":eid,"url":"/api/exports/"+eid}
@@ -1179,13 +1189,16 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 j=job_or_404(request.id,c);assert_editable(j)
                 if j["revision"]!=request.revision:raise HTTPException(409,f"Invoice {j['filename']} changed. Refresh before exporting.")
                 inv=Invoice.model_validate(j["invoice"])
+                if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
+                                        j["rules"].get("evidence_hash") != evidence_hash(j)):
+                    raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
                 if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
                 else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
                 if not result["ready"]:raise HTTPException(409,f"Invoice {j['filename']} is held: {result['issues'][0]['message']}")
                 receipt={"id":uuid.uuid4().hex,"job_id":j["id"],"batch_id":batch_id,"transaction_number":index,
                          "invoice_key":key(inv) if demo_references else rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "reference_version":references(c).get("version"),"policy":policy(c).model_dump(mode="json"),
-                         "allocations":[m["allocation"] for m in result["matches"]] if demo_references else []}
+                         "allocations":[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])}
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {})
                 ledger.append(receipt);entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})

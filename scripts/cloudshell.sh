@@ -92,8 +92,13 @@ case "$step" in
   build)
     need_outputs
     tag=$(git rev-parse --short HEAD)
-    az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \
-      --image "inv-studio:$tag" --timeout 14400 .
+    # Cloud Shell closes after 20 idle minutes while ACR carries on: a rerun then only records the finished image.
+    if az acr repository show -n "$ACR" --image "inv-studio:$tag" -o none 2>/dev/null; then
+      echo "inv-studio:$tag is already in $ACR; not building it again."
+    else
+      az acr build --registry "$ACR" -g "$RG" --platform linux/amd64 --file Dockerfile \
+        --image "inv-studio:$tag" --timeout 14400 .
+    fi
     server=$(az acr show -n "$ACR" --query loginServer -o tsv)
     digest=$(az acr repository show -n "$ACR" --image "inv-studio:$tag" --query digest -o tsv)
     echo "$server/inv-studio@$digest" > "$STATE/last-image"

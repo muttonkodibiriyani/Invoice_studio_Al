@@ -243,6 +243,11 @@ class CompatConnection:
         cursor=self.connection.execute(_translate_sql(sql),params or ())
         return CompatCursor(cursor)
 
+    def executemany(self,sql,rows):
+        cursor=self.connection.cursor()
+        cursor.executemany(_translate_sql(sql),rows)
+        return CompatCursor(cursor)
+
 
 class PostgresStore:
     """Store-compatible persistence backed by PostgreSQL and a GCS bucket or Azure container.
@@ -281,6 +286,23 @@ class PostgresStore:
         self._init_schema()
         if _sync_templates:
             self.sync_templates()
+
+    def check_dependencies(self):
+        """Reach the database and the evidence container once each: the readiness check the lockdown relies on.
+
+        Each answer is ok or failed with the exception type only, so no address, key or message leaves."""
+        result={}
+        try:
+            with self.connection() as connection:connection.execute("SELECT 1").fetchone()
+            result["database"]="ok"
+        except Exception as exc:
+            result["database"]=f"failed: {type(exc).__name__}"
+        try:
+            next(iter(self.bucket.list_blobs(prefix="__health__/")),None)
+            result["storage"]="ok"
+        except Exception as exc:
+            result["storage"]=f"failed: {type(exc).__name__}"
+        return result
 
     def _init_schema(self):
         with self.connection(True) as connection:

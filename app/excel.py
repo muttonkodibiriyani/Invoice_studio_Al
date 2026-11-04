@@ -110,9 +110,9 @@ def rules_workbook(views,upc="empty",draft=False):
         when=need(f["date"],"Document Date")
         s.cell(row,7,date.fromisoformat(when) if when else None).number_format="m/d/yyyy";put("Header",row,7,f["date"])
         net,tax=(None if x is None else Decimal(x) for x in (need(f["net"],"Net total"),need(f["tax"],"Tax total")))
-        s.cell(row,8,net);put("Header",row,8,f["net"]);s.cell(row,9,tax);put("Header",row,9,f["tax"])
+        s.cell(row,8,net).number_format="0.0000";put("Header",row,8,f["net"]);s.cell(row,9,tax).number_format="0.0000";put("Header",row,9,f["tax"])
         t=w["Tax_Breakdown"];t.cell(row,1,transaction);text_cell(t.cell(row,2),need(f["taxCode"],"Tax code"))
-        t.cell(row,3,net);put("Tax_Breakdown",row,2,f["taxCode"]);put("Tax_Breakdown",row,3,f["net"])
+        t.cell(row,3,net).number_format="0.0000";put("Tax_Breakdown",row,2,f["taxCode"]);put("Tax_Breakdown",row,3,f["net"])
         d=w["Details"]
         for line in v["lines"]:
             c=line["cells"];n=d.max_row+1;d.cell(n,1,transaction)
@@ -120,6 +120,6 @@ def rules_workbook(views,upc="empty",draft=False):
             if upc=="barcode" and c["UPC"]["value"]:
                 text_cell(d.cell(n,3),c["UPC"]["value"]);d.cell(n,3).number_format="@";put("Details",n,3,c["UPC"])
             for col,k in ((4,"Unit Cost"),(5,"Quantity")):
-                x=need(c[k],f"Line {line['line']} {k}");d.cell(n,col,None if x is None else Decimal(x));put("Details",n,col,c[k])
+                x=need(c[k],f"Line {line['line']} {k}");d.cell(n,col,None if x is None else Decimal(x)).number_format="0.0000";put("Details",n,col,c[k])
             text_cell(d.cell(n,6),need(c["Unit Tax Code"],f"Line {line['line']} Unit Tax Code"));put("Details",n,6,c["Unit Tax Code"])
     b=io.BytesIO();w.save(b);return b.getvalue(),cells

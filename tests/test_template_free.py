@@ -140,3 +140,44 @@ def test_a_long_line_is_read_in_linear_time(keyword, line):
     started = time.monotonic()
     structured_extract(text, [], templates, [])
     assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize("printed, field, value", [
+    ("Invoice # FRE-1009", "number", "FRE-1009"),  # '#' then a space: still an invoice title
+    ("Tax Invoice\nDoc No: PTX-20017", "number", "PTX-20017"),
+    ("Tax Invoice SX/2026/0101", "number", "SX/2026/0101"),
+    ("Customer PO 70801", "po", "70801"),
+    ("Order Ref 70522", "po", "70522"),
+    ("LPO Ref LPO-77310", "po", "77310"),  # docs/FIELD_RULES.md: the LPO word is not part of po
+    ("PO Number: 14000001 TESTER", "po", "14000001"),
+])
+def test_header_labels_without_a_colon_are_read(printed, field, value):
+    from app.layout_extract import extract_invoice
+    text = f"Sample Trading LLC\nINVOICE\n{printed}\nDate: 2026-10-24\nInvoice No: INV-1\n" if field == "po" \
+        else f"Sample Trading LLC\n{printed}\nDate: 2026-10-24\n"
+    assert extract_invoice(text, None)[field] == value
+
+
+def test_a_right_aligned_number_keeps_its_printed_space():
+    from app.layout_extract import extract_invoice
+
+    def word(text, x0, x1, y):
+        return {"text": text, "page": 1, "box": [x0, y, x1, y + 10], "size": [595, 842]}
+    boxes = [word("Sample", 42, 90, 40), word("LLC", 94, 120, 40), word("INVOICE", 495, 553, 40),
+             word("Invoice", 349, 378, 70), word("Number", 380, 412, 70), word("NWT", 494, 514, 70),
+             word("004512", 517, 547, 70), word("Date:", 349, 375, 90), word("2026-10-24", 380, 430, 90)]
+    text = "Sample LLC INVOICE\nInvoice Number NWT 004512\nDate: 2026-10-24\n"
+    assert extract_invoice(text, boxes)["number"] == "NWT 004512"
+
+
+def test_a_po_printed_under_its_header_table_heading_is_read():
+    from app.layout_extract import extract_invoice
+
+    def word(text, x0, x1, y):
+        return {"text": text, "page": 1, "box": [x0, y, x1, y + 10], "size": [595, 842]}
+    boxes = [word("TAX", 250, 275, 30), word("INVOICE", 279, 330, 30),
+             word("Doc", 40, 60, 80), word("No", 63, 76, 80), word("Purchase", 200, 245, 80),
+             word("Order", 248, 275, 80), word("Salesman", 360, 410, 80),
+             word("PTX-20017", 40, 95, 96), word("PO-70412", 205, 255, 96), word("S12", 365, 385, 96)]
+    text = "TAX INVOICE\nDoc No Purchase Order Salesman\nPTX-20017 PO-70412 S12\n"
+    assert extract_invoice(text, boxes)["po"] == "70412"

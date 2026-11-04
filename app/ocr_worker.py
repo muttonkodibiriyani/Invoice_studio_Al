@@ -10,9 +10,10 @@ import tempfile
 import time
 import traceback
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
+from .numbers import parse_number, to_decimal
 from .sandbox import limit
 
 
@@ -126,8 +127,7 @@ def template_extract(text, templates, with_meta=False):
                     try:value=datetime.strptime(value,candidate.get("date_format") or "%Y-%m-%d").strftime("%Y-%m-%d")
                     except ValueError:continue
                 elif field in ("net","tax"):
-                    try:value=float(value.replace(",",""))
-                    except ValueError:continue
+                    if (value:=parse_number(value)) is None:continue
                 out[field]=value
                 break
     if isinstance(out.get("date"),(date,datetime)):out["date"]=out["date"].strftime("%Y-%m-%d")
@@ -144,6 +144,8 @@ def template_extract(text, templates, with_meta=False):
         if meta is not None:
             from .learned import finish_row
             row=finish_row(row,meta)
+        for field in ("qty","price","net_amount","tax_amount"):
+            if isinstance(row.get(field),str) and (plain:=parse_number(row[field])) is not None:row[field]=plain
         lines.append({k:v for k,v in row.items() if k in Line.model_fields})
     out["lines"]=lines
     if meta is not None:
@@ -175,15 +177,15 @@ def _same_arithmetic(baseline,candidate):
     if len(left)!=len(right):return False
     for a,b in zip(left,right):
         for field in ("qty","price","net_amount"):
-            if _visible_decimal(a.get(field))!=_visible_decimal(b.get(field)):return False
+            if to_decimal(a.get(field))!=to_decimal(b.get(field)):return False
     return True
 
 
 def _document_reconciles(invoice):
     lines=(invoice or {}).get("lines") or []
     if not lines:return False
-    net=_visible_decimal((invoice or {}).get("net"))
-    amounts=[_visible_decimal(line.get("net_amount")) for line in lines]
+    net=to_decimal((invoice or {}).get("net"))
+    amounts=[to_decimal(line.get("net_amount")) for line in lines]
     if net is not None:
         return None not in amounts and sum(amounts)==net
     checks=_line_reconciliation(invoice)
@@ -386,19 +388,11 @@ def paddle(path,language,*,render_scale=2,max_side=None):
     return text,boxes
 
 
-def _visible_decimal(value):
-    try:
-        parsed=Decimal(str(value).strip().replace(",",""))
-    except (InvalidOperation,ValueError):
-        return None
-    return parsed if parsed.is_finite() else None
-
-
 def _same_visible_value(field,left,right):
     if left in (None,"") or right in (None,""):
         return left in (None,"") and right in (None,"")
     if field in {"net","tax"}:
-        left_decimal=_visible_decimal(left);right_decimal=_visible_decimal(right)
+        left_decimal=to_decimal(left);right_decimal=to_decimal(right)
         return left_decimal is not None and left_decimal==right_decimal
     if field in {"number","po"}:
         normal=lambda value:"".join(char for char in str(value).casefold() if char.isalnum())
@@ -418,8 +412,8 @@ def _missing_quantity_price(candidate):
 def _line_reconciliation(candidate):
     result=[]
     for line in (candidate or {}).get("lines",[]):
-        qty=_visible_decimal(line.get("qty"));price=_visible_decimal(line.get("price"))
-        printed=_visible_decimal(line.get("net_amount"))
+        qty=to_decimal(line.get("qty"));price=to_decimal(line.get("price"))
+        printed=to_decimal(line.get("net_amount"))
         result.append(None if None in (qty,price,printed) else qty*price==printed)
     return result
 

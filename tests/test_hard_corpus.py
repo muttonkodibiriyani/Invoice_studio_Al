@@ -61,7 +61,10 @@ def test_the_committed_header_is_printed_and_the_supplier_is_not_the_bill_to(cas
     case = CASES[case_id]
     labelled = [(case["number_label"], want["number"]), (case["date_label"], case["date_printed"])]
     if case["po"] or want["po"]:
-        labelled.append((case["po_label"], want["po"]))
+        # docs/FIELD_RULES.md: a leading LPO/PO word joined to the number is not part of po.
+        printed_po = case.get("po_printed", want["po"])
+        assert want["po"] is None or printed_po.endswith(want["po"])
+        labelled.append((case["po_label"], printed_po))
     for label, value in labelled:
         assert f"{label} {value}" in text, f"{value!r} is not the value printed beside {label!r}"
     assert want["supplier_name"] != case["buyer"]

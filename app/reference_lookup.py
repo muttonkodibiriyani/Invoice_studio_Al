@@ -231,7 +231,7 @@ def _record(raw, configured, role_cache=None):
         raise ValueError("Lookup row flags must be a bounded string list")
     fields, sources = _candidate_fields(data, kind, configured, role_cache)
     identifier = hashlib.sha256(
-        (source_hash + "\x00" + sheet + "\x00" + str(row_number)).encode()
+        (source_hash + "\x00" + kind + "\x00" + sheet + "\x00" + str(row_number)).encode()
     ).hexdigest()
     payload = {"id": identifier, **raw, "candidate_fields": fields,
                "candidate_field_sources": sources, "approved_for_matching": False,
@@ -306,7 +306,7 @@ class ReferenceLookup:
             )
             connection.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS lookup_rows_source_row
-                   ON lookup_rows(source_hash,sheet,row_number)"""
+                   ON lookup_rows(source_hash,sheet,row_number,kind)"""
             )
 
     def summary(self):
@@ -475,7 +475,7 @@ class ReferenceLookup:
         seen_hashes = set()
         ndjson_hash = hashlib.sha256()
         role_cache = {}
-        with self.store.connection() as connection:
+        with self.store.connection(True) as connection:
             postgres = hasattr(connection, "connection") and hasattr(connection.connection, "cursor")
             if postgres:
                 connection.execute(
@@ -546,7 +546,7 @@ class ReferenceLookup:
                 stage_table = "lookup_import_stage" if postgres else "lookup_rows_stage"
                 duplicate = connection.execute(
                     f"""SELECT source_hash,sheet,row_number FROM {stage_table}
-                        GROUP BY source_hash,sheet,row_number HAVING COUNT(*)>1 LIMIT 1"""
+                        GROUP BY source_hash,sheet,row_number,kind HAVING COUNT(*)>1 LIMIT 1"""
                 ).fetchone()
                 if duplicate:
                     raise ValueError("Lookup archive repeats a source hash, sheet and row")
@@ -561,6 +561,8 @@ class ReferenceLookup:
                            SELECT s.kind,j.term,s.id FROM lookup_import_stage s
                            CROSS JOIN LATERAL jsonb_array_elements_text(s.terms::jsonb) AS j(term)"""
                     )
+                connection.execute("DROP INDEX IF EXISTS lookup_rows_source_row")
+                connection.execute("CREATE UNIQUE INDEX lookup_rows_source_row ON lookup_rows(source_hash,sheet,row_number,kind)")
                 connection.execute("DELETE FROM lookup_terms")
                 connection.execute("DELETE FROM lookup_rows")
                 connection.execute("DELETE FROM lookup_sources")

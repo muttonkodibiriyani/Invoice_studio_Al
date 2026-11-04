@@ -12,6 +12,24 @@ from .subscriptions import ClaudeSubscription
 from .vertex import VertexProvider
 
 OPENAI_RESPONSES = "https://api.openai.com/v1/responses"
+# The AI providers this deployment may use, comma-separated (the Azure template sets "azure", InfoSec LLD §9).
+# Unset or empty: every provider, as a local install has always had.
+ENV_AI_PROVIDERS = "INV_STUDIO_AI_PROVIDERS"
+ALL_AI_PROVIDERS = ("openai", "anthropic", "azure", "chatgpt", "claude_local", "vertex")
+
+
+def allowed_ai_providers():
+    raw = os.environ.get(ENV_AI_PROVIDERS, "").strip()
+    if not raw:
+        return ALL_AI_PROVIDERS
+    return tuple(p for p in (x.strip().casefold() for x in raw.split(",")) if p in ALL_AI_PROVIDERS)
+
+
+def refuse_provider(provider):
+    """Raise PermissionError for a provider this deployment does not allow."""
+    if provider not in allowed_ai_providers():
+        allowed = ", ".join(allowed_ai_providers()) or "none"
+        raise PermissionError(f"This deployment uses only these AI providers: {allowed}")
 # Vision-capable OpenAI reader families. A model that cannot read a document
 # page is not offered, and the UI still accepts a manually entered model ID.
 OPENAI_READERS = ("gpt-", "chatgpt-", "o1", "o3", "o4")
@@ -53,8 +71,9 @@ class Providers:
         self.vertex=VertexProvider()
 
     def headers(self,provider):
+        refuse_provider(provider)
         if provider=="chatgpt":return {"Authorization":"Bearer "+self.chatgpt.token()}
-        if provider=="azure":return {"api-key":self.azure.credentials()[1]}
+        if provider=="azure":return self.azure.auth_headers()
         key=self.store.secret(provider)
         if not key:raise ValueError(f"Connect {provider} with an API key first")
         if provider=="openai":return {"Authorization":"Bearer "+key}

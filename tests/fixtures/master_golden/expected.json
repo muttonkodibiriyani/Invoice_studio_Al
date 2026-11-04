@@ -1,0 +1,2227 @@
+{
+ "schema": 1,
+ "rules": "item master lookup page v0.3 (4 Nov 2026), tax codes assumed",
+ "master_sha256": "c98810f4d51541a97096a0122411ff76ab3f909ca713648b1a224ab9320ea45d",
+ "signed_off": false,
+ "cases": [
+  {
+   "case": "G01",
+   "invoice": "hmac:936ddf4b49c1323459570812539925d0b3bf36ee992bc666f9dca12fd29f8c79",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:dafe12c4e2c6217d1d27bcaa069a443448918483b6a3f00dc3b1387256e69c6a",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:f871e840e66b8ed5a9872eee3a2b407f946c0420098bb2fb5f000f121a589385",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:6a08895b85db55766b4363d9a244684969db6e4a89796ba972148dbe63e1375a",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:9405cbf662b9c44c4a356cb042698c07ac94ec3d86c560a34aa6583226fe4baa",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:98555717a666065712c11b39a971f6f28e29f2380b5856ea2e8f7c75bd652720",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "hmac:ad1405c122178e6881709a02a8704707ce035626d2c1b44bbf6521935b01f508",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "hmac:55e219242068b50e4598f384188cabb49c74277a8896b05352c57ba86f4c48e0",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "hmac:eb829a1af3bffced2851ce5c3f222a335d90e47c03356c97318e4597e2550cf4",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "hmac:4718dcd1da77890413b18081d48ad6b7540ee01b1c94f0b7a0ffe3b12d0d2d19",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 10,
+     "Item": {
+      "value": "hmac:6466635d4821522d8c68c8336f883e0f185d4db235f33e0f1fb1022d2913169e",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 11,
+     "Item": {
+      "value": "hmac:b096a3c0b6261f62502f1efb505c2b4d68a03b80556f8ec88a6b6684b8167ea3",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 12,
+     "Item": {
+      "value": "hmac:a35b13406cf6f68a31c2c32ce0cb28139bd5663d674ab96abbcc3e3d3f595786",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 12,
+    "lines": 12,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G02",
+   "invoice": "hmac:6d15d343d53205047d6347fceb1534c9628b65b02ee1c5d4f54fc9231bf54941",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:ec7bebfeedb82dd70fb00c27b7669f4e0929c2f2a2a337c2710718b8b950644f",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:fa8d14f5c95b2674068b5ed3ac4ac701a4ba58e8aea0622683b4225d228c030d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:86ff2d90b608ffcaccbb89c8c156285797f3d9e416dd506d61ebee9001873505",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:cd30d77b58426562978b731d1788a035ef10a4659319ab04f8f9e9e82a3aa8ec",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:02ab8f4c7b2f19bef14f5fdd5d62ec73355f38fa4fc57e5152e1014e65a9c310",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "hmac:badc25461a095d0e47408dc0e713628d94ccabe89c8694c21311470a29ed195a",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "hmac:3d011fe6e12a0e8f32fc50630f30ab4c9f514934c37ea519ca6c33b74787d21d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "hmac:0e06e9f8d581a6e30c6be4c27397a3ef0894821974ba72a03b116eba4320f050",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 8,
+    "lines": 8,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G03",
+   "invoice": "hmac:b7eb25f1f3901bf6a6f9efeeea772cbbb9751e263dc359f80dec115e9416d605",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:b6c185d01f93c0e3c23da4608550d98ab7de991d1a380bce76985d408d215b81",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:59e546fafe001b57e9b4c1dcd2b1249761600ef1b4ae92dc19b4152f4c5dd1a9",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:66c9ffaf60dc19d944ede82eab4272010a5bbeb31527969d85133d0424c37eeb",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:09bf2dc2a59f97ce507375a8f094873b32a0ecf4814557579d44af17f466aba6",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:09d29981d6e912a0dbe30cee40e45942dce9663c67cee73d75c8cf2ef9d1ab1b",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 5,
+    "lines": 5,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G04",
+   "invoice": "hmac:06f8ed37891c484735548079c65b40cd813c2928e894a17e7a8a1d92c44a1f1b",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:88eeb9bfc5376b585ba155938931f86e6301ab058cfa2f2ddd79cab4f2fed60b",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:5632fa25efd75047d8e92c867f6c3aafcf13162e72502545fbf2c7d17562d699",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 2,
+    "lines": 2,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G05",
+   "invoice": "hmac:a85917df70b24734a1060b92cd74cbbb14cb3239ca4edb1d307a0e24e6a6153e",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:121ecf9a46b555583879c39b93c25da07b417c3e201528affb137a391f908429",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 1,
+    "lines": 1,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G06",
+   "invoice": "hmac:f81a7a3d5f8e26fa0b2c5a5b68f825c8d166674a8323de8f12a4a471df94f927",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:b096a3c0b6261f62502f1efb505c2b4d68a03b80556f8ec88a6b6684b8167ea3",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 1,
+    "lines": 1,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G07",
+   "invoice": "hmac:671be9321a67823f0ad988a7c7ee01153d9bea2533c592dfc3269f5c83189615",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:02ab8f4c7b2f19bef14f5fdd5d62ec73355f38fa4fc57e5152e1014e65a9c310",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 1,
+    "lines": 1,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G08",
+   "invoice": "hmac:2dfe80b4666e4f7e5d42b30e706c7e9af90f43d2c4524f4635c0a5cf83fc2f73",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:03349ab40cdaf40118b357c1745063d9faa1e90f07a1773f84562f9239de80e2",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:d341b26e1a9014d545731a9cc050a6b62b6cd20862c76fddcfbdfaf3beca4e05",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:bb1dd26ec5709da6d3c7affa54d1581f963fcee66ca67a9254bd47010cb809bb",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:6800e05738fc45046ce0ff77f44aaf45a8741c78d4d71fdd1288fcf19dff0ecf",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:d95a1f51a77d306cec56bf22ca4682583157fba9629db0e6e5cd93d47221f5a7",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "hmac:30848338787c85cdbda4abe3c47533210d3c0073081639fc91945058d501192c",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "hmac:e33023eaeef2b4a693a1799f98b0112ac03990d4d52e9e67b8649991952e1e4e",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "hmac:026e318ce8438364521c6c771c8853e7b10ff481bc04c53ae2a291787be36b08",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "hmac:61a2bf2595371ef15d3fac0e6e6fa9403fa67fc44a730606a334ee5595278978",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 10,
+     "Item": {
+      "value": "hmac:77024209c6ded9fa18614bb2e6ad6ce989dcf52132e312001ca962cd50216ab0",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 11,
+     "Item": {
+      "value": "hmac:2bb12cd04113430b8fd528aa503ef3a6fac38c50a688dee10632dcde337107c4",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 12,
+     "Item": {
+      "value": "hmac:2a002023da45e65e86be9a663fa9c9d2bc9e6a4c115f71f3131404e1c00ac6eb",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 13,
+     "Item": {
+      "value": "hmac:c6cd4221be5a06ec1a07e3dcad2b216e6b57ed3e781d5cb4d1ea43bb1f4f105b",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 14,
+     "Item": {
+      "value": "hmac:04da375e2efa8d6c92f33ce0bcda8acf96e3b54c2a341f02c8fb09c09d32b14b",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 15,
+     "Item": {
+      "value": "hmac:c81a96b5bbf500568334bfcf5fe0f537a8c8481ec0d81b1a95a934e6781df110",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 16,
+     "Item": {
+      "value": "hmac:b4e64dc93d2a5a38188c78df7a94138656886b04faefdf327ceb2566b724f2e4",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 17,
+     "Item": {
+      "value": "hmac:b30c080de48dd510d2981a62088a9f58f23724899b8766a2ec258cd34ed60f97",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 18,
+     "Item": {
+      "value": "hmac:a7818dcd60431962239c68980eb28ef047cb863d579a88b850913791364778de",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 19,
+     "Item": {
+      "value": "hmac:5e66fed4f42c6ce03cff866463987e0dc7f92065c682f60493cf2b7c6cd1927d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 20,
+     "Item": {
+      "value": "hmac:4882901bd22c1f6d00359131aa132cd7072f74ec657b44f2ee3ddd7809c77efb",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 21,
+     "Item": {
+      "value": "hmac:318fecf609836ca74309728efda911ea0282c3c523c3ff7b41efb864bfab6b35",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 22,
+     "Item": {
+      "value": "hmac:569a6fe9bdac5f35e1f20a102a0f24b40d3413433052c048b0c8d6b174a338e2",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 23,
+     "Item": {
+      "value": "hmac:7735f3d4f88e53393513f627f15e40e3a272b6263151a8a68bc31d0d1d2ed072",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 24,
+     "Item": {
+      "value": "hmac:45ef43c0fd8e9e753b4e898115a677b46ec13e028a9daf7597cf36e505c0dcb9",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 25,
+     "Item": {
+      "value": "hmac:081d76129684952c0d66f4af904039d6630200a19bf92406357ce2a62d1625c9",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 26,
+     "Item": {
+      "value": "hmac:5c4107a6ead8cf7159377de40ffbdcd18548e3b0e28e93860721defc194e6275",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 27,
+     "Item": {
+      "value": "hmac:d22323f76f448fe896f799a4ee2a08a726d88751fd08a2426d2c53c09d443284",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 28,
+     "Item": {
+      "value": "hmac:44ea7f28179a45d648a19f169f81f4c907f1c4e90f2d24f91ebf2ef2394afca8",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 29,
+     "Item": {
+      "value": "hmac:12b05887f5cea8f86c2456920af8d86c7f4b40159445d03c6e2d16b34829e03d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 30,
+     "Item": {
+      "value": "hmac:5661be19d3748a446a39901a020c9aea791a66bca258ddb426198c511e396ad5",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 30,
+    "lines": 30,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G09",
+   "invoice": "hmac:29b9ac36e7c202561b1ac5b3547d77d380eb504926cd19d34ca5cafbff2f1ef4",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:241b56027bed88709fff4f8a42fe59a93beb3308a476b29d53087c3f3dd81f49",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:63eb01a5e17775415d1163f4b11ec4dff89091a18115bcffd7bd1a65bf651391",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:7d48fe52ee959059e3f92eb111b4e7f8d33b412e72d18d67f6828983b001fc6c",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:ef26c602306822e87ca0dad6a1351efe9d9b8193ba0bd05b16c2a9ff9cfb144d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:f873a2404a470a6d0e53df5bc6b96d2f8521877d6fd4ab2ee30575c42a8bebf6",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "hmac:0e35b4f7b6ec28aaa10aeb355c8fd4c7daac3c7338ffa77e77ce91dd066f0943",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "hmac:f9063f042e04a793c61e7d279c1e5bb6163a87cf70e96cfcbe2bfe2555a015c5",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "hmac:eb8becf00a9bf74b7f670eaa09b8fe96f78f755a6a8869cee15d9c5cbb62af72",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "hmac:fe1fe4358cdec48c107963730c41a9e32446ee6cd90f70b72073bc307774ca27",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 10,
+     "Item": {
+      "value": "hmac:dc3e1bece20206a472ed99131c00751a5cb3cb4d4f6ba390b78c18721b055c68",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 11,
+     "Item": {
+      "value": "hmac:499d3585910c431e50313faefecb9a6d3ed12c79a98d2a9fb45f4859ae67a657",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 12,
+     "Item": {
+      "value": "hmac:a3de289f290c1c9a64f0cbabda9db8a2d2420602efda3fd0bc73c4df175a138e",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 13,
+     "Item": {
+      "value": "hmac:1040893972378a0661e700ba9599c26caab5e08aa15bb663adeeb422a0b88f9e",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 14,
+     "Item": {
+      "value": "hmac:dd7e6ca56e93c897d73e223e2d6174f9bbd69d23bd1e098db337fd1091de16fd",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 15,
+     "Item": {
+      "value": "hmac:e591927594051ab7edf32523777c4f46f6aafc1554a4cd0dfae442b8029451e2",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 16,
+     "Item": {
+      "value": "hmac:300db23bfd186107c36e20f5588556df6d90c0e4b9ec1614743ca8c9faff71e2",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 16,
+    "lines": 16,
+    "percent": 100.0,
+    "tier": "100%"
+   }
+  },
+  {
+   "case": "G10",
+   "invoice": "hmac:af2c07c4da8c035f0fce501e6a721dfeca3c995a0debfd7ab50effa0fa0fd971",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 0,
+    "lines": 9,
+    "percent": 0.0,
+    "tier": "<90%"
+   }
+  },
+  {
+   "case": "G11",
+   "invoice": "hmac:0937fd2070e03240afcdc89a624e3068fcb5bdc16eb79520a1cefae938554486",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 10,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 11,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 12,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 13,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 14,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 15,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 16,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 17,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 18,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 19,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 20,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 21,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 22,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 0,
+    "lines": 22,
+    "percent": 0.0,
+    "tier": "<90%"
+   }
+  },
+  {
+   "case": "G12",
+   "invoice": "hmac:721452543dfecbcdcc60495664c17bfb00162daf61207ec4d3f699503f0322e9",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:a7818dcd60431962239c68980eb28ef047cb863d579a88b850913791364778de",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "hmac:61a2bf2595371ef15d3fac0e6e6fa9403fa67fc44a730606a334ee5595278978",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "hmac:30848338787c85cdbda4abe3c47533210d3c0073081639fc91945058d501192c",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "hmac:e33023eaeef2b4a693a1799f98b0112ac03990d4d52e9e67b8649991952e1e4e",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 4,
+    "lines": 5,
+    "percent": 80.0,
+    "tier": "<90%"
+   }
+  },
+  {
+   "case": "G13",
+   "invoice": "hmac:c3b42887ba90d809ce3780f8080fe27187428b85f17fdab632ec9b93e116f994",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "hmac:318fecf609836ca74309728efda911ea0282c3c523c3ff7b41efb864bfab6b35",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "hmac:04da375e2efa8d6c92f33ce0bcda8acf96e3b54c2a341f02c8fb09c09d32b14b",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 2,
+    "lines": 5,
+    "percent": 40.0,
+    "tier": "<90%"
+   }
+  },
+  {
+   "case": "G14",
+   "invoice": "hmac:7e070f534fcbbefe51908943bad80086df0922428befff53885314a7dd2ebd09",
+   "country": "UAE",
+   "header": {
+    "Supplier Site": {
+     "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
+     "confirm": true,
+     "rule": "S1.1/S1.2"
+    },
+    "Order No": {
+     "value": "",
+     "confirm": true,
+     "rule": "O3.1-O3.3"
+    },
+    "Location": {
+     "value": "",
+     "confirm": true,
+     "rule": "L4.1"
+    },
+    "Location Type": {
+     "value": "Store (S)",
+     "confirm": false,
+     "rule": "L4.2"
+    }
+   },
+   "lines": [
+    {
+     "n": 1,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 2,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 3,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 4,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 5,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 6,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 7,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 8,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 9,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 10,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 11,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 12,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 13,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 14,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 15,
+     "Item": {
+      "value": "hmac:5e66fed4f42c6ce03cff866463987e0dc7f92065c682f60493cf2b7c6cd1927d",
+      "confirm": false,
+      "rule": "I2.2 barcode exact (ULT_ prefix removed), inside the supplier site"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    },
+    {
+     "n": 16,
+     "Item": {
+      "value": "",
+      "confirm": true,
+      "rule": "I2.3 description suggestion only, or I2.5 not in item master"
+     },
+     "Unit Tax Code": {
+      "value": "UAEV5",
+      "confirm": false,
+      "rule": "T5.1 UAE (assumed code)"
+     }
+    }
+   ],
+   "coverage": {
+    "found": 1,
+    "lines": 16,
+    "percent": 6.25,
+    "tier": "<90%"
+   }
+  }
+ ]
+}

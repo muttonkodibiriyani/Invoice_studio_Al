@@ -6,6 +6,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from .matching import strip_ult
+from .location_type import STORE, WAREHOUSE, written
 
 HEADERS={
 "Header":["Transaction Number","Document","Supplier Site","Order No","Location","Location Type","Document Date","Total Cost Ex Tax","Tax Amount","Ref No. 1","Ref No. 2","Ref No. 3","Comment"],
@@ -32,12 +33,12 @@ def batch_workbook(entries):
         for c in s[1]: c.font=Font(bold=True,color="FFFFFF"); c.fill=PatternFill("solid",fgColor="173D3B")
         for col in s.columns: s.column_dimensions[col[0].column_letter].width=max(18,len(str(col[0].value))+2)
     s=w["Header"]
-    dv=DataValidation(type="list",formula1='"Store (S),Warehouse (W)"');s.add_data_validation(dv)
+    dv=DataValidation(type="list",formula1=f'"{STORE},{WAREHOUSE}"');s.add_data_validation(dv)
     for transaction,(invoice,result) in enumerate(entries,1):
         s=w["Header"];row=transaction+1
         loc=invoice.location or ""
-        loc_type=result.get("location_type")
-        if loc_type not in ("Store (S)","Warehouse (W)"):raise ValueError("Reference location type must be Store (S) or Warehouse (W)")
+        loc_type=written(result.get("location_type"))
+        if not loc_type:raise ValueError(f"Reference location type must be {STORE} or {WAREHOUSE}")
         vals=[transaction,invoice.number,invoice.site,invoice.po,loc,loc_type,date.fromisoformat(invoice.date),invoice.net,invoice.tax,"","","",""]
         for c,v in enumerate(vals,1):
             if c in (3,4,5) and re.fullmatch(r"[1-9]\d{0,14}",str(v)):s.cell(row,c,int(v))
@@ -87,7 +88,7 @@ def rules_workbook(views,upc="empty",draft=False):
         s=w.create_sheet(name);s.append(cols);s.freeze_panes="A2"
         for c in s[1]:c.font=Font(bold=True,color="FFFFFF");c.fill=PatternFill("solid",fgColor="173D3B")
         for col in s.columns:s.column_dimensions[col[0].column_letter].width=max(18,len(str(col[0].value))+2)
-    dv=DataValidation(type="list",formula1='"Store (S),Warehouse (W)"');w["Header"].add_data_validation(dv)
+    dv=DataValidation(type="list",formula1=f'"{STORE},{WAREHOUSE}"');w["Header"].add_data_validation(dv)
     def need(f,where):
         if f["flagged"] or f["value"] is None or not f["evidence"]:
             if draft:return None
@@ -102,10 +103,8 @@ def rules_workbook(views,upc="empty",draft=False):
         text_cell(s.cell(row,2),need(f["number"],"Document"));put("Header",row,2,f["number"])
         for c,k in ((3,"site"),(4,"po"),(5,"location")):
             _id_cell(s.cell(row,c),need(f[k],f[k]["label"]));put("Header",row,c,f[k])
-        loc_type=need(f["location_type"],"Location Type")
-        if loc_type not in ("Store (S)","Warehouse (W)"):
-            if not draft:raise ValueError("Location Type must be Store (S) or Warehouse (W)")
-            loc_type=None
+        loc_type=written(need(f["location_type"],"Location Type"))
+        if not loc_type and not draft:raise ValueError(f"Location Type must be {STORE} or {WAREHOUSE}")
         text_cell(s.cell(row,6),loc_type);dv.add(s.cell(row,6));put("Header",row,6,f["location_type"])
         when=need(f["date"],"Document Date")
         s.cell(row,7,date.fromisoformat(when) if when else None).number_format="m/d/yyyy";put("Header",row,7,f["date"])

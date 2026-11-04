@@ -14,6 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from .models import Invoice
 from .evidence import build as build_evidence
 from . import scan_guard
+from .numbers import to_decimal
 
 ROOT=Path(__file__).resolve().parent
 def concurrency_from_env(name,default,ceiling):
@@ -183,10 +184,8 @@ def _native_reconciliation(i:Invoice,text):
     )
     if len(matches)!=1:return None
     visible=matches[0]
-    negative=visible.startswith("-") or (visible.startswith("(") and visible.endswith(")"))
-    try:discount=Decimal(visible.strip("()-").replace(",",""))
-    except InvalidOperation:return None
-    if negative:return None
+    discount=to_decimal(visible)
+    if discount is None or discount<0:return None
     if abs(printed_total-discount-i.net)<=rounding_tolerance(len(i.lines)):
         return "explicit_document_discount"
     return None
@@ -677,16 +676,9 @@ AMOUNT_TOLERANCE=Decimal("0.05")
 VAT_RATES=(Decimal("0"),Decimal("0.05"),Decimal("0.10"),Decimal("0.12"),Decimal("0.15"),Decimal("0.18"),Decimal("0.20"))
 
 
-def _amount(value):
-    """A printed amount as a number, or None when it is not one."""
-    if value in (None,""):return None
-    try:return Decimal(str(value).replace(",",""))
-    except InvalidOperation:return None
-
-
 def _printed_rate(invoice):
     """The one tax rate the printed totals imply, or None when they imply none."""
-    net,tax=_amount(invoice.get("net")),_amount(invoice.get("tax"))
+    net,tax=to_decimal(invoice.get("net")),to_decimal(invoice.get("tax"))
     if not net or tax is None:return None
     rate=tax/net
     return next((x for x in VAT_RATES if abs(rate-x)<=Decimal("0.0005")),None)
@@ -694,13 +686,13 @@ def _printed_rate(invoice):
 
 def _expected_amount(field,line,rate):
     """What the row's own quantity and unit price give for this amount, or None when they cannot."""
-    qty,price=_amount(line.get("qty")),_amount(line.get("price"))
+    qty,price=to_decimal(line.get("qty")),to_decimal(line.get("price"))
     if qty is None or price is None:return None
     if field=="net_amount":return qty*price
-    percent=_amount(line.get("vat_pct"))
+    percent=to_decimal(line.get("vat_pct"))
     share=percent/100 if percent is not None else rate
     if share is None:return None
-    net=_amount(line.get("net_amount"))
+    net=to_decimal(line.get("net_amount"))
     return (net if net is not None else qty*price)*share
 
 
@@ -717,9 +709,9 @@ def guard_amounts(invoice,evidence,line_readers,source):
     while len(line_readers)<len(lines):line_readers.append({})
     rate=_printed_rate(invoice)
     for field,printed_field,name in (("net_amount","net","line total"),("tax_amount","tax","tax amount")):
-        printed=_amount(invoice.get(printed_field))
+        printed=to_decimal(invoice.get(printed_field))
         if printed is None:continue
-        values=[_amount(line.get(field)) for line in lines]
+        values=[to_decimal(line.get(field)) for line in lines]
         present=[value for value in values if value is not None]
         if not present:continue
         if len(present)==len(values) and abs(sum(present,Decimal(0))-printed)<=AMOUNT_TOLERANCE:continue

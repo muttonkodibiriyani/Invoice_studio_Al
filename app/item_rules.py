@@ -15,6 +15,7 @@ import re
 import openpyxl
 
 DEFAULT_WORKBOOK = Path(__file__).resolve().parents[1] / "docs" / "rules" / "Invoice_ItemMaster_Rules_v0.2.xlsx"
+_EXPORT = {"y": "yes", "yes": "yes", "n": "no", "no": "no"}
 _LIMIT = re.compile(r"\b(?:top|max)\s+(\d+)", re.I)
 
 
@@ -49,8 +50,14 @@ class CoverageTier:
     low: Decimal            # inclusive, percent
     high: Decimal | None    # exclusive; None = and above
     action: str
-    export: str
+    export: str   # the sheet text; read export_mode
     prompt: str | None
+
+    @property
+    def export_mode(self):
+        """yes | after_fill | no; "" when the sheet text is not one of those (the loader refuses that)."""
+        text = self.export.lower()
+        return _EXPORT.get(text) or ("after_fill" if text.startswith("after") else "")
 
 
 @dataclass(frozen=True)
@@ -174,9 +181,12 @@ def load(path=DEFAULT_WORKBOOK, sha256=None):
             if row["From % (inclusive)"] is None:
                 continue  # a note row
             high = row["To % (exclusive)"]
-            tiers.append(CoverageTier(_text(row["Tier"]), Decimal(str(row["From % (inclusive)"])),
-                                      None if high is None else Decimal(str(high)), _text(row["What happens"]),
-                                      _text(row["Export"]), (_prompt_ids(row["Reviewer sees"]) or (None,))[0]))
+            tier = CoverageTier(_text(row["Tier"]), Decimal(str(row["From % (inclusive)"])),
+                                None if high is None else Decimal(str(high)), _text(row["What happens"]),
+                                _text(row["Export"]), (_prompt_ids(row["Reviewer sees"]) or (None,))[0])
+            if not tier.export_mode:
+                raise RulesError(f"Coverage tier {tier.name} has an unknown Export {tier.export!r}")
+            tiers.append(tier)
         tiers = tuple(sorted(tiers, key=lambda t: t.low, reverse=True))
         for upper, lower in zip(tiers, tiers[1:]):
             if lower.high != upper.low:

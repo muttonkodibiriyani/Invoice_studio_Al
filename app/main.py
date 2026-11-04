@@ -40,6 +40,7 @@ from .drafts import ManualDraftRequest, build_draft_workbook, draft_filename, dr
 from .deletion import DeletionError, delete_invoices, remove_uploads
 from .reference_lookup import ReferenceLookup
 from .master_catalog import MAX_BYTES as MAX_MASTER_UPLOAD, register_item_master
+from .master_refresh import register_master_refresh
 from .fine_rules import RulesConfig, decide_feedback, feedback_entry, ocr_read, run_batch
 from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
@@ -469,7 +470,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             entry["ocr_lines"]=ocr_read(j)
             result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
             entries=j.get("owner_entries") if entries is None else entries
-            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
+            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries,store.get("item_master_active",None,catalog_lock))
             view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
             entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
             attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
@@ -545,6 +546,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if reset:store.audit("review_reset",{"job_id":jid,"revision":current["revision"],"reason":"fine rules issues changed"},c)
             store.audit("fine_rules_applied",{"job_id":jid,"revision":current["revision"],"status":view["status"],
                         "item_lines":view["item_lines"],"approved":False},c)
+    register_master_refresh(app,store,ensure_rules,pool)
     def scan_evidence(jid,path,opts,selected_engine):
         """After an AI-only scan read is saved: a local OCR pass that adds boxes and review flags to the
         job's evidence. The AI values, revision and status never change; the pass is recorded in the trace."""

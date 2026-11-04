@@ -85,6 +85,7 @@ ROUTES = [
     ("POST", "/api/item-master/uploads/x/activate", "admin"),
     ("POST", "/api/item-master/versions/x/rollback", "admin"),
     ("DELETE", "/api/item-master/uploads/x", "admin"),
+    ("POST", "/api/item-master/refresh", "admin"), ("GET", "/api/item-master/refresh", "admin"),
     ("GET", "/api/mapping-tables", "admin"), ("POST", "/api/mapping-tables/validate", "admin"),
     ("POST", "/api/mapping-tables/uploads/x/activate", "admin"),
     ("POST", "/api/mapping-tables/versions/x/rollback", "admin"),

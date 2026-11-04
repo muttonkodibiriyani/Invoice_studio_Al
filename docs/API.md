@@ -457,6 +457,8 @@ Admin uploads of the owner's master data, with validation, activation and rollba
 | `POST` | `/api/item-master/uploads/{version}/activate` | Admin | **Activate an item master.** Makes a validated upload the active version. |
 | `POST` | `/api/item-master/versions/{version}/rollback` | Admin | **Roll back the item master.** Returns to an earlier version; ?expected_signature= guards against a concurrent change. |
 | `DELETE` | `/api/item-master/uploads/{version}` | Admin | **Discard an upload.** Removes a validated upload that was never activated. |
+| `POST` | `/api/item-master/refresh` | Admin | **Update item master.** Re-matches every open (not exported) invoice against the live item master in the background; activate and rollback start this too. |
+| `GET` | `/api/item-master/refresh` | Admin | **Item master refresh result.** The latest re-match: status, counts and, per changed invoice, the lines newly matched, lost or changed. |
 | `GET` | `/api/mapping-tables` | Admin | **Mapping-table versions.** Uploaded and active mapping-table versions. |
 | `POST` | `/api/mapping-tables/validate` | Admin | **Validate mapping tables.** Multipart file upload; validates without activating. |
 | `POST` | `/api/mapping-tables/uploads/{upload_id}/activate` | Admin | **Activate mapping tables.** Makes a validated upload active. |
@@ -614,4 +616,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 83 routes: 1 public, 45 member, 36 admin, 1 without a token (health).
+Totals: 85 routes: 1 public, 45 member, 38 admin, 1 without a token (health).

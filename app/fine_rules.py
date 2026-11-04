@@ -15,6 +15,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from . import scan_guard
+from .evidence import lookup_trace
 
 
 WAREHOUSE = "Warehouse (W)"
@@ -1962,6 +1963,8 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "receipt_date": check_receipt_dates(po, order_date, document_date),
         "ebs_supplier_code": key or "/".join(sorted(keys)), "entity_hint": hint, "config_version": config.version,
         "item_resolution": resolution, "po_candidates": po["candidates"],
+        "lookup_traces": [lookup_trace(line, m, run.exceptions, sites, barcode_candidates, vpn_candidates)
+                          for line, m in zip(invoice.lines, matches)],
         **({"receipt_controls": po["receipt_controls"]} if "receipt_controls" in po else {}),
         "supplier_site_candidates": [] if supplier_site and not run.owner_pick else run.site_candidates,
     }

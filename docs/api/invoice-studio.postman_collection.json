@@ -520,6 +520,37 @@
           ]
         },
         {
+          "name": "Item master refresh result (GET /api/item-master/refresh)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/item-master/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "item-master",
+                "refresh"
+              ]
+            },
+            "description": "The latest re-match: status, counts and, per changed invoice, the lines newly matched, lost or changed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('no stack trace or secret in the answer', function () { pm.expect(pm.response.text()).to.not.match(/Traceback|File \\\"\\/|password|api[-_]key\\\"\\s*:\\s*\\\"[^\\\"]/i); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Mapping-table versions (GET /api/mapping-tables)",
           "request": {
             "method": "GET",
@@ -3222,6 +3253,49 @@
                   ]
                 },
                 "description": "**Admin.** Removes a validated upload that was never activated."
+              }
+            },
+            {
+              "name": "Update item master",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/item-master/refresh",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "item-master",
+                    "refresh"
+                  ]
+                },
+                "description": "**Admin.** Re-matches every open (not exported) invoice against the live item master in the background; activate and rollback start this too."
+              }
+            },
+            {
+              "name": "Item master refresh result",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/item-master/refresh",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "item-master",
+                    "refresh"
+                  ]
+                },
+                "description": "**Admin.** The latest re-match: status, counts and, per changed invoice, the lines newly matched, lost or changed."
               }
             },
             {

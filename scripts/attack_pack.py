@@ -88,7 +88,7 @@ ROUTES = [
     ("GET", "/api/mapping-tables", "admin"), ("POST", "/api/mapping-tables/validate", "admin"),
     ("POST", "/api/mapping-tables/uploads/x/activate", "admin"),
     ("POST", "/api/mapping-tables/versions/x/rollback", "admin"),
-    ("GET", "/api/mapping-tables/active/workbook", "admin"),
+    ("GET", "/api/mapping-tables/active/workbook", "admin"), ("GET", "/api/health/dependencies", "member"),
 ]
 # (sample, options, exact): the five golden samples read by the whole local chain must give exactly samples/<name>.json;
 # each engine forced alone must read its file. AI fallback is off, so a sample only the AI could read fails.
@@ -430,7 +430,7 @@ class Pack:
         self.check(g, "confirming a made-up plan is refused", r.status_code in (409, 422), str(r.status_code))
         if self.member:
             r = self.upload(pdf, "p.pdf", token=self.member, plan=plan)
-            self.check(g, "another user's confirmed plan is not theirs to use", r.status_code == 409, f"{r.status_code}", warn=True)
+            self.check(g, "another user's confirmed plan is not theirs to use", r.status_code == 409, f"{r.status_code}")
         bad = [
             ("501 files in one plan", {"options": LOCAL_ONLY, "files": [{"name": f"{n}.pdf", "size": 1} for n in range(501)]}),
             ("a file over 12 MB in the plan", {"options": LOCAL_ONLY, "files": [{"name": "a.pdf", "size": MAX_UPLOAD + 1}]}),

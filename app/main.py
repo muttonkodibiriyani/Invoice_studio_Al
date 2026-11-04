@@ -1,3 +1,4 @@
+import concurrent.futures
 import dis
 import hashlib
 import io
@@ -47,7 +48,7 @@ from .product_candidates import ProductCandidates
 from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
 from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
-from .providers import Providers
+from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
 from .sandbox import protect_process
 from .store import Store
@@ -154,8 +155,14 @@ class ChatGPTBundle(StrictModel):
     passphrase: str = Field(min_length=1, max_length=200)
 
 
+def default_provider():
+    """openai, as a local install always had, unless the deployment limits AI providers (INV_STUDIO_AI_PROVIDERS)."""
+    allowed=allowed_ai_providers()
+    return "openai" if "openai" in allowed or not allowed else allowed[0]
+
+
 class Settings(StrictModel):
-    provider: str = "openai"
+    provider: str = Field(default_factory=default_provider)
     model: str = Field(default="",max_length=150,pattern=MODEL_NAME)
     ai_fallback: bool = True
 
@@ -400,14 +407,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def rule_signature(opts):
         return hashlib.sha256(json.dumps({"options":opts.model_dump(),"references":references().get("version"),"policy":policy().model_dump(mode="json")},sort_keys=True).encode()).hexdigest()
     def ai_off():return store.get("settings",Settings().model_dump()).get("ai_fallback") is False
+    def refuse_provider(provider):
+        # InfoSec LLD §9: the deployment names the AI providers it may use (INV_STUDIO_AI_PROVIDERS); the rest are refused.
+        if provider not in allowed_ai_providers():
+            raise HTTPException(403,"This deployment uses only these AI providers: "+(", ".join(allowed_ai_providers()) or "none"))
     def refuse_ai_when_off(opts):
         # Security pack N9: the admin's AI setting binds every read, not only the upload dialog's defaults; options are never changed silently.
-        if ai_off() and (opts.ai_fallback or opts.ai_cross_check or opts.engine=="ai"):
+        uses_ai=opts.ai_fallback or opts.ai_cross_check or opts.engine=="ai"
+        if ai_off() and uses_ai:
             raise HTTPException(403,"An administrator has turned AI off. Turn off AI fallback and AI cross-check, choose a local engine, and review the plan again.")
+        if uses_ai:refuse_provider(opts.provider)
     def require_plan(token,opts,filename,size):
         with plans_lock:
             plan=plans.get(token)
-            if not plan or plan["expires"]<time.time() or not plan["confirmed"]:
+            if not plan or plan["expires"]<time.time() or not plan["confirmed"] or plan.get("owner")!=actor.get():
                 raise HTTPException(409,"Review and confirm the processing rules before running this invoice")
             if plan["signature"]!=rule_signature(opts):raise HTTPException(409,"Rules or references changed. Review the processing plan again.")
             match=next((x for x in plan["files"] if x["name"]==filename and x["size"]==size),None)
@@ -789,7 +802,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             expired=[k for k,v in plans.items() if v["expires"]<time.time()]
             for k in expired:plans.pop(k)
             if len(plans)>200:raise HTTPException(429,"Too many pending plans; try again later")
-            plans[token]={"expires":time.time()+PLAN_TTL,"signature":rule_signature(opts),"confirmed":False,"files":[x.model_dump() for x in body.files]}
+            plans[token]={"expires":time.time()+PLAN_TTL,"signature":rule_signature(opts),"confirmed":False,"files":[x.model_dump() for x in body.files],"owner":actor.get()}  # attack pack F2: a plan serves only the account that made it
             summary={**opts.model_dump(),"reference_version":references().get("version"),"policy":policy().model_dump(mode="json"),"file_count":len(body.files)}
         return {"token":token,"summary":summary,"warnings":warnings,"blocking":blocking}
 
@@ -798,7 +811,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def confirm_plan(body:PreflightToken):
         with plans_lock:
             plan=plans.get(body.token)
-            if not plan or plan["expires"]<time.time():raise HTTPException(409,"Processing plan expired. Review it again.")
+            if not plan or plan["expires"]<time.time() or plan.get("owner")!=actor.get():raise HTTPException(409,"Processing plan expired. Review it again.")
             plan["confirmed"]=True
         store.audit("processing_plan_confirmed",{"signature":plan["signature"],"files":plan["files"]})
         return {"confirmed":True}
@@ -809,7 +822,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         """Keeps a confirmed plan alive while a long batch is still uploading; the files and rules do not change."""
         with plans_lock:
             plan=plans.get(body.token)
-            if not plan or plan["expires"]<time.time() or not plan["confirmed"]:raise HTTPException(409,"Processing plan expired. Review it again.")
+            if not plan or plan["expires"]<time.time() or not plan["confirmed"] or plan.get("owner")!=actor.get():raise HTTPException(409,"Processing plan expired. Review it again.")
             plan["expires"]=time.time()+PLAN_TTL
             return {"renewed":True,"expires_in":PLAN_TTL,"files_remaining":len(plan["files"])}
 
@@ -1356,6 +1369,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/connections/azure")
     @access(ADMIN)
     def connect_azure(body:AzureConnection):
+        refuse_provider("azure")
         result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
         store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
         return result
@@ -1371,6 +1385,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def connect(provider:str,body:Connection):
         if provider not in API_KEY_PROVIDERS:raise ValueError("Use API keys only for OpenAI or Anthropic API connections")
+        refuse_provider(provider)
         key=body.api_key.get_secret_value().strip()
         verified=providers.verify_key(provider,key)
         store.secret(provider,key);store.audit("connection_connected",{"provider":provider,"verified":verified})
@@ -1379,6 +1394,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/subscriptions/claude/import")
     @access(ADMIN)
     def import_claude_subscription(body:SubscriptionToken):
+        refuse_provider("claude_local")
         result=providers.claude_subscription.connect(body.setup_token.get_secret_value())
         store.audit("subscription_connected",{"provider":"claude_local"})
         return result
@@ -1402,6 +1418,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def import_chatgpt_bundle(body:ChatGPTBundle):
         if not identity.cloud:raise HTTPException(403,"Credential transfer is for your authenticated self-hosted workspace")
+        refuse_provider("chatgpt")
         account=auth.import_bundle(open_bundle(body.bundle,body.passphrase))
         store.audit("subscription_connected",{"provider":"chatgpt"})
         return account
@@ -1629,6 +1646,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def model_list(provider:str):
         if provider not in AI_PROVIDERS:raise ValueError("Unknown provider")
+        refuse_provider(provider)
         try:return {"models":providers.models(provider)}
         except ValueError:raise
         except Exception:raise ValueError("Could not retrieve models. Check the connection and try again.") from None
@@ -1660,6 +1678,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/chatgpt/select")
     @access(ADMIN)
     def select_account(body:Account):
+        refuse_provider("chatgpt")
         if not any(a["id"]==body.id and a["connected"] for a in auth.accounts()):raise ValueError("Connect this account before selecting it")
         with store.connection(True) as c:
             store.set("chatgpt_active",body.id,c);store.audit("subscription_selected",{"provider":"chatgpt","account_id":body.id},c)
@@ -1682,6 +1701,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
 
     @app.get("/health")
     def health():return {"status":"ok","version":"0.1.0"}
+
+    @app.get("/api/health/dependencies")
+    @access(MEMBER)
+    def dependencies():
+        """Signed-in readiness: the database and the evidence storage each answer, through the private endpoints once
+        the vault and Blob are locked down (scripts/azure_lockdown.py). Names and ok/failed only, never an address."""
+        check=getattr(store,"check_dependencies",None)
+        if check is None:return {"status":"ok","database":"ok","storage":"ok"}  # the local install: SQLite and the data directory
+        pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:result=pool.submit(check).result(timeout=20)
+        except concurrent.futures.TimeoutError:result={"database":"unknown","storage":"failed: timeout"}
+        finally:pool.shutdown(wait=False)
+        healthy=all(v=="ok" for v in result.values())
+        return JSONResponse({"status":"ok" if healthy else "degraded",**result},200 if healthy else 503)
 
     @app.get("/")
     def home():return FileResponse(ROOT/"app/static/index.html")

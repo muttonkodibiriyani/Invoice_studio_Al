@@ -95,3 +95,4 @@ resource endpointDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@20
 output fullyQualifiedDomainName string = server.properties.fullyQualifiedDomainName
 output postgresDatabaseName string = database.name
 output postgresServerName string = server.name
+output postgresServerId string = server.id

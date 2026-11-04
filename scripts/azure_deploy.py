@@ -36,6 +36,7 @@ workflow puts images on.
 """
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -81,6 +82,42 @@ NOT_APPLICABLE = "n/a"
 # the app reports Foundry connected on the placeholder key, and a Citadel host outside the allow-list of
 # app/azure_foundry.py makes configured() raise. AI is switched on later, by AZURE.md §7.
 STRING = lambda v: v  # noqa: E731
+
+
+def ip_address(value):
+    return str(ipaddress.ip_address(value.strip()))
+
+
+def cidr_list(value):
+    return [str(ipaddress.ip_network(part.strip(), strict=False)) for part in value.split(",") if part.strip()]
+
+
+def email_list(value):
+    emails = [part.strip() for part in value.split(",") if part.strip()]
+    if not emails or any(not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", e) for e in emails):
+        raise ValueError(value)
+    return emails
+
+
+def boolean(value):
+    text = value.strip().casefold()
+    if text in ("true", "yes", "1", "on"):
+        return True
+    if text in ("false", "no", "0", "off"):
+        return False
+    raise ValueError(value)
+
+
+def auth_mode(value):
+    """The access request writes the Citadel auth mode in words; main.bicep takes key or managed_identity."""
+    text = value.strip().casefold().replace("-", " ").replace("_", " ")
+    if "managed" in text or text in ("mi", "entra", "entra id", "aad"):
+        return "managed_identity"
+    if "key" in text:
+        return "key"
+    raise ValueError(value)
+
+
 PARAMS = {
     "AZ_REGION": ("location", STRING),
     "AZ_NAME_PREFIX": ("namePrefix", STRING),
@@ -94,12 +131,18 @@ PARAMS = {
     "ENTRA_GROUP_MEMBER_NAME": ("entraMemberGroupName", STRING),
     "HUB_VNET_ID": ("hubVnetId", STRING),
     "HUB_DNS_IP": ("dnsServers", lambda v: [ip.strip() for ip in v.split(",")]),
-    "HUB_FIREWALL_IP": ("egressFirewallIp", STRING),
+    "HUB_FIREWALL_IP": ("egressFirewallIp", ip_address),
     "PDNS_ZONE_IDS": ("privateDnsZoneIds", json.loads),
     "AMPLS_ID": ("amplsId", STRING),
-    "CITADEL_AUTH_MODE": ("foundryAuthMode", STRING),
+    "CITADEL_AUTH_MODE": ("foundryAuthMode", auth_mode),
     "LAW_ID": ("existingLogWorkspaceId", STRING),
+    # Optional lines (InfoSec hardening). A kit without them still works: they are left at main.bicep's defaults.
+    "ALERT_EMAILS": ("alertEmails", email_list),
+    "INGRESS_ALLOWED_CIDRS": ("ingressAllowedCidrs", cidr_list),
+    "RESTRICT_EGRESS": ("restrictEgress", boolean),
 }
+# Lines a kit may leave out: added after the access request, so an older filled-in kit stays valid.
+OPTIONAL_KIT_KEYS = ("ALERT_EMAILS", "INGRESS_ALLOWED_CIDRS", "RESTRICT_EGRESS")
 # main.bicep's own default tags, kept when the platform's tags are added.
 DEFAULT_TAGS = {"application": "inv-studio", "managedBy": "infra/azure/main.bicep"}
 
@@ -165,7 +208,7 @@ def read_kit(path):
         if not sep:
             raise Stop(f"deploy kit line {number} is not KEY=value")
         kit[key.strip()] = value.strip()
-    unknown = [k for k in kit if k not in KIT_KEYS]
+    unknown = [k for k in kit if k not in KIT_KEYS + OPTIONAL_KIT_KEYS]
     if unknown:
         raise Stop(f"deploy kit has a line the access request does not: {unknown[0]}")
     for key in KIT_KEYS:
@@ -173,10 +216,24 @@ def read_kit(path):
             raise Stop(f"deploy kit is missing {key}: copy the line from infra/azure/deploy-kit.example.env")
         if not kit[key] or re.search(r"<[A-Z0-9_]+>", kit[key]):
             raise Stop(f"deploy kit: {key} is not filled in yet (write n/a if it does not apply)")
+    for key in OPTIONAL_KIT_KEYS:
+        if key not in kit or not kit[key]:
+            kit[key] = NOT_APPLICABLE
+        elif re.search(r"<[A-Z0-9_]+>", kit[key]):
+            raise Stop(f"deploy kit: {key} is not filled in yet (write n/a if it does not apply)")
     if kit["ENTRA_CLOUD"].lower().rstrip("/") not in PUBLIC_CLOUD:
         raise Stop(f"ENTRA_CLOUD is {kit['ENTRA_CLOUD']}, not the public cloud: the app signs in only at "
                    "login.microsoftonline.com, so a sovereign cloud needs an app change first (access request E8)")
     return kit
+
+
+def data_plane_access(kit, run):
+    """Disabled once scripts/azure_lockdown.py closed the vault, so a re-run never opens it again; else None."""
+    try:
+        states = run("keyvault", "list", "-g", kit["AZ_RESOURCE_GROUP"], "--query", "[].properties.publicNetworkAccess")
+    except AzError:
+        return None
+    return "Disabled" if any(str(s).lower() == "disabled" for s in states or []) else None
 
 
 def parameters(kit, declared, pg_password, vault_key, image=""):
@@ -466,6 +523,9 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
         else:
             pg, key = ask()
         values, skipped = parameters(kit, declared, pg, key, args.image or "")
+        if args.rerun and "dataPlanePublicAccess" in declared and data_plane_access(kit, run):
+            values["dataPlanePublicAccess"] = "Disabled"
+            ok("Key Vault and Blob are locked down (scripts/azure_lockdown.py): the re-run keeps them private")
         check_template(declared, values, skipped)
         params_file = write_params(values)
         check_policy(kit["AZ_RESOURCE_GROUP"], params_file, run)

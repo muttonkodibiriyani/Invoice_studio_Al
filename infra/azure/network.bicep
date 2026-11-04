@@ -8,10 +8,12 @@
 // The private DNS zone makes the server's public name resolve to its private address inside the
 // network, so the connection string does not change.
 //
-// Not here, on purpose (other tasks own them, and this file leaves them a place):
-//   route table, 0.0.0.0/0 to the hub firewall: the egress task adds `routeTable` to the apps subnet
-//   private endpoints for vault, storage, registry, monitor: the private-link task puts them in
-//     endpointsSubnetId; the endpoints NSG already admits 443 from the apps subnet for them
+// Outbound (InfoSec LLD §3): with restrictEgress the apps NSG allows only the Azure services the app and the
+// Container Apps platform need, from Microsoft's list for a workload-profiles environment ("Securing a virtual
+// network in Azure Container Apps"), and denies the internet. With egressFirewallIp a route table also sends
+// 0.0.0.0/0 to the hub firewall, which then holds the finer allow-list (access request H3, H4).
+// Private endpoints for the vault and Blob are in privatelink.bicep; they sit in the endpoints subnet, which
+// this file's endpoints NSG already opens to 443 from the apps subnet.
 param name string
 param location string
 param tags object = {}
@@ -23,22 +25,127 @@ param hubVnetId string = ''
 param dnsServers array = []
 @description('True when the Container Apps environment is internal. Then HTTP(S) into the apps subnet is accepted from the virtual network (the hub and its entry point, over the peering) only; false accepts it from the internet, as the public first deploy needs.')
 param internalEnvironment bool = false
+@description('True (default) limits outbound traffic from the apps subnet to the Azure services the app needs (Entra ID, registry, Storage, Key Vault, Azure Monitor, the private endpoints) and denies the internet. False leaves Azure\'s default open outbound.')
+param restrictEgress bool = true
+@description('Private IP of the hub firewall (access request H3). Set: a route table sends all outbound traffic of the apps subnet through it. Empty: no route table.')
+param egressFirewallIp string = ''
+@description('Where AI calls go when AI is switched on (AZURE.md §7): a service tag such as CognitiveServicesFrontend, or the CIDR of the Foundry or Citadel private endpoint. Empty: no AI egress rule, so with restrictEgress every AI provider is unreachable, which is what release 1 (AI off) wants.')
+param aiEgressDestination string = ''
 
 var appsPrefix = cidrSubnet(addressPrefix, 27, 0)
 var endpointsPrefix = cidrSubnet(addressPrefix, 27, 1)
 var clientSource = internalEnvironment ? 'VirtualNetwork' : 'Internet'
 
+// Outbound from the apps subnet: one allow rule per Azure service the app or the platform calls on 443, then a
+// deny of the internet. Traffic inside the virtual network and over the hub peering keeps Azure's default
+// AllowVnetOutBound; Azure DNS (168.63.129.16) is not subject to NSGs. Service tags are not region-scoped here:
+// the region suffix (Storage.UAENorth) depends on spelling that the location parameter does not carry.
+var egressServices = [
+  { name: 'entra-id', tag: 'AzureActiveDirectory', why: 'Entra ID signing keys and managed identity tokens' }
+  { name: 'mcr', tag: 'MicrosoftContainerRegistry', why: 'Platform system containers' }
+  { name: 'mcr-frontdoor', tag: 'AzureFrontDoor.FirstParty', why: 'Dependency of MicrosoftContainerRegistry' }
+  { name: 'acr', tag: 'AzureContainerRegistry', why: 'Image pull from our registry' }
+  { name: 'storage', tag: 'Storage', why: 'Registry image layers; Blob while it is still public' }
+  { name: 'key-vault', tag: 'AzureKeyVault', why: 'Secret references while the vault is still public' }
+  { name: 'azure-monitor', tag: 'AzureMonitor', why: 'Logs and metrics' }
+]
+var aiEgress = empty(aiEgressDestination) ? [] : [
+  { name: 'ai', tag: aiEgressDestination, why: 'Azure AI Foundry or the Citadel gateway (AZURE.md §7)' }
+]
+var egressAllowed = concat(egressServices, aiEgress)
+var egressRules = concat([
+  {
+    name: 'allow-out-within-apps-subnet'
+    properties: {
+      priority: 100
+      direction: 'Outbound'
+      access: 'Allow'
+      protocol: '*'
+      sourceAddressPrefix: appsPrefix
+      sourcePortRange: '*'
+      destinationAddressPrefix: appsPrefix
+      destinationPortRange: '*'
+    }
+  }
+  {
+    // PostgreSQL, and the vault and Blob private endpoints.
+    name: 'allow-out-private-endpoints'
+    properties: {
+      priority: 110
+      direction: 'Outbound'
+      access: 'Allow'
+      protocol: 'Tcp'
+      sourceAddressPrefix: appsPrefix
+      sourcePortRange: '*'
+      destinationAddressPrefix: endpointsPrefix
+      destinationPortRanges: [
+        '443'
+        '5432'
+      ]
+    }
+  }
+], map(range(0, length(egressAllowed)), i => {
+  name: 'allow-out-${egressAllowed[i].name}'
+  properties: {
+    description: egressAllowed[i].why
+    priority: 200 + i * 10
+    direction: 'Outbound'
+    access: 'Allow'
+    protocol: 'Tcp'
+    sourceAddressPrefix: appsPrefix
+    sourcePortRange: '*'
+    destinationAddressPrefix: egressAllowed[i].tag
+    destinationPortRange: '443'
+  }
+}), [
+  {
+    // Every other provider and host: an admin cannot point the app at a non-Azure AI service, and a file
+    // reader that is tricked into a network call has nowhere to go.
+    name: 'deny-out-internet'
+    properties: {
+      priority: 4000
+      direction: 'Outbound'
+      access: 'Deny'
+      protocol: '*'
+      sourceAddressPrefix: '*'
+      sourcePortRange: '*'
+      destinationAddressPrefix: 'Internet'
+      destinationPortRange: '*'
+    }
+  }
+])
+
+// All outbound traffic of the apps subnet through the hub firewall (access request H3). The firewall must allow
+// what egressRules allow, or the environment cannot pull its system images.
+resource egressRoutes 'Microsoft.Network/routeTables@2024-05-01' = if (!empty(egressFirewallIp)) {
+  name: '${name}-apps-routes'
+  location: location
+  tags: tags
+  properties: {
+    disableBgpRoutePropagation: true
+    routes: [
+      {
+        name: 'default-to-hub-firewall'
+        properties: {
+          addressPrefix: '0.0.0.0/0'
+          nextHopType: 'VirtualAppliance'
+          nextHopIpAddress: egressFirewallIp
+        }
+      }
+    ]
+  }
+}
+
 // Inbound to the Container Apps environment, from Microsoft's list for a workload-profiles environment
 // ("Securing a virtual network in Azure Container Apps with network security groups"). Everything else
 // inbound is refused by the last rule, which also overrides Azure's default AllowVnetInBound (65000).
-// Outbound is left at Azure's defaults: the egress task routes it through the hub firewall, which is
-// where the allow-list lives (access request H3, H4).
+// Outbound is egressRules above (restrictEgress), and the hub firewall when egressFirewallIp is set.
 resource appsNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
   name: '${name}-apps-nsg'
   location: location
   tags: tags
   properties: {
-    securityRules: [
+    securityRules: concat([
       {
         // Users. 80 only redirects (the app sets allowInsecure false); 31080 and 31443 are the
         // environment's edge proxy behind its load balancer. Internal: from the virtual network, which
@@ -101,7 +208,7 @@ resource appsNsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
           destinationPortRange: '*'
         }
       }
-    ]
+    ], restrictEgress ? egressRules : [])
   }
 }
 
@@ -180,6 +287,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
           networkSecurityGroup: {
             id: appsNsg.id
           }
+          routeTable: empty(egressFirewallIp) ? null : {
+            id: egressRoutes.id
+          }
           delegations: [
             {
               name: 'container-apps'
@@ -250,3 +360,5 @@ output appsSubnetPrefix string = appsPrefix
 output endpointsSubnetPrefix string = endpointsPrefix
 output hubPeeringName string = empty(hubVnetId) ? '' : hubPeering.name
 output postgresDnsZoneId string = postgresZone.id
+output egressRestricted bool = restrictEgress
+output egressFirewall string = egressFirewallIp

@@ -70,6 +70,41 @@ param dnsServers array = []
 @description('True makes the Container Apps environment internal: the app has no public address and is reached from the virtual network only, through the platform\'s entry point in the hub (access request H8). False (the default) keeps the public address the first POC deploy was agreed with; the target redeploy sets true. An environment cannot switch between the two in place: changing it replaces the environment and the app.')
 param internalEnvironment bool = false
 
+@description('True (default) limits outbound traffic from the app to the Azure services it needs and denies the internet (InfoSec LLD §3). False only to diagnose a platform that needs more.')
+param restrictEgress bool = true
+
+@description('Private IP of the hub firewall (access request H3, deploy kit HUB_FIREWALL_IP). Set: all outbound traffic of the app goes through it. Empty: no route table.')
+param egressFirewallIp string = ''
+
+@description('Where AI calls may go when AI is switched on: a service tag such as CognitiveServicesFrontend, or the CIDR of the Foundry or Citadel private endpoint. Empty: no AI egress, as release 1 (AI off) wants.')
+param aiEgressDestination string = ''
+
+@description('Existing private DNS zones in the hub by zone name (deploy kit PDNS_ZONE_IDS), e.g. {"privatelink.vaultcore.azure.net": "<zone id>", "privatelink.blob.core.windows.net": "<zone id>"}. A zone left out is created in this resource group and linked to the spoke.')
+param privateDnsZoneIds object = {}
+
+@description('Public network access of Key Vault and Blob Storage. Enabled for the first deploy, whose Cloud Shell steps read the vault from outside; scripts/azure_lockdown.py sets Disabled once the private endpoints are proven, and later runs of scripts/azure_deploy.py keep what it finds.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param dataPlanePublicAccess string = 'Enabled'
+
+@description('How the app authenticates to Azure AI Foundry (deploy kit CITADEL_AUTH_MODE): key or managed_identity. managed_identity sends an Entra token for the app identity instead of an api-key.')
+@allowed([
+  'key'
+  'managed_identity'
+])
+param foundryAuthMode string = 'key'
+
+@description('AI providers the app may use, comma-separated. The default keeps every AI call on Azure AI Foundry.')
+param aiProviders string = 'azure'
+
+@description('Client address ranges allowed to reach the app at its ingress (deploy kit INGRESS_ALLOWED_CIDRS). Empty: no restriction at the ingress.')
+param ingressAllowedCidrs array = []
+
+@description('Addresses that receive the restart, 5xx and database alerts (deploy kit ALERT_EMAILS). Empty: the alerts show in Azure Monitor only.')
+param alertEmails array = []
+
 @description('True on the first deployment. Set it to false when re-running after rotating a secret with az keyvault secret set, so the rotation is kept.')
 param writeSecrets bool = true
 
@@ -133,6 +168,9 @@ module network 'network.bicep' = {
     hubVnetId: hubVnetId
     dnsServers: dnsServers
     internalEnvironment: internalEnvironment
+    restrictEgress: restrictEgress
+    egressFirewallIp: egressFirewallIp
+    aiEgressDestination: aiEgressDestination
   }
 }
 
@@ -158,6 +196,7 @@ module storage 'storage.bicep' = {
     previousVersionDays: blobPreviousVersionDays
     principalId: identity.outputs.principalId
     logWorkspaceId: monitoring.outputs.workspaceId
+    publicNetworkAccess: dataPlanePublicAccess
   }
 }
 
@@ -212,9 +251,25 @@ module keyvault 'keyvault.bicep' = {
     writeSecrets: writeSecrets
     enablePurgeProtection: enableKeyVaultPurgeProtection
     softDeleteRetentionInDays: keyVaultSoftDeleteRetentionDays
+    publicNetworkAccess: dataPlanePublicAccess
     databaseUrl: databaseUrl
     vaultKey: vaultKey
     foundryApiKey: foundryApiKey
+  }
+}
+
+// Private endpoints for the vault and Blob, so their public endpoints can be switched off (InfoSec LLD §9).
+module privatelink 'privatelink.bicep' = {
+  name: 'privatelink'
+  params: {
+    namePrefix: namePrefix
+    location: location
+    tags: tags
+    vnetId: network.outputs.vnetId
+    endpointsSubnetId: network.outputs.endpointsSubnetId
+    keyVaultId: keyvault.outputs.vaultId
+    storageAccountId: storage.outputs.storageAccountId
+    privateDnsZoneIds: privateDnsZoneIds
   }
 }
 
@@ -246,6 +301,21 @@ module containerapp 'containerapp.bicep' = {
     entraClientId: entraClientId
     entraAdminGroupName: entraAdminGroupName
     entraMemberGroupName: entraMemberGroupName
+    foundryAuthMode: foundryAuthMode
+    aiProviders: aiProviders
+    ingressAllowedCidrs: ingressAllowedCidrs
+  }
+}
+
+// Restarts, server errors, database CPU and storage (InfoSec LLD §8, "Now").
+module alerts 'alerts.bicep' = {
+  name: 'alerts'
+  params: {
+    namePrefix: namePrefix
+    tags: tags
+    containerAppId: containerapp.outputs.appId
+    postgresServerId: postgres.outputs.postgresServerId
+    alertEmails: alertEmails
   }
 }
 
@@ -272,3 +342,8 @@ output appsSubnetId string = network.outputs.appsSubnetId
 output endpointsSubnetId string = network.outputs.endpointsSubnetId
 @description('The spoke side of the hub peering, for az network vnet peering show. Empty when hubVnetId is empty.')
 output hubPeeringName string = network.outputs.hubPeeringName
+output egressRestricted bool = network.outputs.egressRestricted
+output dataPlaneAccess string = dataPlanePublicAccess
+output vaultPrivateEndpoint string = privatelink.outputs.vaultEndpointName
+output blobPrivateEndpoint string = privatelink.outputs.blobEndpointName
+output alertNames array = alerts.outputs.alertNames

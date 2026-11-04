@@ -313,6 +313,11 @@ Mapping-table driven checks, review and target workbooks.
 | `GET` | `/api/fine-rules/feedback` | Member | **Rule feedback.** Corrections sent by reviewers. |
 | `POST` | `/api/fine-rules/feedback` | Member | **Send rule feedback.** A reviewer's correction to a rule outcome, with evidence. |
 | `POST` | `/api/fine-rules/feedback/{fid}/decision` | Admin | **Decide on feedback.** Admin accepts or rejects a correction. |
+| `GET` | `/api/rules-assistant` | Member | **Rules assistant state.** Whether the AI rules assistant is on and, if not, why. |
+| `POST` | `/api/rules-assistant/test` | Admin | **Test the rules assistant connection.** Admin check of the Azure AI Foundry connection; the assistant stays off until it passes. |
+| `POST` | `/api/rules-assistant/search` | Member | **Rules assistant: search the item master.** Ranked item master rows for a code or description. No AI call. |
+| `POST` | `/api/rules-assistant/explain` | Member | **Rules assistant: explain a match.** Why an invoice line matched an item master row or not, from the engine's facts. |
+| `POST` | `/api/rules-assistant/propose` | Member | **Rules assistant: propose rules.** Drafts rule rows for a line and logs them as Proposed rule feedback; an admin decides. |
 | `GET` | `/api/target-export/config` | Member | **Target export settings.** Which UPC column the target export fills. |
 | `POST` | `/api/target-export/config` | Admin | **Save target export settings.** Admin sets the UPC column. |
 
@@ -365,6 +370,36 @@ Mapping-table driven checks, review and target workbooks.
   "decision": "accepted",
   "approver": "",
   "version": ""
+}
+```
+
+`POST /api/rules-assistant/search`
+```json
+{
+  "query": "rose cream"
+}
+```
+
+`POST /api/rules-assistant/explain`
+```json
+{
+  "line": {
+    "description": "Rose hand cream 50ml",
+    "gtin": "",
+    "sku": ""
+  }
+}
+```
+
+`POST /api/rules-assistant/propose`
+```json
+{
+  "line": {
+    "description": "Rose hand cream 50ml",
+    "gtin": "",
+    "sku": ""
+  },
+  "note": ""
 }
 ```
 
@@ -579,4 +614,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 78 routes: 1 public, 41 member, 35 admin, 1 without a token (health).
+Totals: 83 routes: 1 public, 45 member, 36 admin, 1 without a token (health).

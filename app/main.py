@@ -50,6 +50,7 @@ from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, 
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
 from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
+from .rules_assistant import register_rules_assistant
 from .sandbox import protect_process
 from .store import Store
 from .upload_check import check as check_upload
@@ -258,6 +259,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     auth=ChatGPTAuth(store);providers=Providers(store,auth,learned)
     lookup=ReferenceLookup(store)
     register_item_master(app,store)
+    register_rules_assistant(app,store,providers,lookup)
     products=ProductCandidates(lookup)
     # Admission is separate from processing: a batch is accepted whole, up to INV_STUDIO_MAX_QUEUED unfinished jobs
     # (queued or processing) on this instance, and the jobs wait their turn in the pool instead of being refused.

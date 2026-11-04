@@ -222,10 +222,12 @@ def _entered(value,rules_value):
             "original":"" if _blank(rules_value) else f"rules value {rules_value} had no evidence","rule":"","confidence":"Reviewer"}
 
 
-def rules_view(result,text="",boxes=(),printed=None,entries=None):
+def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=None):
     """Turn one run_invoice result into evidence-checked review fields, lines and banner issues.
 
     ``entries`` are reviewer-entered values (owner_entries); they fill only cells the rules left empty or unevidenced.
+    A held Item cell carries the engine's ``lookup_trace`` with ``master_version`` (the active Item Master) and the
+    reviewer's manual fix.
     """
     header=result.get("header") or {}; lineage=result.get("lineage") or []
     entries=entries or {};typed=entries.get("header") or {};typed_lines=entries.get("lines") or {}
@@ -243,13 +245,18 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None):
             flags.append((label,line,"has no evidence and is left empty"))
             return {"value":None,"evidence":[],"flagged":True,"reason":"No evidence"}
         return {"value":str(value),"evidence":evidence,"flagged":False,"reason":""}
-    out_lines=[]
+    out_lines=[];traces=result.get("lookup_traces") or []
     for n,row in enumerate(lines,1):
         cells={}
         for c in LINE_FIELDS:
             entry=(typed_lines.get(str(n)) or {}).get(c)
             if c=="Unit Tax Code" and _blank(entry):entry=typed.get("taxCode")
             cells[c]=field(c,row.get(c),found.get((c,n),[]),c,n,entry,(row.get("Field Reasons") or {}).get(c))
+        trace=traces[n-1] if n<=len(traces) else None
+        if trace:
+            entry=(typed_lines.get(str(n)) or {}).get("Item")
+            cells["Item"]["lookup_trace"]={**trace,"item_master_version":master_version,
+                                           "manual_fix":{"kind":"entered","value":entry} if entry else None}
         out_lines.append({"line":n,"cells":cells,"status":row.get("Validation Status") or "","source_row":row.get("Source Row") or "",
                           "match_method":row.get("Match Method") or ""})
     fields={}

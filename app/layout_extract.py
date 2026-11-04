@@ -25,7 +25,7 @@ from app.numbers import to_decimal
 # accepted as a title in its own right: a scan whose title glyphs were missed still names itself.
 _STRONG_INVOICE = re.compile(
     r"(?im)(?:\b(?:tax|commercial|sales|debit|credit)\s*invoice\b|^\s*invoice\s*$"
-    r"|\binvoice\s*(?:no\.?|number|#|date)\b|^\s*invoice\s*:\s*(?=[A-Z0-9./_-]*[0-9]))"
+    r"|\binvoice\s*(?:(?:no|number|date)\b|#)|^\s*invoice\s*:\s*(?=[A-Z0-9./_-]*[0-9]))"
 )
 _PACKING_TITLE = re.compile(r"(?i)\bpacking\s+(?:list|slip)\b")
 _PURCHASE_ORDER_HEADING = re.compile(r"(?im)^\s*purchase\s+order(?:\s+no\b[^\n]*)?\s*$")
@@ -121,9 +121,11 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         lines,
         (
             re.compile(
-                r"(?i)\b(?:invoice|inv|document)\s*(?:no\.?|number|#)" + _LABEL_GAP +
+                r"(?i)\b(?:invoice|inv|document|doc)\s*(?:no\.?|number|#)" + _LABEL_GAP +
                 r"([A-Z0-9][A-Z0-9./_-]{0,79})"
             ),
+            # A title that carries the number: "Tax Invoice SI/2026/0101", alone on its line.
+            re.compile(r"(?i)^\s*tax\s+invoice\s+([A-Z0-9][A-Z0-9./_-]{2,79})\s*$"),
             # "Invoice: DEMO-2026-001": the label alone, opening its line ("Reference invoice: ..."
             # cites another invoice), its value an identifier of three or more.
             re.compile(r"(?i)^\s*invoice\s*:\s*([A-Z0-9][A-Z0-9./_-]{2,79})"),
@@ -180,10 +182,19 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
                 r"(?i)\b(?:lpo|po|purchase\s+order)\s+(?:no\.?|number|#)\s*[:#-]?\s+"
                 r"([A-Z0-9][A-Z0-9./_-]{0,79})"
             ),
+            # Labels with no colon: "Customer PO 70801", "Order Ref 70522", "LPO Ref LPO-77310".
+            re.compile(
+                r"(?i)\b(?:customer\s+l?po|order\s+ref(?:erence)?|l?po\s+ref)\s*(?:no\.?|number|#)?"
+                r"\s*[:#-]?\s*(?:l?po\s*[-:#]?\s*)?([A-Z0-9][A-Z0-9./_-]{0,79})"
+            ),
         ),
     )
     if po is None:
         po = _spatial_labeled_identifier(rows, {"lpo no", "lpo number", "po no", "po number"})
+    if po is None:
+        po = _identifier_below_label(
+            rows, {"purchase order", "purchase order no", "lpo no", "lpo number", "po no", "po number"}
+        )
     invoice_date = _extract_date(lines)
     if po is None:
         po = compact_header.get("po")
@@ -683,6 +694,49 @@ def _spatial_labeled_identifier(
     return _only_distinct(values)
 
 
+def _identifier_below_label(
+    rows: list[tuple[int, list[_Word]]], labels: set[str]
+) -> str | None:
+    """Read the identifier printed under a header-table heading: "Purchase Order" over "70412".
+
+    The value is the one word in the next row down whose span overlaps the heading's, so the
+    cells of the neighbouring columns are never read for it.
+    """
+
+    values: list[str] = []
+    for row_index, (page, row) in enumerate(rows):
+        for start in range(len(row)):
+            for width in (3, 2):
+                end = start + width
+                if end > len(row):
+                    continue
+                label_words = row[start:end]
+                if _label_phrase(label_words) not in labels:
+                    continue
+                left = min(word.x0 for word in label_words)
+                right = max(word.x1 for word in label_words)
+                height = max(word.height for word in label_words)
+                below = next(
+                    (
+                        next_row for next_page, next_row in rows[row_index + 1 : row_index + 3]
+                        if next_page == page and 0 < _row_y(next_row) - _row_y(row) <= height * 4.0
+                    ),
+                    None,
+                )
+                if below is None:
+                    break
+                under = [word for word in below if word.x0 < right and word.x1 > left]
+                if len(under) == 1:
+                    candidate = under[0].text.strip().replace(" ", "")
+                    candidate = re.sub(r"(?i)^l?po\s*[-:#]?(?=[0-9])", "", candidate)
+                    if _SAFE_IDENTIFIER.fullmatch(candidate) and any(
+                        character.isdigit() for character in candidate
+                    ):
+                        values.append(candidate)
+                break
+    return _only_distinct(values)
+
+
 def _spatial_joined_identifier(
     rows: list[tuple[int, list[_Word]]], labels: set[str]
 ) -> str | None:
@@ -717,8 +771,9 @@ def _spatial_joined_identifier(
                         continue
                     # The gap from the label to its value is the one a form leaves between
                     # two columns; the gaps inside the value are the ones between its parts.
+                    # A value right-aligned in a header box sits further off: up to a fifth of the page.
                     allowed = (
-                        max(36.0, label_height * 5.0) if not pieces
+                        max(36.0, label_height * 5.0, word.page_width * 0.2) if not pieces
                         else max(12.0, label_height * 1.5)
                     )
                     if word.x0 - previous_right > allowed:
@@ -729,6 +784,9 @@ def _spatial_joined_identifier(
                     sources.add(word.line or "")
                     previous_right = word.x1
                 candidate = "".join(pieces)
+                # Words from a text layer are split where the page prints a space: "NWT 004512".
+                if sources == {""} and _SPACED_IDENTIFIER.fullmatch(" ".join(pieces)):
+                    candidate = " ".join(pieces)
                 # The reader may report the printed line these words were cut from. When it
                 # covers exactly them, keep its spacing: "ULTA TDM 300726", not "ULTATDM300726".
                 printed = next(iter(sources)) if len(sources) == 1 else None

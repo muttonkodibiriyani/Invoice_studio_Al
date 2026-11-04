@@ -26,6 +26,7 @@ The expected JSON holds what the invoice prints, in the `samples/*.json` shape p
 lines[sku, gtin, description, uom, qty, price, net_amount]`.
 
 - `supplier_name` is the issuing company, never the bill-to party.
+- `po` drops a leading `LPO`/`PO` word joined to the number (`docs/FIELD_RULES.md`): h03 prints `LPO-77310`, expects `77310`.
 - `date_printed` is the date exactly as printed. `date` is the same date in ISO 8601, with one exception: when
   both leading parts of a numeric date are 12 or less and differ (`05/10/2026`), `date` is null. The app keeps such a
   date only in `date_printed` and does not guess a locale (`app/fine_rules.py` `parse_printed_date`, V-008), so a

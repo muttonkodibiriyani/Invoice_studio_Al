@@ -57,10 +57,20 @@ def bad_gtin(body):
 
 # ---- the cases ----------------------------------------------------------------------------------------------------
 # A line: code (printed SKU), barcode (printed, may fail its check), description, uom, qty, price (strings as the
-# invoice's decimals). A case: header fields, the printed forms, the columns, and how the totals are printed.
+# invoice's decimals), and optionally more: text printed as a row of its own under the item, in the description
+# column only (a set's contents). A case: header fields, the printed forms, the columns, and how the totals are
+# printed: "grid" draws every cell's borders, "qty_unit" prints the unit inside the quantity cell ("9.00 Units")
+# instead of in a column of its own, and "totals_in_table" prints the subtotal, VAT and total as rows of the table.
 
-def L(code, barcode, description, uom, qty, price):
-    return {"code": code, "barcode": barcode, "description": description, "uom": uom, "qty": qty, "price": price}
+def L(code, barcode, description, uom, qty, price, more=None):
+    line = {"code": code, "barcode": barcode, "description": description, "uom": uom, "qty": qty, "price": price}
+    if more:
+        line["more"] = more
+    return line
+
+
+def full_description(line):
+    return f"{line['description']} {line['more']}" if line.get("more") else line["description"]
 
 
 STATIONERY = [
@@ -231,6 +241,39 @@ CASES = [
             L("ALL-STR-50", None, "Stretch film 500 mm roll", "ROL", "60", "27.50"),
         ],
     },
+    {
+        "id": "h13-bordered-grid",
+        "hard": "Every cell is boxed by ruled borders, the unit is printed inside the quantity cell ('9.00 Units'), "
+                "and the subtotal, VAT and total are rows of the same table, under the amount column.",
+        "supplier": "Saffron Leaf Beauty Trading LLC", "address": "Warehouse 3, Synthetic Industrial City, Ajman",
+        "buyer": "Retail UAE Beauty", "number": "SLB-2026-0732", "number_label": "Invoice No:",
+        "date": "2026-10-22", "date_printed": "22/10/2026", "date_label": "Invoice Date:",
+        "po": "71204", "po_label": "PO No:", "currency": "AED", "decimals": 2, "thousands": True,
+        "vat": "5", "grid": True, "qty_unit": True, "totals_in_table": True,
+        "columns": ["code", "description", "qty", "price", "amount"], "lines": [
+            L("SLB-BL-200", None, "Body lotion cocoa 200 ml", "Units", "9.00", "18.50"),
+            L("SLB-HC-075", None, "Hand cream almond 75 ml", "Units", "24.00", "12.25"),
+            L("SLB-SG-250", None, "Shower gel citrus 250 ml", "Units", "12.00", "15.75"),
+            L("SLB-FM-050", None, "Face mask clay 50 g", "Units", "6.00", "32.00"),
+        ],
+    },
+    {
+        "id": "h14-continuation-rows",
+        "hard": "A gift set prints its contents as a row of its own under the item, in the description column "
+                "only, with no code, quantity or amount on it; the subtotal is a row of the table.",
+        "supplier": "Jasmine Bay Cosmetics LLC", "address": "Unit 18, Synthetic Trade Centre, Sharjah",
+        "buyer": "Retail UAE Beauty", "number": "JBC-INV-41087", "number_label": "Invoice No:",
+        "date": "2026-10-26", "date_printed": "26 Oct 2026", "date_label": "Invoice Date:",
+        "po": "71230", "po_label": "PO No:", "currency": "AED", "decimals": 2, "thousands": True,
+        "vat": "5", "totals_in_table": True, "lines": [
+            L("JBC-GS-SPA", gtin("629990010001"), "Spa gift set", "SET", "10", "145.00",
+              more="Shea Butter, Lulur Scrub, Oil"),
+            L("JBC-LB-010", gtin("629990010018"), "Lip balm vanilla", "PCS", "60", "8.50"),
+            L("JBC-GS-TRV", gtin("629990010025"), "Travel gift set", "SET", "8", "96.00",
+              more="Shampoo, Conditioner, Body Wash"),
+            L("JBC-BM-200", gtin("629990010032"), "Body mist rose 200 ml", "PCS", "30", "27.00"),
+        ],
+    },
 ]
 
 # Scans: a native case printed, then scanned (rendered, skewed, noised). The expected JSON is the source case's.
@@ -253,6 +296,8 @@ SCANS = [
      "skew": 2.0, "noise": 10, "hard": "h02 scanned: three-decimal fils amounts through OCR."},
     {"id": "s08-discount-scan", "source": "h08-discount-before-vat", "format": "png", "dpi": 160,
      "skew": -0.9, "noise": 9, "hard": "h08 scanned: the discount row read through OCR."},
+    {"id": "s09-scan-bordered-grid", "source": "h13-bordered-grid", "format": "png", "dpi": 160,
+     "skew": 1.1, "noise": 8, "hard": "h13 scanned: OCR reads the ruled cells as separate boxes."},
 ]
 
 
@@ -313,7 +358,7 @@ def expected(case):
         lines.append({
             "sku": line["code"],
             "gtin": line["barcode"] if line["barcode"] and gtin_ok(line["barcode"]) else None,
-            "description": line["description"],
+            "description": full_description(line),
             "uom": line["uom"],
             "qty": plain_qty(line["qty"]),
             "price": plain(dec(line["price"]), price_places),
@@ -345,7 +390,7 @@ def printed_tokens(case):
     for line, amount in zip(case["lines"], amounts):
         tokens += [line["qty"], price_text(case, line["price"]), printed(amount, places, case["thousands"])]
         tokens += [v for v in (line["code"], line["barcode"], line["uom"]) if v]
-        tokens += line["description"].split()
+        tokens += full_description(line).split()
     return tokens
 
 
@@ -360,8 +405,8 @@ NUMERIC = {"qty", "price", "amount"}
 def column_widths(columns, case):
     """Column widths filling the printable width: the spare goes to the description, or, when the case fixes the
     description's width (to force wrapping), to the other columns."""
-    base = {"code": 62, "barcode": 82, "description": case.get("desc_width", 175), "uom": 34, "qty": 40,
-            "price": 62, "amount": 70}
+    base = {"code": 62, "barcode": 82, "description": case.get("desc_width", 175), "uom": 34,
+            "qty": 72 if case.get("qty_unit") else 40, "price": 62, "amount": 70}
     widths = {c: base[c] for c in columns}
     spare = (PAGE_W - 2 * MARGIN) - sum(widths.values())
     if "desc_width" in case:
@@ -456,8 +501,21 @@ def draw_pdf(case, path):
             y -= 12 * (len(fields) + 1) + 14
         return y
 
+    edges = [MARGIN]
+    for w in widths:
+        edges.append(edges[-1] + w)
+
+    def rule(y):
+        """The line under a table row; with a grid, also the cell borders down from the row above it."""
+        c.line(MARGIN, y, PAGE_W - MARGIN, y)
+        if case.get("grid"):
+            for x in edges:
+                c.line(x, rule.top, x, y)
+        rule.top = y
+
     def table_header(y):
         c.setFont("Helvetica-Bold", 8.5)
+        rule.top = y + 10
         c.line(MARGIN, y + 10, PAGE_W - MARGIN, y + 10)
         x = MARGIN
         for col, w in zip(columns, widths):
@@ -469,12 +527,13 @@ def draw_pdf(case, path):
             else:
                 c.drawString(x + 3, y, title)
             x += w
-        c.line(MARGIN, y - 4, PAGE_W - MARGIN, y - 4)
+        rule(y - 4)
         return y - 16
 
     def cell(col, line, amount):
+        qty = f"{line['qty']} {line['uom']}" if case.get("qty_unit") else line["qty"]
         return {"code": line["code"], "barcode": line["barcode"], "description": line["description"],
-                "uom": line["uom"], "qty": line["qty"], "price": price_text(case, line["price"]),
+                "uom": line["uom"], "qty": qty, "price": price_text(case, line["price"]),
                 "amount": printed(amount, places, case["thousands"])}[col]
 
     for page_no, chunk in enumerate(chunks, 1):
@@ -504,8 +563,16 @@ def draw_pdf(case, path):
                 else:
                     c.drawString(x + 3, y, value)
                 x += w
+            if line.get("more"):
+                if case.get("grid"):
+                    rule(y - 11 * rows_used + 7)
+                c.drawString(edges[columns.index("description")] + 3, y - 11 * rows_used - 1, line["more"])
+                rows_used += 1
             y -= 11 * rows_used + 5
-        c.line(MARGIN, y + 8, PAGE_W - MARGIN, y + 8)
+            if case.get("grid"):
+                rule(y + 8)
+        if not case.get("grid"):
+            rule(y + 8)
         if page_no == pages:
             rows = [("Subtotal", printed(subtotal, places, case["thousands"]))]
             if discount:
@@ -514,6 +581,16 @@ def draw_pdf(case, path):
             if tax is not None:
                 rows.append((f"VAT {case['vat']}%", printed(tax, places, case["thousands"])))
             rows.append((f"Total {case['currency']}", printed(net + (tax or 0), places, case["thousands"])))
+            if case.get("totals_in_table"):
+                label_x = edges[columns.index("description")] + 3
+                for label, value in rows:
+                    c.setFont("Helvetica-Bold" if label.startswith("Total") else "Helvetica", 8.5)
+                    c.drawString(label_x, y, label)
+                    c.drawRightString(edges[-1] - 8, y, value)
+                    y -= 16
+                    if case.get("grid"):
+                        rule(y + 8)
+                rows = []
             y -= 8
             for label, value in rows:
                 c.setFont("Helvetica-Bold" if label.startswith("Total") else "Helvetica", 9)

@@ -1,0 +1,48 @@
+{
+  "number": "SLB-2026-0732",
+  "supplier_name": "Saffron Leaf Beauty Trading LLC",
+  "date": "2026-10-22",
+  "date_printed": "22/10/2026",
+  "po": "71204",
+  "currency": "AED",
+  "net": "841.50",
+  "tax": "42.08",
+  "lines": [
+    {
+      "sku": "SLB-BL-200",
+      "gtin": null,
+      "description": "Body lotion cocoa 200 ml",
+      "uom": "Units",
+      "qty": "9",
+      "price": "18.50",
+      "net_amount": "166.50"
+    },
+    {
+      "sku": "SLB-HC-075",
+      "gtin": null,
+      "description": "Hand cream almond 75 ml",
+      "uom": "Units",
+      "qty": "24",
+      "price": "12.25",
+      "net_amount": "294.00"
+    },
+    {
+      "sku": "SLB-SG-250",
+      "gtin": null,
+      "description": "Shower gel citrus 250 ml",
+      "uom": "Units",
+      "qty": "12",
+      "price": "15.75",
+      "net_amount": "189.00"
+    },
+    {
+      "sku": "SLB-FM-050",
+      "gtin": null,
+      "description": "Face mask clay 50 g",
+      "uom": "Units",
+      "qty": "6",
+      "price": "32.00",
+      "net_amount": "192.00"
+    }
+  ]
+}

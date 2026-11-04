@@ -1,0 +1,48 @@
+{
+  "number": "JBC-INV-41087",
+  "supplier_name": "Jasmine Bay Cosmetics LLC",
+  "date": "2026-10-26",
+  "date_printed": "26 Oct 2026",
+  "po": "71230",
+  "currency": "AED",
+  "net": "3538.00",
+  "tax": "176.90",
+  "lines": [
+    {
+      "sku": "JBC-GS-SPA",
+      "gtin": "6299900100017",
+      "description": "Spa gift set Shea Butter, Lulur Scrub, Oil",
+      "uom": "SET",
+      "qty": "10",
+      "price": "145.00",
+      "net_amount": "1450.00"
+    },
+    {
+      "sku": "JBC-LB-010",
+      "gtin": "6299900100185",
+      "description": "Lip balm vanilla",
+      "uom": "PCS",
+      "qty": "60",
+      "price": "8.50",
+      "net_amount": "510.00"
+    },
+    {
+      "sku": "JBC-GS-TRV",
+      "gtin": "6299900100253",
+      "description": "Travel gift set Shampoo, Conditioner, Body Wash",
+      "uom": "SET",
+      "qty": "8",
+      "price": "96.00",
+      "net_amount": "768.00"
+    },
+    {
+      "sku": "JBC-BM-200",
+      "gtin": "6299900100321",
+      "description": "Body mist rose 200 ml",
+      "uom": "PCS",
+      "qty": "30",
+      "price": "27.00",
+      "net_amount": "810.00"
+    }
+  ]
+}

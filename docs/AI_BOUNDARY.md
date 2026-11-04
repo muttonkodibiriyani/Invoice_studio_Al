@@ -4,6 +4,16 @@ The local readers (invoice2data, PaddleOCR, Docling) read every invoice first. T
 not a reader beside them. The code is `process()` in `app/engines.py` (the comment above `AI_REASONS`), and the
 tests are the AI-boundary tests in `tests/test_reader_chain.py`.
 
+## The item master rules run before the AI decision
+
+After the local readers and before `need` is worked out, `app/rules_first.py` runs the rules workbook's chain
+(`item_rules.rules()`) on the selected local read: the item step through `matching.lookup_item`, in the workbook's
+`lookup_order` (VPN -> barcode -> description), then the tax code by country (T5.1). A rule fills only an empty
+field and only on a `Found` result; a suggestion, conflict or ambiguous result fills nothing and is kept on the
+`item_rules` trace entry (`held`). A line the rules identified is not an item-identity gap, so it does not send
+the AI after a code. After any AI read, every rule-resolved value is put back: the AI never overwrites the item
+master. A rules workbook that cannot load is told on the `item_rules` trace entry and the read goes on without it.
+
 ## What the local result asks of the AI (`readers.ai.need`)
 
 | need | When | What the AI may change |
@@ -45,9 +55,10 @@ goes through `gap_fill`.
 ## What every job records
 
 - `readers.header[field]` and `readers.lines[n][field]` name the reader of each value: the engine id
-  (`invoice2data`, `paddleocr`, `docling`, `native_pdf_text`) or `ai`. A field filled from another local
+  (`invoice2data`, `paddleocr`, `docling`, `native_pdf_text`), `rule:<rule id>` (e.g. `rule:I2.1`) or `ai`. A field filled from another local
   reader's read names that reader. (`evidence.*.source` stays `native`, `ocr` or `ai`: where the quote came from.)
-- `readers.ai`: `status`, `need`, `calls` and `reason`. The reason is a sentence a reviewer can read: the
+- `readers.ai`: `status`, `need`, `calls`, `fields` and `reason`. `fields` lists what the local readers and the
+  item master rules left open, the only fields the AI may fill; with AI off they are the fields left for the user. The reason is a sentence a reviewer can read: the
   `AI_REASONS` wording, the weak-scan reason that names what was replaced, or "The AI read failed: …". It is
   prefixed with the missing readers' install hint when a reader the file needed is not installed. `notes` adds
   the line-count decisions from `merge_ai_fields`.

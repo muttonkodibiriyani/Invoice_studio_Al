@@ -32,6 +32,8 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from .location_type import STORE, TYPES, WAREHOUSE, written
+
 VERIFIED, EMPTY, MISMATCH = "verified", "empty_flagged", "mismatch"
 NO_EVIDENCE, UNVERIFIABLE, DATA_GAP, OVER_CITED = "no_evidence", "unverifiable", "data_gap", "over_cited"
 OWNER_RULE_EMPTY, UNATTRIBUTED, OWNER_ENTRY = "empty_owner_rule", "owner_entry_unattributed", "owner_entry"
@@ -58,7 +60,7 @@ OWNER_EMPTY = {"Ref No. 1", "Ref No. 2", "Ref No. 3", "Comment"}
 OWNER_EMPTY_REASON = "Owner rule: left empty (owner form 01a10c4d)"
 UPC_EMPTY_REASON = "Owner rule: UPC left empty; Item is the Item Master ITEM_PARENT (owner form 01a10c4d)"
 MISSING_LINE_REASON = "Item line missing or merged: the read lines do not sum to the Header net"
-LOCATION_TYPES = ("Store (S)", "Warehouse (W)")
+LOCATION_TYPES = TYPES
 # ISO 4217 minor units for the currencies the owner trades in; anything else is compared at two decimals.
 CURRENCY_DECIMALS = {"KWD": 3, "BHD": 3, "OMR": 3, "JOD": 3, "IQD": 3, "TND": 3, "LYD": 3}
 DEFAULT_DECIMALS = 2
@@ -217,12 +219,14 @@ def check_evidence(value, evidence, sources, location=None):
     if source == "Location-market mapping":
         return (VERIFIED, "") if _norm(master.get("market", "")) == _norm(value) else (MISMATCH, "")
     if source == "Owner Store default (M4)":
-        return (VERIFIED, "") if value == "Store (S)" and master.get("type") in (None, "", "Store (S)") else (MISMATCH, "")
+        stored = master.get("type")
+        return (VERIFIED, "") if written(value) == STORE and (_blank(stored) or written(stored) == STORE) \
+            else (MISMATCH, "")
     if source == "Master location directory":
         rows = [sources.row(x) for x in refs]
         names = " ".join(str(v) for r in rows if r for v in r.values())
         warehouse = bool(re.search(r"(?i)\b(?:warehouse|w/h|wh)\b", names))
-        return (VERIFIED, "") if rows and all(rows) and warehouse and value == "Warehouse (W)" else (MISMATCH, "")
+        return (VERIFIED, "") if rows and all(rows) and warehouse and written(value) == WAREHOUSE else (MISMATCH, "")
     if source == "prefix fallback":
         return MISMATCH, UNVERIFIABLE  # no owner table row and no written owner rule for the 800/380 prefix
     if source.endswith(SITE_DERIVATION):
@@ -624,7 +628,8 @@ def planned_rows(view, transaction=1, upc="empty"):
         day = date.fromisoformat(day) if day else None
     except ValueError:
         pass
-    header = [transaction, v("number"), ident(v("site")), ident(v("po")), ident(v("location")), v("location_type"),
+    header = [transaction, v("number"), ident(v("site")), ident(v("po")), ident(v("location")),
+              written(v("location_type")) or v("location_type"),
               day, num(v("net")), num(v("tax")), None, None, None, None]
     tax = [transaction, v("taxCode"), num(v("net"))]
     details = []
@@ -697,7 +702,7 @@ def template(sheets, currency_places=None):
                     if cell[column] not in (None, "") and not re.fullmatch(r"[1-9]\d{0,14}", str(cell[column])):
                         problems.append(f"Header {column} is not an owner id")
                 if cell["Location Type"] not in (None, "", *LOCATION_TYPES):
-                    problems.append("Header Location Type is not Store (S) or Warehouse (W)")
+                    problems.append(f"Header Location Type is not {STORE} or {WAREHOUSE}")
                 if cell["Document Date"] not in (None, "") and not isinstance(cell["Document Date"], (date, datetime)):
                     problems.append("Header Document Date is not a date")
                 for column in OWNER_EMPTY:

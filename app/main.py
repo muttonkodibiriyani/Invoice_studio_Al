@@ -465,7 +465,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             entry["ocr_lines"]=ocr_read(j)
             result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
             entries=j.get("owner_entries") if entries is None else entries
-            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
+            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries,store.get("item_master_active",None,catalog_lock))
             view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
             entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
             attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)

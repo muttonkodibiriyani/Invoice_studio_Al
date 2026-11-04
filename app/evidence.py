@@ -247,3 +247,32 @@ def annotate(evidence, invoice, *, filename=None, source="ai"):
         entry = dict(result["header"].get("number") or {"quote": None, "page": None, "source": source})
         result["header"]["number"] = _flag(entry, review["reason"], review["other_value"])
     return result
+
+
+# Lookup trace (U.TRACE / I2.5): why an Item cell is empty or held, kept with the draft for the review Details link.
+TRACE_ROWS = 5
+TRACE_STATES = {"R-003": "Not in item master", "ALG-016": "Ambiguous", "ALG-018": "Ambiguous", "ALG-019": "Ambiguous",
+                "ITM-006": "Ambiguous", "ALG-020": "Conflict", "R-015": "Conflict"}
+
+
+def lookup_trace(line, match, exceptions, sites, barcodes, vpns):
+    """The trace of one line's Item Master lookup, or None when the line matched or was not searched.
+
+    ``match`` is the engine's match_line result, ``exceptions`` the run's exceptions, ``sites`` the supplier
+    sites the line was searched under; ``barcodes``/``vpns`` are the engine's candidate functions. Rows are
+    candidate ITEM_PARENT values only, capped at TRACE_ROWS: no other Item Master data leaves the engine.
+    """
+    held = next((e for e in exceptions if e["Line No."] == match["line"] and e["Rule ID"] in TRACE_STATES), None)
+    if held is None or match["status"] == "Matched":
+        return None
+    printed_barcodes = [c.get("printed") or c["value"] for c in barcodes(line)]
+    printed_vpns = [c["value"] for c in vpns(line)]
+    columns = ["BARCODE"] * bool(printed_barcodes) + ["VPN"] * bool(printed_vpns)
+    if held["Rule ID"] in ("R-003", "ALG-019", "ITM-006"):
+        columns.append("ITEM_DESC")
+    rows = list(match["candidates"]) or ([match["parent"]] if match["parent"] else [])
+    return {"state": TRACE_STATES[held["Rule ID"]], "rule": held["Rule ID"], "reason": held["Description"],
+            "printed": {"barcode": printed_barcodes, "vpn": printed_vpns,
+                        "description": str(getattr(line, "description", None) or "")[:MAX_QUOTE]},
+            "searched": {"columns": columns, "supplier_sites": sorted(sites or ())},
+            "rows": rows[:TRACE_ROWS], "rows_total": len(rows)}

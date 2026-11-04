@@ -79,6 +79,8 @@ class Review(StrictModel):
     entries: dict | None = None
     # The owner's pick among the rules' supplier_site_candidates (a supplier code); "" clears it.
     supplier_code: str | None = None
+    # The reviewer's pick among the Item Master sites of the printed supplier name (S1.2); "" clears it.
+    supplier_site: str | None = None
 
 
 class Revision(StrictModel):
@@ -463,6 +465,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             config=store.get("fine_rules_config",{},catalog_lock);signature=rules_signature(catalog_lock)
             entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
             if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
+            if j.get("owner_supplier_site"):entry["owner_supplier_site"]=j["owner_supplier_site"]
             # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
             entry["ocr_lines"]=ocr_read(j)
             result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
@@ -492,7 +495,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         attributed to the stored pick's actor and time; without them it stays an unattributed owner entry."""
         site=(view.get("fields") or {}).get("site") or {}
         first=(site.get("evidence") or [{}])[0]
-        if first.get("kind")!="owner_entry" or first.get("rule")!="OWNER-PICK" or not j.get("owner_supplier_code"):
+        if first.get("kind")!="owner_entry" or first.get("rule")!="OWNER-PICK" or not (j.get("owner_supplier_code") or j.get("owner_supplier_site")):
             return entries,attribution
         entries=owner_entries(entries) if entries else {"header":{},"lines":{}}
         entries={**entries,"header":{**entries["header"],"site":site.get("value")}}
@@ -895,17 +898,19 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         store.audit("extraction_draft_downloaded",{"job_id":jid,"revision":j["revision"],"approved":False,"line_items":len(invoice.lines)})
         return Response(content,media_type=MIME_XLSX,headers={"Content-Disposition":f'attachment; filename="EXTRACTION_REVIEW_ONLY_{jid[:8]}.xlsx"'})
 
-    def supplier_pick(j,body):
-        """The owner's supplier code for the rules: only one of the candidates the rules last offered on this job.
-        A changed supplier name drops an earlier pick; the rules re-check the pick against their own candidates."""
-        if body.supplier_code is None:
+    def supplier_pick(j,body,field="supplier_code",label="Supplier code"):
+        """The owner's supplier code (or Item Master site, field="supplier_site") for the rules: only one of the
+        candidates the rules last offered on this job. A changed supplier name drops an earlier pick; the rules
+        re-check the pick against their own candidates."""
+        value,stored=getattr(body,field),j.get("owner_"+field)
+        if value is None:
             same=body.invoice.supplier_name==(j.get("invoice") or {}).get("supplier_name")
-            return j.get("owner_supplier_code") if same else None
-        code=body.supplier_code.strip()
-        if not code:return None
-        offered={str(c.get("supplier_code")) for c in (j.get("rules") or {}).get("supplier_site_candidates") or []}
-        if code not in offered and code!=j.get("owner_supplier_code"):raise ValueError("Supplier code is not one of the candidates the rules offered")
-        return code
+            return stored if same else None
+        value=value.strip()
+        if not value:return None
+        offered={str(c.get(field)) for c in (j.get("rules") or {}).get("supplier_site_candidates") or [] if c.get(field)}
+        if value not in offered and value!=stored:raise ValueError(f"{label} is not one of the candidates the rules offered")
+        return value
     def carry_unchecked(invoice,stored):
         """D102(3): the review client does not send barcode_unchecked. The stored value stays on the line at the same
         index while that line still has no gtin and the same description and code (compared through text_key); a
@@ -933,7 +938,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/review")
     @access(MEMBER)
     def review(jid:str,body:Review):
-        view=entries=pick=None;cleared=0
+        view=entries=pick=site=None;cleared=0
         if not demo_references:
             j=job_or_404(jid);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -946,10 +951,11 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 if not same_lines(body.invoice.lines,j):
                     cleared=sum(len(cells or {}) for cells in (entries.get("lines") or {}).values());entries["lines"]={}
             attribution=entry_attribution(j.get("owner_entries"),entries,j.get("owner_entry_attribution"))
-            pick=supplier_pick(j,body)
-            picked_by=j.get("owner_supplier_pick") if pick and pick==j.get("owner_supplier_code") else {"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()} if pick else None
+            pick=supplier_pick(j,body);site=supplier_pick(j,body,"supplier_site","Supplier site")
+            kept=(pick,site)==(j.get("owner_supplier_code"),j.get("owner_supplier_site"))
+            picked_by=None if not (pick or site) else j.get("owner_supplier_pick") if kept else {"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()}
             checks=stored_text_checks(j)
-            view=compute_rules(body.invoice,{**j,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_pick":picked_by},entries)
+            view=compute_rules(body.invoice,{**j,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by},entries)
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -962,8 +968,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if view is not None:
                 j["rules"]={**view,"revision":j["revision"]};j["owner_entries"]=entries;j["owner_entry_attribution"]=attribution
                 j["text_checks"]=checks  # same revision as the read above, so the same text
-                if pick:j.update(owner_supplier_code=pick,owner_supplier_pick=picked_by)
-                else:j.pop("owner_supplier_code",None);j.pop("owner_supplier_pick",None)
+                for name,value in (("owner_supplier_code",pick),("owner_supplier_site",site),("owner_supplier_pick",picked_by)):
+                    if value:j[name]=value
+                    else:j.pop(name,None)
                 if body.confirm:
                     # Confirm-time accuracy: per field, its status before and changed yes/no; never a value.
                     supplier=(view["fields"].get("site") or {}).get("value") or ""
@@ -974,7 +981,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             j["provenance"]+=provenance
             evaluate(j,c);store.job(jid,j,c)
             store.audit("reviewed" if body.confirm else "edited",{"job_id":jid,"before":before,"after":j["invoice"],"revision":j["revision"],"reference_version":references(c).get("version"),
-                        **({"owner_entries":entries,"accepted":j["validation"].get("accepted",[]),"owner_supplier_pick":bool(pick),
+                        **({"owner_entries":entries,"accepted":j["validation"].get("accepted",[]),"owner_supplier_pick":bool(pick or site),
                            "owner_line_entries_cleared":cleared} if view is not None else {})},c)
         return public(j)
 

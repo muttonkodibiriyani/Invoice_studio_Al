@@ -45,6 +45,8 @@ from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
 from .mapping_tables import register_mapping_tables
 from .product_candidates import ProductCandidates
+from .coverage import coverage, refusal
+from .item_rules import rules as item_rules
 from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
 from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
@@ -471,6 +473,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
             entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
             attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
+            view["coverage"]=coverage(view,item_rules().coverage_tiers())
             return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
@@ -1011,6 +1014,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
             evaluate(j,c)
             if not j["validation"]["ready"]:raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
+            # V7.1: the Coverage_Tiers tier of the lines the rules found decides whether the invoice may leave.
+            why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
+            if why:raise HTTPException(409,why)
             inv=Invoice.model_validate(j["invoice"]);eid=uuid.uuid4().hex
             if demo_references:
                 content=workbook(inv,j["validation"])

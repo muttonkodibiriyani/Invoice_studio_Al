@@ -72,6 +72,8 @@ ENV DISABLE_UPDATES=1
 RUN claude --version
 
 COPY app ./app
+# The item master rules workbook and its sha256 pin (app/item_rules.py).
+COPY docs/rules ./docs/rules
 COPY samples ./samples
 COPY README.md ./
 COPY scripts/warm_ocr.py ./scripts/warm_ocr.py

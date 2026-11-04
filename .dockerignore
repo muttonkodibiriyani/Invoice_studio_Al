@@ -10,6 +10,7 @@ build
 *.egg-info
 hosting
 docs
+!docs/rules
 tests
 .github
 infra

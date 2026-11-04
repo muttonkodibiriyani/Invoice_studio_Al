@@ -95,6 +95,21 @@ class LookupRulesSource:
         value = normalize_identifier(value)
         return self._rows("po", [f"f:po:{value}"]) if value else []
 
+    def orders_by_barcode(self, value):
+        value = normalize_identifier(value)
+        return self._rows("po", [f"x:gtin:ult{value}", f"x:gtin:{value}"]) if value else []
+
+    def orders_by_quantity(self, value, limit=MAX_DESCRIPTION_ROWS):
+        """PO rows whose QTY_RECEIVED is ``value`` (a plain decimal string). Quantity has no term: the payload's
+        JSON text narrows the rows and the column decides."""
+        with self.store.connection() as connection:
+            found = connection.execute(
+                "SELECT payload FROM lookup_rows WHERE kind='po' AND payload LIKE ? ORDER BY sheet, row_number LIMIT ?",
+                (f'%"QTY_RECEIVED":"{value}"%', limit)).fetchall()
+        rows = [json.loads(row["payload"]) for row in found]
+        return [dict(r["data"]) for r in rows if r["data"].get("QTY_RECEIVED") == value
+                and not any("quarant" in f.lower() for f in r.get("flags", []))]
+
     def master_catalog(self):
         with self.store.connection() as c:
             sources = [json.loads(r[0]) for r in c.execute("SELECT payload FROM lookup_sources ORDER BY id")]

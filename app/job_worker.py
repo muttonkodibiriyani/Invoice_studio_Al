@@ -13,10 +13,12 @@ from types import SimpleNamespace
 
 from . import engines
 from .evidence import annotate
+from .item_rules import RulesError
+from .item_search import for_invoice
 from .models import Invoice, ProcessingOptions
 from .sandbox import limit
 
-ERRORS={"ReaderTimedOut":engines.ReaderTimedOut,"ReaderFailed":engines.ReaderFailed}
+ERRORS={"ReaderTimedOut":engines.ReaderTimedOut,"ReaderFailed":engines.ReaderFailed,"RulesError":RulesError}
 
 
 class Parent:
@@ -86,6 +88,12 @@ def main():
         read=parent.call("ai",text=text,examples=examples)
         return Invoice.model_validate(read["invoice"]),read["meta"]
 
+    def item_master(invoice):
+        # The live item master is searched in the parent (engines.process_job): it holds the store.
+        return for_invoice(lambda line,column,match:parent.call("item_search",line=line,column=column,match=match),
+                           lambda:parent.call("item_sites",invoice={k:invoice.get(k) for k in ("site","supplier_name")}),
+                           start.get("supplier_site") or None)
+
     engines.capabilities=lambda:parent.call("capabilities")
     engines.models_blocked=lambda engine:parent.call("models_blocked",engine=engine)
     engines.note_models_blocked=lambda engine:parent.call("note_models_blocked",engine=engine)
@@ -94,7 +102,7 @@ def main():
     progress=lambda engine,message,details=None:parent.call("progress",engine=engine,message=message,details=details)
     try:
         result=engines.process(Path(start["path"]),ProcessingOptions.model_validate(start["options"]),
-                               SimpleNamespace(root=root),ai_reader,progress)
+                               SimpleNamespace(root=root),ai_reader,progress,item_master=item_master)
         result["annotated_evidence"]=annotate(result.get("evidence"),result["invoice"],filename=start["filename"])
     except Exception as e:
         # The class name only: no document content.

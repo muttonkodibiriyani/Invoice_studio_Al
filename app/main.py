@@ -592,7 +592,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                         j["progress"]["characters"]=details.get("characters",0)
                     store.job(jid,j,c)
             if identity.cloud:store.ensure_blob(Path(job["path"]))
-            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"))
+            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
+                             supplier_site=job.get("owner_supplier_site"))
             annotated=result.pop("annotated_evidence")
             lines=Invoice.model_validate(result["invoice"]).model_dump(mode="json")["lines"]
             view=None

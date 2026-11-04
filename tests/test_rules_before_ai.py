@@ -68,7 +68,8 @@ def run(monkeypatch, tmp_path):
 
         result = engines.process(ROOT / "samples" / "invoice.pdf",
                                  ProcessingOptions(**{"engine": "invoice2data", "model": "m", **options}),
-                                 types.SimpleNamespace(root=tmp_path), foundry, item_search=match)
+                                 types.SimpleNamespace(root=tmp_path), foundry,
+                                 item_master=match and (lambda invoice: match))
         return result, calls
     return go
 

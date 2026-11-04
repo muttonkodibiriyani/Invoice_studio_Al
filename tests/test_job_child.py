@@ -8,14 +8,16 @@ import os
 import pathlib
 import sys
 import time
-import types
 
 import pytest
 
-from app import engines
+from app import engines, item_search
+from app.fine_rules_source import LookupRulesSource
 from app.evidence import annotate
 from app.learned import LearnedStore
 from app.models import Invoice, ProcessingOptions
+from app.reference_lookup import ReferenceLookup
+from app.store import Store
 from tests.conftest import audit_rows, bearer
 from tests.test_batch import plan, studio, upload, wait_until
 
@@ -59,8 +61,9 @@ def test_the_job_child_returns_what_process_returns_in_this_process(sample, tmp_
         monkeypatch.setattr(engines, "local_read", reader)
     if readers is not None:
         monkeypatch.setattr(engines, "capabilities", installed(*readers))
-    (tmp_path / "work").mkdir()
-    store = types.SimpleNamespace(root=tmp_path)
+    store = Store(tmp_path)
+    ReferenceLookup(store)  # an empty item master: the child's item searches find nothing, as here
+    catalog = LookupRulesSource(store)
     options = ProcessingOptions(engine=engine, ai_fallback=True, model="m")
     path = ROOT / "samples" / sample
     asked = []
@@ -73,7 +76,10 @@ def test_the_job_child_returns_what_process_returns_in_this_process(sample, tmp_
         return lambda engine, message, details=None: calls.append((engine, message, json.dumps(details, default=str)))
 
     here_progress, there_progress = [], []
-    here = engines.process(path, options, store, ai_reader, recorder(here_progress))
+    here = engines.process(path, options, store, ai_reader, recorder(here_progress),
+                           item_master=lambda invoice: item_search.for_invoice(
+                               lambda line, column, match: item_search.search(catalog, line, column, match),
+                               lambda: item_search.invoice_sites(catalog, invoice)))
     here_asked = list(asked);asked.clear()
     there = engines.process_job(path, options, store, ai_reader, recorder(there_progress),
                                 learned=LearnedStore(tmp_path), filename="INV-1.pdf")

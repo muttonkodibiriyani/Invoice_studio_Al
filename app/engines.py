@@ -13,7 +13,8 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from .models import Invoice
 from .evidence import build as build_evidence
-from . import item_rules, rules_first, scan_guard
+from . import item_rules, item_search, rules_first, scan_guard
+from .fine_rules_source import LookupRulesSource
 from .numbers import to_decimal
 
 ROOT=Path(__file__).resolve().parent
@@ -353,7 +354,7 @@ def _job_message_mb(value,default=64):
 JOB_MESSAGE_MB=_job_message_mb(os.getenv("INV_STUDIO_JOB_MESSAGE_MB",""))
 
 
-def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=None,filename=None):
+def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=None,filename=None,supplier_site=None):
     """process() in a job child, so the pattern work over a document's read text runs outside the API process.
 
     The child does every check between and after the reads: the native-text gates, evidence, the cross-read guards,
@@ -362,7 +363,8 @@ def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=
     the model-download memory, progress and the AI call, which holds the provider keys. Each stretch of the child's
     own work, from one answer to its next call, is held to the readers' time limit; past it the child is stopped and
     ChecksTimedOut ends the job, so a slow pattern stops one job, not the workers. The child also carries the readers'
-    CPU limit. Returns process()'s result plus "annotated_evidence".
+    CPU limit. The child searches the live item master through the store here, limited to ``supplier_site`` (the
+    reviewer's pick) when given (app/item_search.for_invoice). Returns process()'s result plus "annotated_evidence".
     """
     import queue
     timeout=int(os.getenv("INV_ENGINE_TIMEOUT","240"))
@@ -382,6 +384,7 @@ def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=
             lines.put(line)
     reader=threading.Thread(target=pump,daemon=True,name="job-child");reader.start()
     slots={"ocr":_LOCAL_OCR_SLOTS,"ai":_AI_SLOTS};held=[]
+    catalog=LookupRulesSource(store)  # the live item master, read for the child's item searches
     def send(message):
         proc.stdin.write(json.dumps(message,default=str)+"\n");proc.stdin.flush()
     def answer(call,args):
@@ -401,10 +404,18 @@ def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=
         if call=="ai":
             candidate,meta=ai_reader(path,str(args["text"]),options,examples=str(args["examples"]))
             return {"invoice":candidate.model_dump(mode="json"),"meta":meta}
+        if call in ("item_search","item_sites"):
+            # A failed search stops the item rules (item_rules.RulesError in the child), not the read.
+            try:
+                if call=="item_sites":return item_search.invoice_sites(catalog,dict(args["invoice"]))
+                return item_search.search(catalog,dict(args["line"]),str(args["column"]),str(args["match"]))
+            except item_rules.RulesError:raise
+            except Exception as e:raise item_rules.RulesError(f"The item master search failed ({type(e).__name__})") from None
         raise ValueError("Unknown job call")
     try:
         send({"path":str(path),"root":str(store.root),"options":options.model_dump(mode="json"),
-              "filename":filename,"learned":learned is not None})
+              "filename":filename,"learned":learned is not None,
+              "supplier_site":supplier_site})
         while True:
             try:line=lines.get(timeout=timeout)
             except queue.Empty:
@@ -836,8 +847,9 @@ def _absent_fields(evidence):
     return {"absent_fields":[f for f,c in codes.items() if c==scan_guard.TAX_ABSENT_CODE],"reason_codes":codes}
 
 
-def process(path,options,store,ai_reader,progress=lambda *args:None,item_search=None):
-    """``item_search(line) -> search(column, match)`` is the item master search matching.lookup_item runs per line."""
+def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=None):
+    """``item_master(invoice) -> item_search``, and ``item_search(line) -> search(column, match)``, is the item master
+    search matching.lookup_item runs per line (app/item_search.for_invoice)."""
     trace=[];best=None;best_score=-1;text="";boxes=[];selected="none";best_evidence={};best_source="native"
     # The engine id (or "ai") the reader maps name for the selected read; best_source is its evidence source.
     best_reader="none"
@@ -1158,14 +1170,16 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_search=
         best=Invoice.model_validate(local);best_score=quality(best)[0]
     # The item master rules run on the local read before the AI is asked: what they resolve is not a gap.
     if best is not None:
-        try:ruleset=item_rules.rules();resolved=rules_first.resolve(best.model_dump(mode="json"),item_search,ruleset)
+        try:
+            ruleset=item_rules.rules();read=best.model_dump(mode="json")
+            resolved=rules_first.resolve(read,item_master(read) if item_master else None,ruleset)
         except item_rules.RulesError as e:
             trace.append({"engine":"item_rules","status":"unavailable","reason":"The item master rules did not run: "+str(e)[:200]})
         else:
             filled=[*resolved.sources["header"],*(f"line {n} {f}" for n,line in enumerate(resolved.sources["lines"],1) for f in line)]
             trace.append({"engine":"item_rules","status":"resolved" if filled else "nothing_resolved",
                           "version":getattr(ruleset,"version",""),"fields":filled,"held":resolved.held,
-                          **({} if item_search else {"reason":"No item master matcher is connected; item lookups did not run"})})
+                          **({} if item_master else {"reason":"No item master matcher is connected; item lookups did not run"})})
             best=Invoice.model_validate(resolved.invoice);best_score=quality(best)[0]
     missing=gaps_of(best);ai_reason=None
     # What the engines' result asks of the AI, recorded whether or not the AI runs, so AI calls per invoice

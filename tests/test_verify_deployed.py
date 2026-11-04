@@ -60,7 +60,8 @@ class Reader:
         monkeypatch.setattr(main_module, "process_job", self)
         monkeypatch.setattr(main_module, "capabilities", lambda: INSTALLED)
 
-    def __call__(self, path, options, store, ai_reader, progress=None, learned=None, filename=None):
+    def __call__(self, path, options, store, ai_reader, progress=None, learned=None, filename=None,
+                 supplier_site=None):
         self.seen.append(options.model_dump())
         if self.raises:
             raise self.raises

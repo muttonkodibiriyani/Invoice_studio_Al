@@ -128,6 +128,50 @@ and the invoice flow (upload the synthetic sample, read it locally, delete it). 
 
 Revision health and traffic, whether the vault and Blob are locked down, the alerts, and `/health`.
 
+## Deploy day
+
+The freeze is the last merge to `main`; the deploy ships exactly that commit. In Cloud Shell, in this order:
+
+1. **Preflight**: read-only, stops at the first problem.
+
+   ```bash
+   cd Invoice_studio_Al && git checkout main && git pull
+   ./scripts/cloudshell.sh preflight
+   ```
+
+   It checks that you are signed in to the kit's subscription, the checkout is clean, `HEAD` is `origin/main`, CI
+   passed on that commit (when `gh` is signed in; otherwise look in Actions), and either the live app answers
+   `/health` (a later image) or `azure_deploy.py --check` passes (a first deploy). By hand, before you start:
+   - every PR meant for this deploy is merged, and nothing else merged after the freeze;
+   - the Item Master workbook to load after the deploy is at hand (it goes in through the app, never git);
+   - the real invoices for the live run are in a Cloud Shell folder outside the checkout, e.g. `~/live-invoices`;
+   - an admin and a member account can sign in, so you can get a token for each (docs/API.md §2).
+2. **Deploy**: a first deploy is steps 2 to 8 above. A later image is **Actions → Deploy to Azure**
+   (`send_traffic` off), test the candidate on its own address, then AZURE.md §8 to go live.
+3. **Smoke test**: no token needed; seconds.
+
+   ```bash
+   ./scripts/cloudshell.sh smoke                 # the live URL; or pass a revision's https://<fqdn>
+   ./scripts/cloudshell.sh test                  # signed-in checks, with an admin token
+   ```
+
+   `smoke` checks `/health` and `/api/public-config` answer 200 with cloud sign-in on, `/api/session` and
+   `/api/state` refuse with 401 without a token, and the HSTS, CSP and nosniff headers are present.
+4. **Live run on the real invoices**:
+
+   ```bash
+   ./scripts/cloudshell.sh live-run ~/live-invoices
+   ```
+
+   Paste a member or admin token. Each invoice goes through the app as an upload with the form's defaults (auto
+   chain, AI on as the fallback); the report, in `~/inv-studio-azure/live-run-<time>/`, gives per invoice the final
+   status, the reader that won, the AI calls, header fields filled, lines read and the issue codes holding it, plus
+   the AI call total. A `<name>.json` beside an invoice (the samples/ shape) also scores it field by field. The jobs
+   stay in the workspace: review and export them in the app, which is the human half of the run. The report has no
+   invoice values; copy its text into the deploy record.
+5. **Roll back** if smoke or the live run fails on something the previous revision did not: AZURE.md §9 (a traffic
+   switch, seconds).
+
 ## Later images
 
 Every image after the first goes on through **Actions → Deploy to Azure** as a candidate, then AZURE.md §8. Do not

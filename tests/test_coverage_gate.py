@@ -5,13 +5,14 @@ from typing import NamedTuple
 import pytest
 
 from app.coverage import coverage, refusal
+from tests.conftest import bearer
 
 
 class Tier(NamedTuple):
     name: str
     low: Decimal
     high: Decimal | None
-    export: str
+    export_mode: str
     prompt: str | None
 
 
@@ -23,11 +24,11 @@ TIERS = (Tier("Target", Decimal(100), None, "yes", None),
 
 
 def found():
-    return {"value": "1001", "evidence": [{"kind": "lookup", "rule": "I2.1"}]}
+    return {"value": "1001", "evidence": [{"kind": "lookup", "rule": "I2.1"}], "flagged": False}
 
 
 def typed():
-    return {"value": "2002", "evidence": [{"kind": "owner_entry", "rule": ""}]}
+    return {"value": "2002", "evidence": [{"kind": "owner_entry", "rule": ""}], "flagged": False}
 
 
 def empty():
@@ -100,3 +101,44 @@ def test_a_lines_item_with_no_value_or_no_evidence_is_missing():
 def test_tiers_must_cover_every_coverage():
     with pytest.raises(ValueError, match="Coverage_Tiers"):
         coverage(view(found(), empty()), TIERS[:1])
+
+
+def export_with_lines(client, owner, app, tmp_path, items):
+    """Export a reviewed invoice whose current rules view has these Item cells and no other issue."""
+    store = app.state.store
+    source = tmp_path / "invoice.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    store.job("cov", {"id": "cov", "filename": "invoice.pdf", "path": str(source), "status": "review", "revision": 1,
+                      "reviewed": True, "provenance": [], "invoice": {"number": "INV-1", "lines": [{}] * len(items)}})
+    client.post("/api/jobs/cov/export", headers=bearer(owner), json={"revision": 1})  # stores a current rules view
+    j = store.job("cov")
+    def evidenced(cells):
+        return {k: cell if cell["value"] and cell["evidence"] else {**cell, **found()} for k, cell in cells.items()}
+    lines = [{"line": n, "cells": {**evidenced(line["cells"]), "Item": item}}
+             for n, (item, line) in enumerate(zip(items, j["rules"]["lines"]), 1)]
+    fields = evidenced(j["rules"]["fields"])
+    fields["location_type"]["value"], fields["date"]["value"] = "Store (S)", "2026-11-04"
+    j["rules"] = {k: v for k, v in j["rules"].items() if k != "receipt_controls"} | {"issues": [], "lines": lines, "fields": fields}
+    store.job("cov", {**j, "reviewed": True})
+    return client.post("/api/jobs/cov/export", headers=bearer(owner), json={"revision": 1})
+
+
+def test_the_export_route_refuses_below_the_last_fallback(client, owner, app, tmp_path):
+    response = export_with_lines(client, owner, app, tmp_path, [found()] * 8 + [typed()] * 2)
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("Coverage 8 of 10 lines (80.00%). Add the missing items")
+
+
+def test_the_export_route_lets_a_filled_fallback_through(client, owner, app, tmp_path):
+    response = export_with_lines(client, owner, app, tmp_path, [found()] * 19 + [typed()])
+    assert response.status_code == 200, response.json()
+
+
+def test_the_review_payload_carries_the_coverage(client, owner, app, tmp_path):
+    source = tmp_path / "invoice.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    app.state.store.job("cov", {"id": "cov", "filename": "invoice.pdf", "path": str(source), "status": "review", "revision": 1,
+                                "provenance": [], "invoice": {"number": "INV-1", "lines": [{}, {}]}})
+    payload = client.get("/api/jobs/cov", headers=bearer(owner)).json()["rules"]["coverage"]
+    assert payload == {"matched": 0, "total": 2, "pct": "0.00", "tier": "Below 90%", "export": "no", "low": False,
+                       "prompt": "P-COV-LOW", "missing": [{"line": 1, "filled": False}, {"line": 2, "filled": False}]}

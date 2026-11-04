@@ -11,7 +11,7 @@ def _matched(cell):
 
 def coverage(view, tiers):
     """``tiers`` are RuleSet.coverage_tiers(): ``name``, ``low`` (inclusive) and ``high`` (exclusive, None: no top) in
-    percent, ``export`` 'yes' | 'after_fill' | 'no', ``prompt`` id or None.
+    percent, ``export_mode`` 'yes' | 'after_fill' | 'no', ``prompt`` id or None.
 
     ``{matched, total, pct, tier, export, low, prompt, missing[]}`` for a rules view; ``missing`` lists every line the
     rules did not match, ``filled`` when the reviewer gave it an Item."""
@@ -23,9 +23,9 @@ def coverage(view, tiers):
     tier = next((t for t in tiers if t.low <= pct and (t.high is None or pct < t.high)), None)
     if tier is None:raise ValueError(f"No Coverage_Tiers row covers {pct}%")
     # A fallback under another fallback is flagged as low coverage (Second fallback).
-    low = tier.export == "after_fill" and any(t.export == "after_fill" and t.low > tier.low for t in tiers)
+    low = tier.export_mode == "after_fill" and any(t.export_mode == "after_fill" and t.low > tier.low for t in tiers)
     return {"matched": matched, "total": total, "pct": str(pct.quantize(Decimal("0.01"), ROUND_FLOOR)), "tier": tier.name,
-            "export": tier.export, "low": low, "prompt": tier.prompt, "missing": missing}
+            "export": tier.export_mode, "low": low, "prompt": tier.prompt, "missing": missing}
 
 
 def _lines(numbers):

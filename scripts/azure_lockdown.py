@@ -27,6 +27,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -117,9 +118,12 @@ def live_revision(app, group, run):
 
 
 def http_status(url, token=None):
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise Stop(f"refusing to probe a non-https URL: {url}")
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        # Scheme pinned to https above, so no file:/ or custom schemes (bandit B310).
+        with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310
             return response.status
     except urllib.error.HTTPError as err:
         return err.code

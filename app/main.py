@@ -473,6 +473,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
             attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
             view["coverage"]=coverage(view,item_rules().coverage_tiers())
+            # P-LOC / P-LOCTYPE: what the user must answer about the location (rules workbook Prompts).
+            view["prompts"]=result.get("prompts") or []
             return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child

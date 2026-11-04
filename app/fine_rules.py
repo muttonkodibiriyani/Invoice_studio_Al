@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from . import scan_guard
 from .evidence import lookup_trace
+from .item_rules import rules
 
 
 WAREHOUSE = "Warehouse (W)"
@@ -498,16 +499,30 @@ def entity_hint(supplier_name, entity_map=ENTITY_MAP):
     return {"suffix": suffix, "entity": entity, "currency_hint": currency, "mapped": entity_map.get(entity)}
 
 
-def location_type(location, config=None):
-    """ALG-012/013/014, R-026: exact master first; 800/380 prefix fallback kept as a cross-check."""
+def location_type(location, config=None, variants=None):
+    """ALG-012/013/014, R-026: exact master first, normalised through the rules workbook's Location_Type_Variants
+    (a type that is not a variant is held for the user, P-LOCTYPE); 800/380 prefix fallback kept as a cross-check."""
+    from . import location_type as loc  # it imports STORE and WAREHOUSE from here
     location = text(location)
     prefix = next((kind for start, kind in LOCATION_PREFIXES if location.startswith(start)), None)
     master = (config.location_master.get(location) if config else None) or {}
-    master_type = master.get("type") or None
-    if master_type:
-        conflict = prefix is not None and prefix != master_type
-        return {"type": master_type, "source": "location master", "prefix_type": prefix, "conflict": conflict}
+    master_type = text(master.get("type"))
+    if location and master_type:
+        found = loc.resolve({"LOCATION NUMBER": location, "LOCATION NAME": master_type},
+                            rules().location_type_variants() if variants is None else variants)
+        conflict = found.type is not None and prefix is not None and prefix != found.type
+        return {"type": found.type, "source": "location master", "prefix_type": prefix, "conflict": conflict,
+                "held": None if found.type else master_type}
     return {"type": prefix, "source": "prefix fallback" if prefix else None, "prefix_type": prefix, "conflict": False}
+
+
+def location_prompts(location, kind):
+    """P-LOC when the location is blank, P-LOCTYPE when it has no type and no conflict: the rules view's prompts."""
+    from . import location_type as loc
+    kind = kind or {}
+    asks = (loc.ASK_LOCATION,) if not location else () if kind.get("type") or kind.get("conflict") \
+        else (loc.ASK_LOCATION_TYPE,)
+    return loc.prompts(asks, rules().prompts(), kind.get("held"))
 
 
 def same_market(a, b):
@@ -1162,9 +1177,11 @@ def evaluate_pogrn(run, rows, keys, invoice_qty, invoice_value, invoice_currency
             reasons.append("Location ID blank")
         elif len(locations_per_order[order]) > 1:
             reasons.append("Order has several locations; no approved multi-location rule")
-        kind = location_type(location, config) if location else {"type": None, "conflict": False}
+        kind = location_type(location, config)
         type_ok = bool(kind["type"]) and not kind["conflict"]
-        if location and not kind["type"]:
+        if kind.get("held"):
+            reasons.append(f'Location type "{kind["held"]}" is not in Location_Type_Variants')
+        elif location and not kind["type"]:
             reasons.append("Location type unresolved (no master row and no 800/380 prefix)")
         if kind.get("conflict"):
             reasons.append(f"Location master type {kind['type']} disagrees with prefix {kind['prefix_type']}")
@@ -1958,6 +1975,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "raw_invoice": raw_invoice_rows(invoice, filename, barcode_candidates, vpn_candidates),
         "tax": tax_rows(invoice, tax_code), "scan": {k: v for k, v in scan.items() if k != "pages"},
         "supplier_candidates": candidates, "missing_mandatory": missing,
+        "prompts": location_prompts(location, group and group["_location_type"]),
         "po": {"order": po["order"], "source": po["source"], "status": po["status"], "value_source": value_source},
         "order_date": order_date,
         "receipt_date": check_receipt_dates(po, order_date, document_date),

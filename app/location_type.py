@@ -6,6 +6,7 @@ in the rules workbook's Location_Type_Variants sheet, compared in any case and w
 a value that is not a row is held for the user to pick (P-LOCTYPE). Location is the row's LOCATION
 NUMBER; when it is blank the user adds it (P-LOC)."""
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -47,3 +48,10 @@ def resolve(row: Mapping, variants: Mapping[str, str]) -> Location:
     kind = next(filter(None, (normalise(n, variants) for n in names or [None])), None)
     prompts = (ASK_LOCATION,) * (number is None) + (ASK_LOCATION_TYPE,) * (kind is None)
     return Location(number, kind, prompts)
+
+
+def prompts(ids, rule_prompts: Mapping, value=None) -> list[dict]:
+    """The workbook's prompts for ids (RuleSet.prompts()), buttons in the written form, for the rules view."""
+    return [{"id": p.id, "message": p.message.format_map(defaultdict(str, value=value or "")),
+             "buttons": [written(b) or b for b in p.buttons]}
+            for p in (rule_prompts.get(i) for i in ids) if p]

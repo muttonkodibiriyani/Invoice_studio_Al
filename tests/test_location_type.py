@@ -93,3 +93,56 @@ def test_target_check_reads_a_no_space_value_as_the_template_text():
     sheet = view()
     sheet["fields"]["location_type"] = {"value": "Warehouse(W)"}
     assert tc.planned_rows(sheet)["Header"][1][5] == W
+
+
+@pytest.mark.parametrize("master_type, written", [
+    ("Store (S)", S), ("STORE", S), ("store(s)", S), ("Warehouse", W), ("W", W),
+])
+def test_fine_rules_normalises_the_location_master_type(master_type, written):
+    from app.fine_rules import RulesConfig, location_type
+    found = location_type("1200", RulesConfig(location_master={"1200": {"type": master_type}}))
+    assert (found["type"], found["source"], found["held"]) == (written, "location master", None)
+
+
+def test_fine_rules_holds_an_unknown_location_master_type_for_the_user():
+    from app.fine_rules import RulesConfig, location_type
+    found = location_type("8001", RulesConfig(location_master={"8001": {"type": "Depot"}}))
+    assert (found["type"], found["held"], found["conflict"]) == (None, "Depot", False)
+
+
+@pytest.mark.parametrize("location, kind, asks", [
+    ("", None, [lt.ASK_LOCATION]), (None, {"type": S}, [lt.ASK_LOCATION]),
+    ("1200", {"type": None}, [lt.ASK_LOCATION_TYPE]), ("1200", {"type": None, "held": "Depot"}, [lt.ASK_LOCATION_TYPE]),
+    ("1200", {"type": S}, []), ("8001", {"type": W, "conflict": True}, []),
+])
+def test_fine_rules_asks_for_a_blank_location_and_an_unresolved_type(location, kind, asks):
+    from app.fine_rules import location_prompts
+    assert [p["id"] for p in location_prompts(location, kind)] == asks
+
+
+def test_prompts_carry_the_workbook_message_and_the_written_buttons():
+    shown = lt.prompts((lt.ASK_LOCATION, lt.ASK_LOCATION_TYPE), rules().prompts(), "Depot")
+    assert [p["id"] for p in shown] == [lt.ASK_LOCATION, lt.ASK_LOCATION_TYPE]
+    assert shown[0]["message"] == "Location missing on the matched row. Please add it."
+    assert shown[1]["message"] == 'Location type "Depot" is unknown. Store or warehouse?'
+    assert shown[1]["buttons"] == [S, W]
+
+
+def test_a_run_without_a_location_asks_for_it():
+    from app.fine_rules import RowsSource, RulesConfig, run_invoice
+    from app.models import Invoice, Line
+    inv = Invoice(number="INV-1", date="2026-11-01", supplier_name="Synthetic Co", currency="AED", net=100, tax=5,
+                  lines=[Line(sku="VPN-1", description="Rose", qty=2, price=50)])
+    result = run_invoice(inv, RowsSource(), RulesConfig())
+    assert [p["id"] for p in result["prompts"]] == [lt.ASK_LOCATION]
+
+
+def test_the_review_payload_carries_the_location_prompts(client, owner, app, tmp_path):
+    from tests.conftest import bearer
+    source = tmp_path / "invoice.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    app.state.store.job("loc", {"id": "loc", "filename": "invoice.pdf", "path": str(source), "status": "review",
+                                "revision": 1, "provenance": [], "invoice": {"number": "INV-1", "lines": [{}]}})
+    prompts = client.get("/api/jobs/loc", headers=bearer(owner)).json()["rules"]["prompts"]
+    assert prompts == [{"id": lt.ASK_LOCATION, "message": "Location missing on the matched row. Please add it.",
+                        "buttons": ["Enter"]}]

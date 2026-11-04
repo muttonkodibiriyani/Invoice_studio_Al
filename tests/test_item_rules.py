@@ -73,6 +73,15 @@ def test_shipped_workbook_loads_with_its_checksum_and_every_prompt_it_names():
     assert {p for r in rules.lookup_order() for p in r.prompts} <= set(rules.prompts())
 
 
+def test_both_images_ship_the_workbook_and_its_pin_where_the_loader_looks():
+    root = item_rules.DEFAULT_WORKBOOK.parents[2]
+    assert item_rules.DEFAULT_WORKBOOK.relative_to(root).parent.as_posix() == "docs/rules"
+    assert "COPY docs/rules ./docs/rules" in (root / "Dockerfile").read_text()
+    assert "COPY docs/rules /opt/inv-studio/docs/rules" in (root / "Dockerfile.app-layer").read_text()
+    ignored = (root / ".dockerignore").read_text().split()
+    assert ignored.index("!docs/rules") > ignored.index("docs")
+
+
 def test_lookup_order_is_step_then_order_and_skips_disabled_rows(workbook):
     rules = load(workbook)
     assert [r.id for r in rules.lookup_order()] == ["S9.1", "I9.1", "I9.2", "I9.3", "I9.5"]

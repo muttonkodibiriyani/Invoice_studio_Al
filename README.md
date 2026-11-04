@@ -139,6 +139,8 @@ CI runs the same ruff and pytest commands on every push and pull request (`.gith
 
 The golden-sample tests prove the samples are read locally with no AI call. The two scans' tests need the scan readers: `.venv/bin/pytest -q -m scan_readers` after `./scripts/setup.sh --ocr` (`docs/GOLDEN_SAMPLES.md`).
 
+Azure AI Foundry is tested on mocked HTTP in `pytest -q`. Once `INV_STUDIO_AZURE_ENDPOINT`, `INV_STUDIO_AZURE_API_KEY` and `INV_STUDIO_AZURE_DEPLOYMENT` are set, `.venv/bin/python scripts/azure_ai_check.py` reads the synthetic samples with the real deployment and names any setting to fix; `.venv/bin/pytest -m azure_live -rs` runs the same check as a test (`docs/AZURE.md` §7).
+
 The UI lives in `app/static/`. The Microsoft sign-in module `app/static/entra-auth.bundle.js` is built from `app/static/entra-auth-entry.js` by `scripts/entra-bundle/` (`npm ci && npm run build` there), and a test fails when the bundle no longer matches its recorded sha256.
 
 ## Operations

@@ -770,6 +770,33 @@ az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[
 The template sends all traffic to the latest revision. With `containerImage` empty it creates a
 revision on the hello-world image, and that takes the app down until you move traffic back (§9).
 
+**Prove the connection before switching AI on.** Once the endpoint, key and deployment name arrive, run the
+connection check with them. It goes through the app's own code: the endpoint allow-list, the auth header and
+the read every job makes. It sends one tiny request, then reads the synthetic sample invoice as text, as a PDF
+and as an image, a few thousand tokens in all. It never prints or saves the key.
+
+```bash
+# From a checkout with .venv. The values may also sit in .env (git-ignored), read the way scripts/run.sh reads it.
+export INV_STUDIO_AZURE_ENDPOINT=https://<resource>.openai.azure.com
+export INV_STUDIO_AZURE_DEPLOYMENT=<deployment name>
+read -rs INV_STUDIO_AZURE_API_KEY && export INV_STUDIO_AZURE_API_KEY   # paste the key: not echoed, not in history
+.venv/bin/python scripts/azure_ai_check.py        # the same check as a test: .venv/bin/pytest -m azure_live -rs
+```
+
+Every line `ok` (exit code 0) means the app reads invoices with that deployment. A `FAILED` line names what to
+change: the key (HTTP 401), the role or the resource's network rules (403), the deployment name (404), the
+`allow-out-ai` rule or the private DNS zone (no connection), or a model that cannot take a PDF or an image. Exit
+code 2 means nothing is configured yet. With managed identity, set `INV_STUDIO_AZURE_AUTH=managed_identity`
+instead of the key and run the check where that identity can get a token.
+
+Run from a laptop or Cloud Shell, the check proves the endpoint, the key and the deployment, not the app's own
+network route. Once the revision runs with AI on, read `samples/invoice-scan.png` in the app with Azure AI Foundry
+as the reader: that proves the NSG rule and the private DNS as well.
+
+The endpoint must be the Foundry resource itself. A Citadel gateway address (`*.azure-api.net`) is refused by
+the app's allow-list today, and while `INV_STUDIO_AZURE_ENDPOINT` holds a refused value every page fails to load
+(`/api/state` answers 400). The check reports both before anything is deployed.
+
 ## 8. Go live
 
 Only after the revision has been tested on its own address, and only once §5a's `check` has printed

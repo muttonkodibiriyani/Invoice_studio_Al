@@ -139,26 +139,30 @@ async function main() {
     return;
   }
   if (scenario === "review-prompts") {
-    // Fixtures of the agreed payloads: rules.coverage (coverage gate), lookup_trace per Item cell (not-found
-    // evidence) and a held location type with a blank location number (location type). One prompt per problem,
-    // the evidence only behind Details, and Update item master calls the refresh route.
+    // The real payloads: rules.coverage (#604a), Item cell lookup_trace (#23, rules_view) and the rules_view header
+    // fields location_type / location (#27), held when value is null. One prompt per problem, the evidence only
+    // behind Details, and Update item master posts the refresh then polls it until done (#28).
     vm.runInContext(fs.readFileSync(script, "utf8"), context);
-    const trace = { printed: "ABC-12", columns: ["SUPPLIER ITEM", "UPC"], supplier: "S100", master_version: "v7",
-      rows: [{ item: "1002345", description: "Tea 50g" }, { item: "1002346", description: "Tea 100g" }], rows_total: 5, fix: null };
+    const trace = { state: "Ambiguous", rule: "ALG-016", reason: "VPN matches more than one item",
+      printed: { barcode: [], vpn: ["ABC-12"], description: "Tea" },
+      searched: { columns: ["VPN"], supplier_sites: ["S100"] }, item_master_version: "v7",
+      rows: ["1002345", "1002346"], rows_total: 2, manual_fix: null };
     const ok = (value) => ({ value, evidence: [{ kind: "table", source: "item master", reference: "row 4" }] });
     const job = { id: "job-1", status: "review", validation: { source: "fine_rules" }, rules: {
       item_lines: { resolved: 8, total: 10, rate: 0.8 },
       coverage: { matched: 9, total: 10, pct: "90.00", tier: "Second fallback", export: "after_fill", low: true, prompt: "P-COV",
         missing: [{ line: 2, filled: false }] },
       fields: {
-        location_type: { label: "Location type", value: null, reason: "Held", original: "Depot", evidence: [] },
-        location: { label: "Location", value: null, reason: "Location number is blank in the item master", evidence: [] },
+        location_type: { label: "Location type", target: "Location Type", value: null, evidence: [], flagged: true, reason: "Not found" },
+        location: { label: "Location", target: "Location", value: null, evidence: [], flagged: true, reason: "Not found" },
       },
       lines: [
         { line: 1, cells: { Item: ok("1000001") } },
-        { line: 2, cells: { Item: { value: null, reason: "Ambiguous", evidence: [], lookup_trace: trace } } },
-        { line: 3, cells: { Item: { value: null, reason: "Not in item master", evidence: [],
-          lookup_trace: { printed: "ZZ-9", columns: ["SUPPLIER ITEM"], supplier: "S100", master_version: "v7", rows: [], rows_total: 0 } } } },
+        { line: 2, cells: { Item: { value: null, evidence: [], flagged: true, reason: "Not found", lookup_trace: trace } } },
+        { line: 3, cells: { Item: { value: null, evidence: [], flagged: true, reason: "Not found", lookup_trace: {
+          state: "Not in item master", rule: "R-003", reason: "No item master row", printed: { barcode: ["00012345678936"],
+            vpn: ["ZZ-9"], description: "Widget" }, searched: { columns: ["BARCODE", "VPN", "ITEM_DESC"], supplier_sites: ["S100"] },
+          item_master_version: "v7", rows: [], rows_total: 0, manual_fix: null } } } },
       ] } };
     context.job = job;
     vm.runInContext("app.currentJob = job; renderRulesResult(job)", context);
@@ -168,17 +172,18 @@ async function main() {
     const problems = node("#rules-problems");
     assert(!problems.hidden);
     assert.deepEqual(problems.children.map((li) => li.children[0].textContent), [
-      "Location type “Depot” · Store or Warehouse?", "Location number is blank in the item master · add it",
+      "Location type · Store or Warehouse?", "Location number is blank in the item master · add it",
       "Line 2 “ABC-12” · Ambiguous · is it 1002345?", "Line 3 “ZZ-9” · Not in item master"]);
     const walk = (el) => [el, ...(el.children || []).flatMap(walk)];
     const find = (root, pred) => walk(root).find(pred);
     const button = (root, label) => find(root, (el) => el.tagName === "BUTTON" && el.textContent === label);
     const [typeLi, locationLi, ambiguous, missing] = problems.children;
     // Location type: the pick writes the header entry, which collectEntries sends.
-    await button(typeLi, "Warehouse(W)").emit("click");
+    assert(button(typeLi, "Store (S)"));
+    await button(typeLi, "Warehouse (W)").emit("click");
     const typeEntry = find(node("#rules-fields"), (el) => el.dataset?.name === "location_type");
-    assert.equal(typeEntry.value, "Warehouse(W)");
-    assert.equal(button(typeLi, "Warehouse(W)").attributes["aria-pressed"], "true");
+    assert.equal(typeEntry.value, "Warehouse (W)");
+    assert.equal(button(typeLi, "Warehouse (W)").attributes["aria-pressed"], "true");
     await button(locationLi, "Add location").emit("click");
     assert(find(node("#rules-fields"), (el) => el.dataset?.name === "location").focused, "Add location focuses the location entry");
     // Line 2: Yes takes the first row; Pick another offers the other rows; the trace stays behind Details.
@@ -194,8 +199,16 @@ async function main() {
     const details = find(ambiguous, (el) => el.tagName === "DETAILS");
     assert.equal(details.children[0].textContent, "Details");
     const facts = details.children[1].children.map((el) => el.textContent);
-    assert.deepEqual(facts, ["Printed on invoice", "ABC-12", "Columns searched", "SUPPLIER ITEM, UPC", "Supplier", "S100",
-      "Item master version", "v7", "Rows returned", "2 of 5"]);
+    assert.deepEqual(facts, ["Rule", "ALG-016 · VPN matches more than one item", "Printed VPN", "ABC-12",
+      "Printed description", "Tea", "Columns searched", "VPN", "Supplier sites", "S100", "Item master version", "v7",
+      "Rows returned", "1002345, 1002346"]);
+    trace.rows = ["1", "2", "3", "4", "5"]; trace.rows_total = 9; trace.manual_fix = { kind: "entered", value: "1002346" };
+    const more = vm.runInContext("lookupDetails", context)(trace).children[1].children.map((el) => el.textContent);
+    assert.deepEqual(more.slice(-4), ["Rows returned", "1, 2, 3, 4, 5 (5 of 9)", "Manual fix", "entered: 1002346"]);
+    // lookup_trace.printed comes from the invoice: it is shown as text only (the doubles throw on innerHTML).
+    const hostile = '<img src=x onerror=alert(1)>';
+    const shown = vm.runInContext("lookupDetails", context)({ printed: { vpn: [hostile], barcode: [], description: hostile } });
+    assert(shown.children[1].children.filter((el) => el.textContent === hostile).length === 2);
     // Line 3: no suggestion, so no Yes; Not in master points at the item master.
     assert(!button(missing, "Yes"));
     await button(missing, "Not in master").emit("click");
@@ -203,15 +216,27 @@ async function main() {
     // The table no longer carries its own Item entry for prompted lines (one input per line).
     const tableEntries = walk(node("#rules-lines")).filter((el) => el.className === "rules-entry" && el.dataset.name === "Item");
     assert.equal(tableEntries.length, 0);
-    // Update item master posts to the refresh route and reloads the invoice.
+    // Update item master: POST (202 {id, reason, status}), poll GET until done, then show counts and line changes.
     const requests = [];
+    const polls = [{ id: "r1", reason: "manual", status: "running" }, { id: "r1", reason: "manual", status: "done",
+      counts: { rematched: 2, exported_skipped: 1, not_ready_skipped: 0, failed: 0 },
+      invoices: [{ job_id: "job-1", filename: "a.pdf", number: "INV-1", lines: { newly_matched: [{ line: 3, item: "100000001" }],
+        lost: [{ line: 4, item: "A" }], changed: [{ line: 5, from: "B", to: "B2" }] } }] }];
     context.fetch = async (path, init = {}) => {
-      requests.push([path, init.method || "GET"]);
-      return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => job };
+      const method = init.method || "GET";
+      requests.push([path, method]);
+      const body = path !== "/api/item-master/refresh" ? job
+        : method === "POST" ? { id: "r1", reason: "manual", status: "queued" } : polls.shift();
+      return { ok: true, status: method === "POST" ? 202 : 200, headers: { get: () => "application/json" }, json: async () => body };
     };
     vm.runInContext("app.state = app.state || {}; app.state.jobs = app.state.jobs || []", context);
     await vm.runInContext("updateItemMaster()", context).catch(() => {});
-    assert.deepEqual(requests[0], ["/api/item-master/refresh", "POST"]);
+    assert.deepEqual(requests.slice(0, 3), [["/api/item-master/refresh", "POST"], ["/api/item-master/refresh", "GET"],
+      ["/api/item-master/refresh", "GET"]]);
+    const refreshed = node("#refresh-result");
+    assert(!refreshed.hidden);
+    assert.equal(refreshed.children[0].textContent, "Item master updated: 2 re-matched · 1 exported skipped · 0 not ready · 0 failed.");
+    assert.equal(refreshed.children[1].children[0].textContent, "INV-1: line 3 now 100000001; line 4 lost A; line 5 B → B2");
     // Full coverage: banner says ready, no prompts, no button.
     job.rules.coverage = { matched: 3, total: 3, pct: "100.00", tier: "Target", export: "yes", low: false, prompt: null, missing: [] };
     job.rules.fields = {};

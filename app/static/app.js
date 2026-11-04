@@ -54,19 +54,26 @@ function rulesEntry(cell, label, scope, name, line) {
 
 // Item cells the rules could not settle get one confirm prompt per line above the table; the evidence stays behind Details.
 const ITEM_PROBLEMS = new Set(["Not in item master", "Ambiguous", "Conflict"]);
-// shortcut: placeholder route until the item master refresh task (01a1a889-73d6) posts its endpoint name.
 const ITEM_MASTER_REFRESH = "/api/item-master/refresh";
-const LOCATION_TYPES = ["Store(S)", "Warehouse(W)"];
+const REFRESH_POLL_MS = 1500;
+const REFRESH_POLLS = 200;
+const LOCATION_TYPES = ["Store (S)", "Warehouse (W)"];
 
 function itemProblem(line, coverage) {
   const cell = line.cells?.Item;
   if (enteredByReviewer(cell)) return null;
-  if (ITEM_PROBLEMS.has(cell?.reason)) return cell;
+  if (cell?.lookup_trace || ITEM_PROBLEMS.has(cell?.reason)) return cell;
   return (coverage?.missing || []).some((gap) => gap.line === line.line && !gap.filled) ? cell || {} : null;
 }
 
+// lookup_trace.rows are candidate ITEM_PARENT ids, at most five of rows_total.
 function traceCandidates(trace) {
-  return [...new Set((trace?.rows || []).map((row) => row.item ?? row.Item ?? row.value).filter(Boolean).map(String))];
+  return [...new Set((trace?.rows || []).filter(Boolean).map(String))];
+}
+
+function tracePrinted(trace) {
+  const printed = trace?.printed || {};
+  return printed.vpn?.[0] || printed.barcode?.[0] || printed.description || "";
 }
 
 // The not-in-item-master trace (lookup_trace): what was printed, where it was searched and the rows returned.
@@ -77,19 +84,20 @@ function lookupDetails(trace) {
   const add = (label, value) => {
     if (value !== undefined && value !== null && value !== "") list.append(make("dt", "", label), make("dd", "", String(value)));
   };
-  const rows = trace.rows || [];
-  add("Printed on invoice", trace.printed);
-  add("Columns searched", (trace.columns || []).join(", "));
-  add("Supplier", trace.supplier);
-  add("Item master version", trace.master_version);
-  add("Rows returned", trace.rows_total > rows.length ? `${rows.length} of ${trace.rows_total}` : rows.length);
-  add("Manual fix", trace.fix);
+  const printed = trace.printed || {};
+  const searched = trace.searched || {};
+  const rows = traceCandidates(trace);
+  add("Rule", [trace.rule, trace.reason].filter(Boolean).join(" · "));
+  add("Printed barcode", (printed.barcode || []).join(", "));
+  add("Printed VPN", (printed.vpn || []).join(", "));
+  add("Printed description", printed.description);
+  add("Columns searched", (searched.columns || []).join(", "));
+  add("Supplier sites", (searched.supplier_sites || []).join(", "));
+  add("Item master version", trace.item_master_version);
+  add("Rows returned", trace.rows_total > rows.length ? `${rows.join(", ")} (${rows.length} of ${trace.rows_total})`
+    : rows.join(", ") || "none");
+  if (trace.manual_fix) add("Manual fix", `${trace.manual_fix.kind}: ${trace.manual_fix.value}`);
   details.append(list);
-  if (rows.length) {
-    const found = make("ul");
-    rows.forEach((row) => found.append(make("li", "", Object.entries(row).map(([key, value]) => `${key}: ${value}`).join(" · "))));
-    details.append(found);
-  }
   return details;
 }
 
@@ -113,7 +121,8 @@ function itemPrompt(line, cell, locked) {
   const trace = cell.lookup_trace || {};
   const candidates = traceCandidates(trace);
   const suggestion = cell.value ?? candidates[0] ?? null;
-  li.append(make("span", "", `Line ${line.line}${trace.printed ? ` “${trace.printed}”` : ""} · ${cell.reason || "Not matched"}`
+  const printed = tracePrinted(trace);
+  li.append(make("span", "", `Line ${line.line}${printed ? ` “${printed}”` : ""} · ${trace.state || cell.reason || "Not matched"}`
     + (suggestion ? ` · is it ${suggestion}?` : "")));
   const entry = rulesEntry(cell, "Item", "line", "Item", line.line);
   entry.hidden = true;
@@ -146,7 +155,7 @@ function locationPrompts(rules, entries, locked) {
   const type = rules.fields?.location_type;
   if (type && (type.value === null || type.value === undefined) && entries.location_type) {
     const li = make("li", "rules-problem");
-    li.append(make("span", "", `Location type${type.original ? ` “${type.original}”` : ""} · Store or Warehouse?`));
+    li.append(make("span", "", "Location type · Store or Warehouse?"));
     const answers = make("span", "rules-answers");
     LOCATION_TYPES.forEach((value) => answers.append(answerButton(value, () => { entries.location_type.value = value; }, locked)));
     li.append(answers);
@@ -179,16 +188,48 @@ function renderCoverage(job) {
   $("#coverage-text").textContent = `${coverage.low ? "Low coverage" : "Coverage"} ${share} · ${coverage.tier} · ${next}`;
   $("#coverage-banner").className = `coverage-banner coverage-${coverage.export}`;
   const update = $("#update-item-master");
-  update.hidden = !(coverage.missing || []).length;
+  // POST /api/item-master/refresh is admin only.
+  update.hidden = !(coverage.missing || []).length || (app.authMode === "cloud" && app.sessionUser?.role !== "admin");
   update.disabled = job.status === "exported";
+}
+
+function refreshLines(lines) {
+  const parts = [
+    ...(lines.newly_matched || []).map((l) => `line ${l.line} now ${l.item}`),
+    ...(lines.lost || []).map((l) => `line ${l.line} lost ${l.item}`),
+    ...(lines.changed || []).map((l) => `line ${l.line} ${l.from} → ${l.to}`),
+  ];
+  return parts.join("; ");
+}
+
+// The refresh result (GET /api/item-master/refresh): counts, then per invoice the lines newly matched, lost or changed.
+function renderRefresh(state) {
+  const box = $("#refresh-result");
+  const counts = state.counts || {};
+  const head = state.status === "failed" ? `Item master update failed${state.error ? ` (${state.error})` : ""}.`
+    : `Item master updated: ${counts.rematched || 0} re-matched · ${counts.exported_skipped || 0} exported skipped`
+      + ` · ${counts.not_ready_skipped || 0} not ready · ${counts.failed || 0} failed.`;
+  const list = make("ul");
+  (state.invoices || []).forEach((invoice) => list.append(make("li", "",
+    `${invoice.number || invoice.filename || invoice.job_id}: ${refreshLines(invoice.lines || {})}`)));
+  box.replaceChildren(make("p", "", head), ...(list.children.length ? [list] : []));
+  box.hidden = false;
 }
 
 async function updateItemMaster() {
   const button = $("#update-item-master");
   button.disabled = true;
   try {
-    await api(ITEM_MASTER_REFRESH, { method: "POST" });
-    notify("Item master updated. The rules are re-running on open invoices.", "success");
+    const started = await api(ITEM_MASTER_REFRESH, { method: "POST" });
+    notify("Updating the item master: open invoices are being matched again.", "success");
+    let state = started;
+    for (let poll = 0; poll < REFRESH_POLLS; poll += 1) {
+      state = await api(ITEM_MASTER_REFRESH);
+      if (state?.id !== started.id || ["done", "failed"].includes(state?.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, REFRESH_POLL_MS));
+    }
+    if (!["done", "failed"].includes(state?.status)) throw new Error("The item master update is still running. Check again shortly.");
+    renderRefresh(state);
     if (app.currentJob) await selectJob(app.currentJob.id);
   } catch (error) {
     notify(error.message, "error", 7000);

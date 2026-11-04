@@ -944,4 +944,6 @@ dialog:has(.fine-rules-dialog) { width: min(1180px, calc(100vw - 28px)); }
 .lookup-trace dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 4px 0; }
 .lookup-trace dt { font-weight: 700; }
 .lookup-trace dd { margin: 0; overflow-wrap: anywhere; }
-.lookup-trace ul { margin: 0; padding-left: 16px; }
+.refresh-result { margin: 0 0 8px; font-size: 11px; }
+.refresh-result p { margin: 0; font-weight: 700; }
+.refresh-result ul { margin: 2px 0 0; padding-left: 16px; }

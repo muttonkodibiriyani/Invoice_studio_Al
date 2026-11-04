@@ -1020,12 +1020,33 @@ def _site_names(source, site, rows):
     return names, rows
 
 
-def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_code=None):
+def offer_sites(run, source, offered, rows, sites, owner_site):
+    """S1.2: when the printed name is the Item Master supplier name of several sites and no SUPPLIER SITES row bridges
+    it, each of those ``offered`` sites is listed for the reviewer's pick. A pick among them becomes the only site;
+    any other pick is ignored, and said."""
+    if offered:
+        run.site_candidates = [
+            {"supplier_site": site, "rule": "SUP-003", "reason": f"{len(offered)} Item Master sites carry the printed "
+             "supplier name", "sites": [{"supplier_site": site, "site_name": " / ".join(sorted(names)),
+                                         "reference": _refs(site_rows)}]}
+            for site, (names, site_rows) in ((s, _site_names(source, s, rows)) for s in sorted(offered))]
+    if not owner_site:
+        return sites
+    if owner_site not in offered:
+        run.exception("Supplier Exception", "Owner supplier-site pick is not one of this run's candidates; ignored",
+                      OWNER_PICK, evidence=f"{len(offered)} candidates", owner="Supplier operations")
+        return sites
+    run.owner_pick = owner_site
+    return {owner_site}
+
+
+def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_code=None, owner_site=None):
     """SUP-001 / SUP-003, R-006 / ALG-002 / ALG-005: supplier site from the Item Master item-supplier relation.
 
     Returns (site, SUPPLIER_NAME, family). When several Active sites of one supplier family remain, the
     site is left open and ``family`` maps each site to its Item Master SUPPLIER_NAME; the accepted
-    POGRN order then picks it (owner form 01a10c4f, site_choice).
+    POGRN order then picks it (owner form 01a10c4f, site_choice). ``owner_site`` is the reviewer's pick when the
+    printed name alone gives several Item Master sites (S1.2).
     """
     by_name = []
     for candidate in candidates:
@@ -1059,6 +1080,10 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         sites = name_sites & item_sites
     else:
         sites = name_sites or item_sites or set()
+    owner_site = text(owner_site)
+    offered = name_sites if len(name_sites) > 1 and not families else set()
+    if offered or owner_site:
+        sites = offer_sites(run, source, offered, by_name, sites, owner_site)
     rows = [r for m in matches for r in source.items_by_parent(m["parent"] or "")] + by_name
     version = run.config.version
     if len(sites) == 1:
@@ -1066,10 +1091,12 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         names, site_rows = _site_names(source, site, rows)
         name = next(iter(names)) if len(names) == 1 else None
         bridged = site in family_sites
-        picked = bridged and run.owner_pick
+        picked = run.owner_pick if bridged or site == run.owner_pick else None
         run.trace("Supplier Site", site, OWNER_PICK if picked else "SUP-003",
                   "Item Master SUPPLIER" + (" via SUPPLIER SITES" if bridged else "") +
-                  (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked else ""),
+                  (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked and bridged else
+                   f" picked by the owner among the {len(name_sites)} sites of the printed supplier name" if picked
+                   else ""),
                   reference=", ".join(x for x in (_refs(site_rows), f"{site}|{version}" if bridged else "",
                                                   market_ref if bridged else "") if x),
                   confidence="Owner entry" if picked else "Exact", evidence_kind=EVIDENCE_OWNER_ENTRY if picked else None)
@@ -1091,6 +1118,10 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     elif not sites:
         run.exception("Supplier Exception", "Supplier not found in the Item Master or SUPPLIER SITES by name or "
                       "matched items", "R-006", evidence="; ".join(c["name"] for c in candidates)[:500],
+                      owner="Supplier operations")
+    elif offered:
+        run.exception("Supplier Exception", "The printed supplier name is on several Item Master supplier sites; "
+                      "pick the site to search its items", "SUP-003", evidence=", ".join(sorted(sites)),
                       owner="Supplier operations")
     else:
         run.exception("Supplier Exception", "Several Item Master supplier sites remain; resolve with market/entity",
@@ -1752,9 +1783,10 @@ def item_resolution(run, matches, group):
 
 
 def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=(), page_count=None,
-                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False):
+                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None):
     """Run the whole rule chain for one invoice (ALG-028: every invoice, every rule). ``owner_supplier_code`` is
-    the owner's pick among the R-006 candidates of an earlier run (decision 41)."""
+    the owner's pick among the R-006 candidates of an earlier run (decision 41); ``owner_supplier_site`` the
+    reviewer's pick among the Item Master sites of the printed supplier name (S1.2)."""
     config = config or RulesConfig()
     # The probe pass stays exact; only the recorded pass may correct an OCR I/1, O/0 read (decision 44).
     run = Run(invoice, config, filename, ocr_lines)
@@ -1791,11 +1823,11 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     probe = Run(invoice, config, filename)
     deliver_to = deliver_to_location(invoice, scan, config)
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
-                                                  owner_supplier_code)
+                                                  owner_supplier_code, owner_supplier_site)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
-                                                          owner_supplier_code)
+                                                          owner_supplier_code, owner_supplier_site)
     if supplier_site:
         # Re-check items under the resolved supplier where the first pass was unconstrained.
         for m in matches:
@@ -2040,7 +2072,8 @@ def run_batch(entries, source, config=None):
         try:
             result = run_invoice(entry["invoice"], source, config, entry.get("filename", ""), entry.get("text", ""),
                                  entry.get("boxes", ()), entry.get("page_count"), transaction, seen,
-                                 entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False))
+                                 entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False),
+                                 owner_supplier_site=entry.get("owner_supplier_site"))
         except Exception as error:  # isolated per invoice; the error is the evidence
             result = {"status": "Blocked", "filename": entry.get("filename", ""), "transaction": transaction,
                       "header": {"Document": text(entry["invoice"].number), "Validation Status": "Blocked"},

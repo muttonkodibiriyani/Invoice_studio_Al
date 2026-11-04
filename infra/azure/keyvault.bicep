@@ -11,6 +11,12 @@ param principalId string
 @description('Log Analytics workspace that receives the vault audit log: every secret read, write and access refusal.')
 param logWorkspaceId string
 param writeSecrets bool = true
+@description('Enabled until the private endpoint is proven, then Disabled (scripts/azure_lockdown.py): the vault is then reachable only through its private endpoint, and ARM template deployments.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
 param enablePurgeProtection bool = true
 @minValue(7)
 @maxValue(90)
@@ -38,10 +44,16 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableSoftDelete: true
     softDeleteRetentionInDays: softDeleteRetentionInDays
     enablePurgeProtection: enablePurgeProtection ? true : null
-    // Public, behind Entra ID and RBAC only (security review L4, deferred): Container Apps resolves the
-    // app's secret references from outside the network, so closing this needs a private endpoint and
-    // a check that secret references still resolve. docs/AZURE.md §13 has the cost.
-    publicNetworkAccess: 'Enabled'
+    // RBAC only. A private endpoint (privatelink.bicep) is always created; publicNetworkAccess Disabled
+    // (InfoSec LLD §9) then closes the public one. scripts/azure_lockdown.py does it after the Cloud Shell steps
+    // that read the vault from outside, restarts the app and proves its secret references still resolve.
+    // The template writes secrets through ARM, which a closed vault still accepts (enabledForTemplateDeployment).
+    publicNetworkAccess: publicNetworkAccess
+    enabledForTemplateDeployment: true
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: publicNetworkAccess == 'Enabled' ? 'Allow' : 'Deny'
+    }
   }
 }
 
@@ -100,3 +112,4 @@ output vaultKeySecretUri string = '${vault.properties.vaultUri}secrets/inv-studi
 output foundrySecretUri string = '${vault.properties.vaultUri}secrets/inv-studio-foundry-key'
 output vaultName string = vault.name
 output vaultUri string = vault.properties.vaultUri
+output vaultId string = vault.id

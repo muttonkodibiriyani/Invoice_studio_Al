@@ -12,6 +12,12 @@ param previousVersionDays int = 7
 param principalId string
 @description('Log Analytics workspace that receives the blob audit log: every read, write and delete.')
 param logWorkspaceId string
+@description('Enabled until the private endpoint is proven, then Disabled (scripts/azure_lockdown.py): Blob is then reachable only through its private endpoint in the spoke.')
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param publicNetworkAccess string = 'Enabled'
 
 resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: accountName
@@ -27,12 +33,13 @@ resource account 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowSharedKeyAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
-    // Public, behind Entra ID and RBAC only (security review L4, deferred): no shared keys, no anonymous
-    // access. A private endpoint for blob closes it; docs/AZURE.md §13 has the cost.
-    publicNetworkAccess: 'Enabled'
+    // No shared keys, no anonymous access, Entra ID and RBAC only. A private endpoint (privatelink.bicep) is
+    // always created; publicNetworkAccess Disabled (InfoSec LLD §9, scripts/azure_lockdown.py) then closes the
+    // public one. It stays Enabled until the lockdown, because Cloud Shell steps before it run from outside.
+    publicNetworkAccess: publicNetworkAccess
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      defaultAction: publicNetworkAccess == 'Enabled' ? 'Allow' : 'Deny'
     }
   }
 }
@@ -139,3 +146,4 @@ resource audit 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
 output storageAccountName string = account.name
 output blobContainerName string = container.name
 output blobEndpoint string = account.properties.primaryEndpoints.blob
+output storageAccountId string = account.id

@@ -34,6 +34,16 @@ param entraClientId string
 @description('Group display names for the Users screen. Display only.')
 param entraAdminGroupName string = ''
 param entraMemberGroupName string = ''
+@description('How the app authenticates to Azure AI Foundry: key (the api-key secret in Key Vault) or managed_identity (an Entra token for the app identity, which needs the Cognitive Services OpenAI User role on the Foundry resource; AZURE.md §7).')
+@allowed([
+  'key'
+  'managed_identity'
+])
+param foundryAuthMode string = 'key'
+@description('AI providers the app may call, comma-separated. azure keeps every AI call on Azure AI Foundry (InfoSec LLD §9); the NSG blocks the other hosts too.')
+param aiProviders string = 'azure'
+@description('Client address ranges allowed to reach the app, e.g. the corporate egress IPs or the hub entry point. Empty: no restriction at the ingress (the internal environment or a WAF in front does it).')
+param ingressAllowedCidrs array = []
 
 var isPlaceholder = empty(containerImage)
 var image = isPlaceholder ? 'mcr.microsoft.com/k8se/quickstart:latest' : containerImage
@@ -154,6 +164,16 @@ var baseEnv = [
     name: 'INV_STUDIO_AZURE_API_KEY'
     secretRef: 'foundry-key'
   }
+  {
+    // key or managed_identity: with managed_identity the api-key above is ignored and never sent.
+    name: 'INV_STUDIO_AZURE_AUTH'
+    value: foundryAuthMode
+  }
+  {
+    // The only AI providers an admin may connect or a batch may use. The cloud build refuses the rest.
+    name: 'INV_STUDIO_AI_PROVIDERS'
+    value: aiProviders
+  }
 ]
 
 var endpointEnv = empty(foundryEndpoint) ? [] : [{ name: 'INV_STUDIO_AZURE_ENDPOINT', value: foundryEndpoint }]
@@ -211,6 +231,13 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
         targetPort: targetPort
         transport: 'auto'
         allowInsecure: false
+        // Empty allows every client; a list allows only those ranges and refuses the rest with 403 at the ingress.
+        ipSecurityRestrictions: [for (cidr, i) in ingressAllowedCidrs: {
+          name: 'allowed-${i}'
+          description: 'Client range allowed to reach Invoice Studio'
+          ipAddressRange: cidr
+          action: 'Allow'
+        }]
         traffic: [
           {
             latestRevision: true
@@ -266,6 +293,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
 
 output appUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
 output appName string = app.name
+output appId string = app.id
 output appEnvironmentName string = environment.name
 output appAllowedOrigins string = originList
 output appEnvironmentStaticIp string = environment.properties.staticIp

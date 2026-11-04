@@ -120,7 +120,7 @@ def test_modules_are_called_with_the_parameters_they_declare():
         required = {name for name, has_default in declared.items() if not has_default}
         assert not required - passed, f"{symbol} is missing required parameters: {sorted(required - passed)}"
         seen += 1
-    assert seen == 8
+    assert seen == 10
 
 
 def test_module_outputs_exist():

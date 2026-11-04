@@ -32,6 +32,7 @@ TESTED = "rules_assistant_tested"  # the endpoint whose connection test last pas
 TRANSPORT = None  # test seam: an httpx transport standing in for Foundry
 MAX_ANSWER = 200_000  # bytes of a Foundry response read before it is refused
 MAX_CANDIDATES = 10  # item master rows sent to Foundry for one line
+MAX_VALUES = 20  # VPN or barcode values taken from one line, each one item master search
 SEARCH_LIMIT = 25
 CALLS_PER_MINUTE = 20  # per user, across the assistant's POST routes
 # The item master columns a line's facts carry to Foundry; the rest of a row stays on the server.
@@ -108,9 +109,9 @@ def schema(model):
 def engine_facts(line, lookup):
     """What the matcher sees for one line. The one call into the rules engine: point it at app.item_rules when
     that lands, and the assistant follows the workbook's lookup order with no other change."""
-    vpns, barcodes = vpn_candidates(line), barcode_candidates(line)
+    vpns, barcodes = vpn_candidates(line)[:MAX_VALUES], barcode_candidates(line)[:MAX_VALUES]
     candidates = {}
-    for value in [c["value"] for c in vpns + barcodes] + [line.description]:
+    for value in [c["value"] for c in vpns + barcodes][:MAX_VALUES] + [line.description]:
         if len(value.strip()) < 2 or len(candidates) >= MAX_CANDIDATES:
             continue
         try:

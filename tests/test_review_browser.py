@@ -15,7 +15,7 @@ NODE = shutil.which("node")
 
 @pytest.mark.skipif(NODE is None, reason="Node is needed for the offline browser script checks")
 @pytest.mark.parametrize("scenario", [
-    "sign-in", "redirect-error", "no-role", "users", "batch-upload", "target-chip", "reader-marks", "bundle",
+    "sign-in", "redirect-error", "no-role", "users", "batch-upload", "target-chip", "reader-marks", "review-prompts", "bundle",
 ])
 def test_browser_scripts(scenario):
     script = "entra-auth.bundle.js" if scenario == "bundle" else "app.js"
@@ -83,3 +83,21 @@ def test_the_sign_in_page_works_with_the_no_inline_csp():
         assert elements[element_id]["role"] == "status"
         assert elements[element_id]["aria-live"] == "polite"
     assert elements["microsoft-sign-in"]["type"] == "button"
+
+
+def test_the_review_page_has_the_coverage_banner_and_prompt_list():
+    elements = {}
+
+    class Ids(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if "id" in attributes:
+                elements[attributes["id"]] = (tag, attributes)
+
+    Ids().feed((ROOT / "app/static/index.html").read_text())
+    tag, banner = elements["coverage-banner"]
+    assert banner["role"] == "status" and banner["aria-live"] == "polite" and "hidden" in banner
+    tag, update = elements["update-item-master"]
+    assert tag == "button" and update["type"] == "button"
+    tag, problems = elements["rules-problems"]
+    assert tag == "ul" and problems["aria-label"] == "Lines to confirm"

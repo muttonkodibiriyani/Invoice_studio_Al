@@ -17,6 +17,7 @@ async function main() {
       this.dataset = {};
       this.listeners = {};
       this.attributes = {};
+      this.classList = { toggle: (name, on) => { this.className = on ? `${this.className} ${name}` : this.className; } };
     }
     set innerHTML(_) { throw Error("unsafe HTML sink"); }
     set outerHTML(_) { throw Error("unsafe HTML sink"); }
@@ -135,6 +136,93 @@ async function main() {
     assert.deepEqual([...stages({ filename: "a.png", options: { engine: "docling" } })], ["docling"]);
     assert.deepEqual([...stages({ filename: "a.pdf", options: { engine: "auto", ai_fallback: true, provider: "openai" } })],
       ["invoice2data", "paddleocr", "docling", "openai"]);
+    return;
+  }
+  if (scenario === "review-prompts") {
+    // Fixtures of the agreed payloads: rules.coverage (coverage gate), lookup_trace per Item cell (not-found
+    // evidence) and a held location type with a blank location number (location type). One prompt per problem,
+    // the evidence only behind Details, and Update item master calls the refresh route.
+    vm.runInContext(fs.readFileSync(script, "utf8"), context);
+    const trace = { printed: "ABC-12", columns: ["SUPPLIER ITEM", "UPC"], supplier: "S100", master_version: "v7",
+      rows: [{ item: "1002345", description: "Tea 50g" }, { item: "1002346", description: "Tea 100g" }], rows_total: 5, fix: null };
+    const ok = (value) => ({ value, evidence: [{ kind: "table", source: "item master", reference: "row 4" }] });
+    const job = { id: "job-1", status: "review", validation: { source: "fine_rules" }, rules: {
+      item_lines: { resolved: 8, total: 10, rate: 0.8 },
+      coverage: { matched: 9, total: 10, pct: "90.00", tier: "Second fallback", export: "after_fill", low: true, prompt: "P-COV",
+        missing: [{ line: 2, filled: false }] },
+      fields: {
+        location_type: { label: "Location type", value: null, reason: "Held", original: "Depot", evidence: [] },
+        location: { label: "Location", value: null, reason: "Location number is blank in the item master", evidence: [] },
+      },
+      lines: [
+        { line: 1, cells: { Item: ok("1000001") } },
+        { line: 2, cells: { Item: { value: null, reason: "Ambiguous", evidence: [], lookup_trace: trace } } },
+        { line: 3, cells: { Item: { value: null, reason: "Not in item master", evidence: [],
+          lookup_trace: { printed: "ZZ-9", columns: ["SUPPLIER ITEM"], supplier: "S100", master_version: "v7", rows: [], rows_total: 0 } } } },
+      ] } };
+    context.job = job;
+    vm.runInContext("app.currentJob = job; renderRulesResult(job)", context);
+    assert(!node("#coverage-banner").hidden && node("#rules-item-rate").hidden, "coverage replaces the old item rate");
+    assert.equal(node("#coverage-text").textContent, "Low coverage 9 of 10 lines (90%) · Second fallback · fill or confirm the lines below before export");
+    assert(!node("#update-item-master").hidden);
+    const problems = node("#rules-problems");
+    assert(!problems.hidden);
+    assert.deepEqual(problems.children.map((li) => li.children[0].textContent), [
+      "Location type “Depot” · Store or Warehouse?", "Location number is blank in the item master · add it",
+      "Line 2 “ABC-12” · Ambiguous · is it 1002345?", "Line 3 “ZZ-9” · Not in item master"]);
+    const walk = (el) => [el, ...(el.children || []).flatMap(walk)];
+    const find = (root, pred) => walk(root).find(pred);
+    const button = (root, label) => find(root, (el) => el.tagName === "BUTTON" && el.textContent === label);
+    const [typeLi, locationLi, ambiguous, missing] = problems.children;
+    // Location type: the pick writes the header entry, which collectEntries sends.
+    await button(typeLi, "Warehouse(W)").emit("click");
+    const typeEntry = find(node("#rules-fields"), (el) => el.dataset?.name === "location_type");
+    assert.equal(typeEntry.value, "Warehouse(W)");
+    assert.equal(button(typeLi, "Warehouse(W)").attributes["aria-pressed"], "true");
+    await button(locationLi, "Add location").emit("click");
+    assert(find(node("#rules-fields"), (el) => el.dataset?.name === "location").focused, "Add location focuses the location entry");
+    // Line 2: Yes takes the first row; Pick another offers the other rows; the trace stays behind Details.
+    const entry = find(ambiguous, (el) => el.className === "rules-entry");
+    assert(entry.hidden && entry.attributes["aria-label"] === "Item line 2, entered by reviewer");
+    await button(ambiguous, "Yes").emit("click");
+    assert(entry.value === "1002345" && !entry.hidden);
+    await button(ambiguous, "Pick another").emit("click");
+    const pick = find(ambiguous, (el) => el.tagName === "SELECT");
+    assert(!pick.hidden && pick.focused && pick.children.length === 3);
+    pick.value = "1002346"; await pick.emit("change");
+    assert.equal(entry.value, "1002346");
+    const details = find(ambiguous, (el) => el.tagName === "DETAILS");
+    assert.equal(details.children[0].textContent, "Details");
+    const facts = details.children[1].children.map((el) => el.textContent);
+    assert.deepEqual(facts, ["Printed on invoice", "ABC-12", "Columns searched", "SUPPLIER ITEM, UPC", "Supplier", "S100",
+      "Item master version", "v7", "Rows returned", "2 of 5"]);
+    // Line 3: no suggestion, so no Yes; Not in master points at the item master.
+    assert(!button(missing, "Yes"));
+    await button(missing, "Not in master").emit("click");
+    assert(!find(missing, (el) => el.textContent === "Add it to the item master, then Update item master.").hidden);
+    // The table no longer carries its own Item entry for prompted lines (one input per line).
+    const tableEntries = walk(node("#rules-lines")).filter((el) => el.className === "rules-entry" && el.dataset.name === "Item");
+    assert.equal(tableEntries.length, 0);
+    // Update item master posts to the refresh route and reloads the invoice.
+    const requests = [];
+    context.fetch = async (path, init = {}) => {
+      requests.push([path, init.method || "GET"]);
+      return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => job };
+    };
+    vm.runInContext("app.state = app.state || {}; app.state.jobs = app.state.jobs || []", context);
+    await vm.runInContext("updateItemMaster()", context).catch(() => {});
+    assert.deepEqual(requests[0], ["/api/item-master/refresh", "POST"]);
+    // Full coverage: banner says ready, no prompts, no button.
+    job.rules.coverage = { matched: 3, total: 3, pct: "100.00", tier: "Target", export: "yes", low: false, prompt: null, missing: [] };
+    job.rules.fields = {};
+    job.rules.lines = [{ line: 1, cells: { Item: ok("1") } }];
+    vm.runInContext("renderRulesResult(job)", context);
+    assert.equal(node("#coverage-text").textContent, "Coverage 3 of 3 lines (100%) · Target · ready to export");
+    assert(node("#update-item-master").hidden && node("#rules-problems").hidden);
+    // No coverage payload yet (older server): the old item rate line shows, no banner.
+    delete job.rules.coverage;
+    vm.runInContext("renderRulesResult(job)", context);
+    assert(node("#coverage-banner").hidden && !node("#rules-item-rate").hidden);
     return;
   }
   if (scenario === "bundle") {

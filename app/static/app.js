@@ -52,13 +52,158 @@ function rulesEntry(cell, label, scope, name, line) {
   return input;
 }
 
-function rulesCell(cell, name, line) {
+// Item cells the rules could not settle get one confirm prompt per line above the table; the evidence stays behind Details.
+const ITEM_PROBLEMS = new Set(["Not in item master", "Ambiguous", "Conflict"]);
+// shortcut: placeholder route until the item master refresh task (01a1a889-73d6) posts its endpoint name.
+const ITEM_MASTER_REFRESH = "/api/item-master/refresh";
+const LOCATION_TYPES = ["Store(S)", "Warehouse(W)"];
+
+function itemProblem(line, coverage) {
+  const cell = line.cells?.Item;
+  if (enteredByReviewer(cell)) return null;
+  if (ITEM_PROBLEMS.has(cell?.reason)) return cell;
+  return (coverage?.missing || []).some((gap) => gap.line === line.line && !gap.filled) ? cell || {} : null;
+}
+
+function traceCandidates(trace) {
+  return [...new Set((trace?.rows || []).map((row) => row.item ?? row.Item ?? row.value).filter(Boolean).map(String))];
+}
+
+// The not-in-item-master trace (lookup_trace): what was printed, where it was searched and the rows returned.
+function lookupDetails(trace) {
+  const details = make("details", "lookup-trace");
+  details.append(make("summary", "", "Details"));
+  const list = make("dl");
+  const add = (label, value) => {
+    if (value !== undefined && value !== null && value !== "") list.append(make("dt", "", label), make("dd", "", String(value)));
+  };
+  const rows = trace.rows || [];
+  add("Printed on invoice", trace.printed);
+  add("Columns searched", (trace.columns || []).join(", "));
+  add("Supplier", trace.supplier);
+  add("Item master version", trace.master_version);
+  add("Rows returned", trace.rows_total > rows.length ? `${rows.length} of ${trace.rows_total}` : rows.length);
+  add("Manual fix", trace.fix);
+  details.append(list);
+  if (rows.length) {
+    const found = make("ul");
+    rows.forEach((row) => found.append(make("li", "", Object.entries(row).map(([key, value]) => `${key}: ${value}`).join(" · "))));
+    details.append(found);
+  }
+  return details;
+}
+
+function answerButton(label, onClick, locked) {
+  const button = make("button", "button button-quiet button-small", label);
+  button.type = "button";
+  button.disabled = locked;
+  button.setAttribute("aria-pressed", "false");
+  button.addEventListener("click", () => {
+    for (const other of button.parentNode?.children || []) other.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-pressed", "true");
+    onClick();
+  });
+  return button;
+}
+
+// Yes takes the suggested item, Pick another offers the other rows or a typed item, Not in master sends the reviewer
+// to the item master. The answer is saved as the line's Item entry, like any reviewer entry.
+function itemPrompt(line, cell, locked) {
+  const li = make("li", "rules-problem");
+  const trace = cell.lookup_trace || {};
+  const candidates = traceCandidates(trace);
+  const suggestion = cell.value ?? candidates[0] ?? null;
+  li.append(make("span", "", `Line ${line.line}${trace.printed ? ` “${trace.printed}”` : ""} · ${cell.reason || "Not matched"}`
+    + (suggestion ? ` · is it ${suggestion}?` : "")));
+  const entry = rulesEntry(cell, "Item", "line", "Item", line.line);
+  entry.hidden = true;
+  const others = make("select", "rules-pick");
+  others.setAttribute("aria-label", `Other item master rows for line ${line.line}`);
+  others.append(new Option("Choose a row…", ""), ...candidates.map((item) => new Option(item, item)));
+  others.hidden = true;
+  others.addEventListener("change", () => { entry.value = others.value; });
+  const note = make("small", "rules-flagged", "Add it to the item master, then Update item master.");
+  note.hidden = true;
+  const answers = make("span", "rules-answers");
+  if (suggestion) answers.append(answerButton("Yes", () => {
+    entry.value = suggestion; entry.hidden = false; others.hidden = true; note.hidden = true;
+  }, locked));
+  answers.append(answerButton("Pick another", () => {
+    entry.value = ""; entry.hidden = false; others.hidden = candidates.length < 2; note.hidden = true;
+    (others.hidden ? entry : others).focus();
+  }, locked), answerButton("Not in master", () => {
+    entry.value = ""; entry.hidden = true; others.hidden = true; note.hidden = false;
+    $("#update-item-master").hidden = false;
+  }, locked));
+  li.append(answers, others, entry, note);
+  if (cell.lookup_trace) li.append(lookupDetails(trace));
+  return li;
+}
+
+// A held location type is picked here; a location number the item master row left blank is typed in its field.
+function locationPrompts(rules, entries, locked) {
+  const prompts = [];
+  const type = rules.fields?.location_type;
+  if (type && (type.value === null || type.value === undefined) && entries.location_type) {
+    const li = make("li", "rules-problem");
+    li.append(make("span", "", `Location type${type.original ? ` “${type.original}”` : ""} · Store or Warehouse?`));
+    const answers = make("span", "rules-answers");
+    LOCATION_TYPES.forEach((value) => answers.append(answerButton(value, () => { entries.location_type.value = value; }, locked)));
+    li.append(answers);
+    prompts.push(li);
+  }
+  const location = rules.fields?.location;
+  if (location && (location.value === null || location.value === undefined) && entries.location) {
+    const li = make("li", "rules-problem");
+    li.append(make("span", "", `${location.reason && location.reason !== "Not found" ? location.reason : "Location number is blank in the item master"} · add it`));
+    const add = make("button", "button button-quiet button-small", "Add location");
+    add.type = "button";
+    add.disabled = locked;
+    add.addEventListener("click", () => entries.location.focus());
+    li.append(add);
+    prompts.push(li);
+  }
+  return prompts;
+}
+
+// V7.1 coverage (rules.coverage): the share of lines the rules matched, its tier, and what export waits on.
+function renderCoverage(job) {
+  const coverage = job.rules?.coverage;
+  $("#coverage-banner").hidden = !coverage;
+  $("#rules-item-rate").hidden = Boolean(coverage);
+  if (!coverage) return;
+  const share = `${coverage.matched} of ${coverage.total} lines (${Number(coverage.pct)}%)`;
+  const gaps = (coverage.missing || []).filter((gap) => !gap.filled).length;
+  const next = coverage.export === "no" ? "add the missing items to the item master, then Update item master"
+    : coverage.export === "after_fill" && gaps ? "fill or confirm the lines below before export" : "ready to export";
+  $("#coverage-text").textContent = `${coverage.low ? "Low coverage" : "Coverage"} ${share} · ${coverage.tier} · ${next}`;
+  $("#coverage-banner").className = `coverage-banner coverage-${coverage.export}`;
+  const update = $("#update-item-master");
+  update.hidden = !(coverage.missing || []).length;
+  update.disabled = job.status === "exported";
+}
+
+async function updateItemMaster() {
+  const button = $("#update-item-master");
+  button.disabled = true;
+  try {
+    await api(ITEM_MASTER_REFRESH, { method: "POST" });
+    notify("Item master updated. The rules are re-running on open invoices.", "success");
+    if (app.currentJob) await selectJob(app.currentJob.id);
+  } catch (error) {
+    notify(error.message, "error", 7000);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function rulesCell(cell, name, line, prompted = false) {
   const td = make("td");
   const empty = !cell || cell.value === null || cell.value === undefined;
   if (empty) td.append(make("span", "rules-flagged", cell?.reason === "No evidence" ? "Empty · no evidence" : cell?.reason || "Not found"));
   else td.append(make("span", "", cell.value), make("small", "", evidenceText(cell.evidence)));
   td.append(...readerNotes(app.currentJob, "line", name, line));
-  if ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell)) td.append(rulesEntry(cell, name, "line", name, line));
+  if (!prompted && ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell))) td.append(rulesEntry(cell, name, "line", name, line));
   return td;
 }
 
@@ -332,6 +477,9 @@ function renderRulesResult(job) {
     + (rate.owner_review ? " — below 95%: this invoice goes to owner review." : "");
   itemRate.title = rate.definition || "";
   itemRate.classList.toggle("owner-review", Boolean(rate.owner_review));
+  renderCoverage(job);
+  const locked = job.status === "exported";
+  const entries = {};
   const list = $("#rules-fields");
   list.replaceChildren();
   Object.entries(rules.fields || {}).forEach(([key, field]) => {
@@ -343,13 +491,23 @@ function renderRulesResult(job) {
         : (field.reason !== "Not found" && field.reason) || headerException(job, field.target) || "Not found in owner sheets or on the invoice"));
     } else dd.append(make("span", "", field.value), make("small", "", evidenceText(field.evidence)));
     dd.append(...readerNotes(job, "header", key));
-    if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(rulesEntry(field, field.label, "header", key));
+    if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(entries[key] = rulesEntry(field, field.label, "header", key));
     if (key === "site") renderSupplierPick(dd, job);
     if (field.target === "Order No" && Number(rules.po_candidates) > 1) {
       dd.append(make("small", "rules-flagged", `Ambiguous: ${rules.po_candidates} candidate orders — owner review`));
     }
     list.append(make("dt", "", field.label), dd);
   });
+  const problems = locationPrompts(rules, entries, locked);
+  const prompted = new Set();
+  (rules.lines || []).forEach((line) => {
+    const cell = itemProblem(line, rules.coverage);
+    if (!cell) return;
+    prompted.add(line.line);
+    problems.push(itemPrompt(line, cell, locked));
+  });
+  $("#rules-problems").replaceChildren(...problems);
+  $("#rules-problems").hidden = !problems.length;
   const body = $("#rules-lines");
   body.replaceChildren();
   (rules.lines || []).forEach((line) => {
@@ -362,7 +520,8 @@ function renderRulesResult(job) {
       if (note) number.append(note);
     });
     tr.append(number);
-    ["Item", "UPC", "Unit Cost", "Quantity", "Unit Tax Code"].forEach((name) => tr.append(rulesCell(line.cells?.[name], name, line.line)));
+    ["Item", "UPC", "Unit Cost", "Quantity", "Unit Tax Code"].forEach((name) => tr.append(
+      rulesCell(line.cells?.[name], name, line.line, name === "Item" && prompted.has(line.line))));
     body.append(tr);
   });
 }
@@ -3581,6 +3740,7 @@ function bindEvents() {
   $("#invoice-form").addEventListener("input", markReviewDirty);
   $("#confirm-review").addEventListener("change", markReviewDirty);
   $("#save-review").addEventListener("click", () => submitReview());
+  $("#update-item-master").addEventListener("click", updateItemMaster);
   $("#export-job").addEventListener("click", exportCurrentJob);
   $("#batch-review").addEventListener("click", openBatchReview);
   $("#confirm-batch-review").addEventListener("click", downloadBatchReview);

@@ -75,8 +75,9 @@ Steps 6 and 7 read and write the vault from Cloud Shell. Wait a few minutes befo
 ```
 
 ACR builds it inside Azure. Cloud Shell closes after 20 idle minutes: if it does, the build carries on in ACR. Check
-it with `az acr task list-runs -r "$ACR" -o table` (after `source ~/inv-studio-azure/outputs.env`) and run
-`./scripts/cloudshell.sh build` again only if it failed.
+it with `az acr task list-runs -r "$ACR" -o table` (after `source ~/inv-studio-azure/outputs.env`), then run
+`./scripts/cloudshell.sh build` again: once the run Succeeded it only records the image for step 6 (no rebuild);
+after a failed run it builds again. While the run is still `Running`, wait.
 
 ## 6. Put the first image on the app
 

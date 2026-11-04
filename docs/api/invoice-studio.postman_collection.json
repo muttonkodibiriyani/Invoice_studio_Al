@@ -275,6 +275,36 @@
           ]
         },
         {
+          "name": "Rules assistant state (GET /api/rules-assistant)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/rules-assistant",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "rules-assistant"
+              ]
+            },
+            "description": "Whether the AI rules assistant is on and, if not, why."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('no stack trace or secret in the answer', function () { pm.expect(pm.response.text()).to.not.match(/Traceback|File \\\"\\/|password|api[-_]key\\\"\\s*:\\s*\\\"[^\\\"]/i); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Target export settings (GET /api/target-export/config)",
           "request": {
             "method": "GET",
@@ -2644,6 +2674,159 @@
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"decision\": \"accepted\",\n  \"approver\": \"\",\n  \"version\": \"\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Rules assistant state",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/rules-assistant",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "rules-assistant"
+                  ]
+                },
+                "description": "**Member.** Whether the AI rules assistant is on and, if not, why."
+              }
+            },
+            {
+              "name": "Test the rules assistant connection",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/rules-assistant/test",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "rules-assistant",
+                    "test"
+                  ]
+                },
+                "description": "**Admin.** Admin check of the Azure AI Foundry connection; the assistant stays off until it passes."
+              }
+            },
+            {
+              "name": "Rules assistant: search the item master",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/rules-assistant/search",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "rules-assistant",
+                    "search"
+                  ]
+                },
+                "description": "**Member.** Ranked item master rows for a code or description. No AI call.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"query\": \"rose cream\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Rules assistant: explain a match",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/rules-assistant/explain",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "rules-assistant",
+                    "explain"
+                  ]
+                },
+                "description": "**Member.** Why an invoice line matched an item master row or not, from the engine's facts.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"line\": {\n    \"description\": \"Rose hand cream 50ml\",\n    \"gtin\": \"\",\n    \"sku\": \"\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Rules assistant: propose rules",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/rules-assistant/propose",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "rules-assistant",
+                    "propose"
+                  ]
+                },
+                "description": "**Member.** Drafts rule rows for a line and logs them as Proposed rule feedback; an admin decides.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"line\": {\n    \"description\": \"Rose hand cream 50ml\",\n    \"gtin\": \"\",\n    \"sku\": \"\"\n  },\n  \"note\": \"\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"

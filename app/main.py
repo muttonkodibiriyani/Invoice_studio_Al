@@ -53,6 +53,7 @@ from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, 
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
 from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
+from .rules_assistant import TESTED as RULES_ASSISTANT_TESTED, register_rules_assistant
 from .sandbox import protect_process
 from .store import Store
 from .upload_check import check as check_upload
@@ -261,6 +262,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     auth=ChatGPTAuth(store);providers=Providers(store,auth,learned)
     lookup=ReferenceLookup(store)
     register_item_master(app,store)
+    register_rules_assistant(app,store,providers,lookup)
     products=ProductCandidates(lookup)
     # Admission is separate from processing: a batch is accepted whole, up to INV_STUDIO_MAX_QUEUED unfinished jobs
     # (queued or processing) on this instance, and the jobs wait their turn in the pool instead of being refused.
@@ -1379,6 +1381,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def connect_azure(body:AzureConnection):
         refuse_provider("azure")
         result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
+        store.set(RULES_ASSISTANT_TESTED,None)  # a new key or auth mode needs the assistant's connection test again
         store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
         return result
 
@@ -1386,6 +1389,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def disconnect_azure():
         result=providers.azure.disconnect()
+        store.set(RULES_ASSISTANT_TESTED,None)
         store.audit("connection_disconnected",{"provider":"azure"})
         return result
 
@@ -1575,7 +1579,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             store.set("fine_rules_feedback",log,c)
             entry=next(x for x in log if x["Feedback ID"]==fid);store.audit("fine_rules_feedback_decided",entry,c)
         # After the commit: the learned store's lock can be held for a whole learning run, never with the database's.
-        if learned is not None:
+        # An approved assistant draft is model output shaped by invoice text: it goes live only through the rules
+        # workbook and the goldens, never as a learned correction in every AI prompt.
+        if learned is not None and not str(entry.get("Rule Candidate","")).startswith("assistant:"):
             try:
                 if entry["Decision"]=="Approved":
                     record=learned.promote_feedback(entry,store.jobs())

@@ -90,6 +90,9 @@ ROUTES = [
     ("POST", "/api/mapping-tables/uploads/x/activate", "admin"),
     ("POST", "/api/mapping-tables/versions/x/rollback", "admin"),
     ("GET", "/api/mapping-tables/active/workbook", "admin"), ("GET", "/api/health/dependencies", "member"),
+    ("GET", "/api/rules-assistant", "member"), ("POST", "/api/rules-assistant/test", "admin"),
+    ("POST", "/api/rules-assistant/search", "member"), ("POST", "/api/rules-assistant/explain", "member"),
+    ("POST", "/api/rules-assistant/propose", "member"),
 ]
 # (sample, options, exact): the five golden samples read by the whole local chain must give exactly samples/<name>.json;
 # each engine forced alone must read its file. AI fallback is off, so a sample only the AI could read fails.

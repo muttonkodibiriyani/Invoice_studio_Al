@@ -1,5 +1,8 @@
 # Deploy Invoice Studio to Azure from Cloud Shell
 
+> **Starting from nothing?** [CLOUD_SHELL_COMMANDS.md](CLOUD_SHELL_COMMANDS.md) is the same deploy as copy-paste
+> blocks, including the resource group, the Entra sign-in app and a filled-in deploy kit.
+
 Every step is one command in **Azure Cloud Shell (Bash)**, in this order. Each one checks before it changes
 anything and stops with one plain reason if something is missing. [AZURE.md](AZURE.md) has the detail behind each
 step; [INFOSEC_RESPONSE.md](INFOSEC_RESPONSE.md) maps each InfoSec point to the change that closes it.

@@ -1,5 +1,7 @@
 # Invoice Studio
 
+**Deploy to Azure from scratch:** [copy-paste Cloud Shell commands](docs/CLOUD_SHELL_COMMANDS.md).
+
 Azure migration baseline: see [the implementation order and remaining deployment gates](docs/AZURE_MIGRATION.md).
 
 Read supplier invoices, check them against your reference data, resolve exceptions and download the invoice workbook: three template sheets, plus a Checks sheet when it is checked against your reference files. Runs locally or in a restricted Firebase/GCP pilot. The repository contains synthetic examples only.

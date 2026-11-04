@@ -50,7 +50,8 @@ def filled_kit(tmp_path, **overrides):
                   AZ_REQUIRED_TAGS='{"costCentre": "cc-1"}', AZ_NAME_PREFIX="invstudio",
                   TARKESH_UPN="tarkesh@example.com", SPOKE_VNET_CIDR="10.1.2.0/24", HUB_DNS_IP="10.0.0.4",
                   PDNS_ZONE_IDS="{}", LOG_RETENTION_DAYS="30", APP_HOSTNAME="invoices.example.com",
-                  LAW_ID="n/a", ENTRA_GROUP_MEMBER_NAME="n/a", ENTRA_CLOUD="public")
+                  LAW_ID="n/a", ENTRA_GROUP_MEMBER_NAME="n/a", ENTRA_CLOUD="public",
+                  HUB_FIREWALL_IP="10.0.0.68", CITADEL_AUTH_MODE="Managed identity")
     values.update(overrides)
     path = tmp_path / "deploy-kit.env"
     path.write_text("".join(f"{k}={v}   # comment\n" for k, v in values.items() if v is not None))
@@ -154,7 +155,7 @@ def test_public_cloud_spellings_pass(tmp_path, cloud):
 
 
 def test_every_kit_mapping_names_a_kit_line():
-    assert set(deploy.PARAMS) <= set(deploy.KIT_KEYS)
+    assert set(deploy.PARAMS) <= set(deploy.KIT_KEYS + deploy.OPTIONAL_KIT_KEYS)
 
 
 def test_mapped_parameters_that_exist_today_are_in_main_bicep():
@@ -170,7 +171,7 @@ def test_release_one_is_ai_off():
     assert "CITADEL_ENDPOINT" in deploy.KIT_KEYS and "CITADEL_DEPLOYMENT" in deploy.KIT_KEYS
     mapped = {name for name, _ in deploy.PARAMS.values()}
     assert not mapped & {"foundryEndpoint", "foundryDeployment", "foundryApiKey"}
-    assert len(deploy.PARAMS) == 17
+    assert len(deploy.PARAMS) == 20
     kit = KIT_EXAMPLE.read_text()
     for key in ("CITADEL_ENDPOINT", "CITADEL_DEPLOYMENT"):
         assert re.search(rf"^{key}=<{key}>\s+# H7  record only", kit, re.M)
@@ -317,13 +318,15 @@ def test_deploy_passes_the_kit_and_cleans_up(tmp_path, capsys):
     assert p["postgresAdminPassword"] == "a-long-db-password" and p["vaultKey"] == FERNET
     assert "existingLogWorkspaceId" not in p  # n/a is not passed
     assert p["hubVnetId"] == "value-hub_vnet_id" and p["dnsServers"] == ["10.0.0.4"]
-    assert "egressFirewallIp" not in p  # main.bicep has no such parameter yet
+    assert p["egressFirewallIp"] == "10.0.0.68" and p["foundryAuthMode"] == "managed_identity"
+    assert "alertEmails" not in p and "ingressAllowedCidrs" not in p  # optional lines left out
+    assert "dataPlanePublicAccess" not in p  # the first deploy keeps the template default
     # The parameter file with the secrets is gone, and the secrets were never printed.
     create = next(c for c in az.calls if c[:3] == ("deployment", "group", "create"))
     assert not Path(create[create.index("-p") + 1][1:]).exists()
     out = capsys.readouterr()
     assert "a-long-db-password" not in out.out + out.err and FERNET not in out.out + out.err
-    assert "not passed yet, main.bicep has no such parameter: HUB_FIREWALL_IP -> egressFirewallIp" in out.out
+    assert "not passed yet, main.bicep has no such parameter: AMPLS_ID -> amplsId" in out.out
     env = (deploy.STATE / "outputs.env").read_text()
     assert f"export RG={RG}" in env and "export APP_URL=https://app.example" in env
     assert "add https://app.example/ as an SPA redirect URI on the Entra app value-entra_app_client_id" in out.out
@@ -438,3 +441,44 @@ def test_image_refusals_stop_before_any_create(tmp_path, capsys, image, change, 
 def test_image_and_rerun_do_not_mix(tmp_path):
     with pytest.raises(SystemExit):
         run(tmp_path, FakeAz(), "--rerun", "--image", IMAGE)
+
+
+# InfoSec hardening lines
+
+def test_optional_hardening_lines_are_passed_when_given(tmp_path):
+    az = FakeAz()
+    kit = filled_kit(tmp_path, ALERT_EMAILS="ops@example.com, sec@example.com",
+                     INGRESS_ALLOWED_CIDRS="203.0.113.7, 198.51.100.0/24")
+    assert run(tmp_path, az, kit=kit) == 0
+    p = {k: v["value"] for k, v in az.params_seen.items()}
+    assert p["alertEmails"] == ["ops@example.com", "sec@example.com"]
+    assert p["ingressAllowedCidrs"] == ["203.0.113.7/32", "198.51.100.0/24"]
+
+
+def test_egress_can_be_opened_from_the_kit(tmp_path):
+    az = FakeAz()
+    assert run(tmp_path, az, kit=filled_kit(tmp_path, RESTRICT_EGRESS="false")) == 0
+    assert az.params_seen["restrictEgress"]["value"] is False
+
+
+@pytest.mark.parametrize("override, reason", [
+    ({"HUB_FIREWALL_IP": "hub-firewall"}, "HUB_FIREWALL_IP is not in the form"),
+    ({"CITADEL_AUTH_MODE": "certificate"}, "CITADEL_AUTH_MODE is not in the form"),
+    ({"ALERT_EMAILS": "not-an-address"}, "ALERT_EMAILS is not in the form"),
+    ({"INGRESS_ALLOWED_CIDRS": "10.0.0.0/33"}, "INGRESS_ALLOWED_CIDRS is not in the form"),
+    ({"RESTRICT_EGRESS": "maybe"}, "RESTRICT_EGRESS is not in the form"),
+    ({"ALERT_EMAILS": "<ALERT_EMAILS>"}, "ALERT_EMAILS is not filled in"),
+])
+def test_bad_hardening_lines_stop_before_anything_is_created(tmp_path, capsys, override, reason):
+    az = FakeAz()
+    assert run(tmp_path, az, kit=filled_kit(tmp_path, **override)) == 1
+    assert reason in stop_reason(capsys)
+    assert not az.created()
+
+
+def test_a_rerun_keeps_a_locked_down_vault_private(tmp_path):
+    az = FakeAz()
+    az.answers = {"keyvault list -g": lambda args: ["Disabled"] if "publicNetworkAccess" in " ".join(args) else ["v"],
+                  **az.answers}
+    assert run(tmp_path, az, "--rerun") == 0
+    assert az.params_seen["dataPlanePublicAccess"]["value"] == "Disabled"

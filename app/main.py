@@ -1,3 +1,4 @@
+import concurrent.futures
 import dis
 import hashlib
 import io
@@ -29,7 +30,7 @@ from .authentication import EntraIdentity, actor
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
 from .users import UserDirectory
-from .engines import AI_CONCURRENCY, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
+from .engines import AI_CONCURRENCY, ChecksBusy, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
 from .learned import LearnedStore
 from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook
 from . import costs
@@ -38,6 +39,7 @@ from .extraction_draft import extraction_workbook, extraction_batch_workbook
 from .drafts import ManualDraftRequest, build_draft_workbook, draft_filename, draft_public_metadata
 from .deletion import DeletionError, delete_invoices, remove_uploads
 from .reference_lookup import ReferenceLookup
+from .master_catalog import MAX_BYTES as MAX_MASTER_UPLOAD, register_item_master
 from .fine_rules import RulesConfig, decide_feedback, feedback_entry, ocr_read, run_batch
 from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
@@ -46,7 +48,7 @@ from .product_candidates import ProductCandidates
 from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
 from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
-from .providers import Providers
+from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
 from .sandbox import protect_process
 from .store import Store
@@ -153,8 +155,14 @@ class ChatGPTBundle(StrictModel):
     passphrase: str = Field(min_length=1, max_length=200)
 
 
+def default_provider():
+    """openai, as a local install always had, unless the deployment limits AI providers (INV_STUDIO_AI_PROVIDERS)."""
+    allowed=allowed_ai_providers()
+    return "openai" if "openai" in allowed or not allowed else allowed[0]
+
+
 class Settings(StrictModel):
-    provider: str = "openai"
+    provider: str = Field(default_factory=default_provider)
     model: str = Field(default="",max_length=150,pattern=MODEL_NAME)
     ai_fallback: bool = True
 
@@ -249,6 +257,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                              remove=getattr(store,"remove_blob",None) if identity.cloud else None)
     auth=ChatGPTAuth(store);providers=Providers(store,auth,learned)
     lookup=ReferenceLookup(store)
+    register_item_master(app,store)
     products=ProductCandidates(lookup)
     # Admission is separate from processing: a batch is accepted whole, up to INV_STUDIO_MAX_QUEUED unfinished jobs
     # (queued or processing) on this instance, and the jobs wait their turn in the pool instead of being refused.
@@ -358,7 +367,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                     return finish(JSONResponse({"detail":"Cross-origin requests are not accepted"},403))
                 try:size=int(request.headers.get("content-length","0"))
                 except ValueError:return finish(JSONResponse({"detail":"Invalid content length"},400))
-                if size>MAX_UPLOAD+200000:return finish(JSONResponse({"detail":"Maximum upload size is 12 MB"},413))
+                upload_limit=MAX_MASTER_UPLOAD if request.url.path=="/api/item-master/validate" else MAX_UPLOAD
+                if size>upload_limit+200000:return finish(JSONResponse({"detail":f"Maximum upload size is {upload_limit//1000000} MB"},413))
             actor_token=actor.set(claims["uid"] if claims else ("anonymous" if identity.cloud else "local-operator"))
             try:response=await call_next(request)
             except Exception:
@@ -396,10 +406,21 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def policy(c=None):return Policy.model_validate(store.get("policy",{},c))
     def rule_signature(opts):
         return hashlib.sha256(json.dumps({"options":opts.model_dump(),"references":references().get("version"),"policy":policy().model_dump(mode="json")},sort_keys=True).encode()).hexdigest()
+    def ai_off():return store.get("settings",Settings().model_dump()).get("ai_fallback") is False
+    def refuse_provider(provider):
+        # InfoSec LLD §9: the deployment names the AI providers it may use (INV_STUDIO_AI_PROVIDERS); the rest are refused.
+        if provider not in allowed_ai_providers():
+            raise HTTPException(403,"This deployment uses only these AI providers: "+(", ".join(allowed_ai_providers()) or "none"))
+    def refuse_ai_when_off(opts):
+        # Security pack N9: the admin's AI setting binds every read, not only the upload dialog's defaults; options are never changed silently.
+        uses_ai=opts.ai_fallback or opts.ai_cross_check or opts.engine=="ai"
+        if ai_off() and uses_ai:
+            raise HTTPException(403,"An administrator has turned AI off. Turn off AI fallback and AI cross-check, choose a local engine, and review the plan again.")
+        if uses_ai:refuse_provider(opts.provider)
     def require_plan(token,opts,filename,size):
         with plans_lock:
             plan=plans.get(token)
-            if not plan or plan["expires"]<time.time() or not plan["confirmed"]:
+            if not plan or plan["expires"]<time.time() or not plan["confirmed"] or plan.get("owner")!=actor.get():
                 raise HTTPException(409,"Review and confirm the processing rules before running this invoice")
             if plan["signature"]!=rule_signature(opts):raise HTTPException(409,"Rules or references changed. Review the processing plan again.")
             match=next((x for x in plan["files"] if x["name"]==filename and x["size"]==size),None)
@@ -435,18 +456,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         return hashlib.sha256(json.dumps([store.get("fine_rules_config",{},c),sources,target_upc(c)],sort_keys=True,default=str).encode()).hexdigest()
     def compute_rules(invoice,j,entries=None):
         """ONE fine-rules run for this invoice; review fields, banner and download all read its view."""
-        with store.connection() as c:config=store.get("fine_rules_config",{},c);signature=rules_signature(c)
-        entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
-        if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
-        # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
-        entry["ocr_lines"]=ocr_read(j)
-        result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
-        entries=j.get("owner_entries") if entries is None else entries
-        view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
-        view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
-        entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
-        attach_target_check(view,config,tc.TextChecks(stored_text_checks(j)),entries,attribution)
-        return view
+        checks=stored_text_checks(j)
+        with store.connection(True) as catalog_lock:
+            config=store.get("fine_rules_config",{},catalog_lock);signature=rules_signature(catalog_lock)
+            entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
+            if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
+            # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
+            entry["ocr_lines"]=ocr_read(j)
+            result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
+            entries=j.get("owner_entries") if entries is None else entries
+            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
+            view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
+            entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
+            attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
+            return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
         (engines.text_checks) and kept on the job under a hash of that text, so each text is checked once. A
@@ -505,6 +528,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         with store.connection(True) as c:
             current=job_or_404(jid,c)
             if current["revision"]!=j["revision"] or evidence_hash(current)!=view["evidence_hash"]:return
+            if rules_signature(c)!=view["signature"]:return
             current["text_checks"]=checks
             view["revision"]=current["revision"]
             # New review-level issues from changed tables were not seen by the reviewer: ask for a fresh confirm.
@@ -620,6 +644,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         finally:track(jid);slots.release()
 
     def submit(content,filename,opts,token):
+        refuse_ai_when_off(opts)
         if not slots.acquire(blocking=False):raise HTTPException(429,QUEUE_FULL)
         try:
             suffix=Path(filename).suffix.lower()
@@ -643,9 +668,12 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             parts=[(content,Path(filename).name[:200],{})];refusal=None
             if suffix==".pdf":
                 from .multi_invoice import outcome_from, part_filename, split_note, split_pdf
-                # The split check parses the upload, so it runs in a reader child under the readers' limits. A child
+                # The split check parses the upload, so it runs in a reader child under its own limit and cap. A child
                 # that is stopped or fails refuses the upload: it is never queued unchecked.
-                try:outcome=outcome_from(split_check(content,store.root))
+                try:outcome=outcome_from(split_check(content,store.root,actor.get()))
+                except ChecksBusy:
+                    raise HTTPException(429,"Several PDFs are being checked right now. Try again in a few seconds.",
+                                        headers={"Retry-After":"5"}) from None
                 except Exception as exc:
                     store.audit("upload_refused",{"stage":"split_check","error_type":type(exc).__name__,
                                                   "sha256":hashlib.sha256(content).hexdigest()})
@@ -755,7 +783,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/preflight")
     @access(MEMBER)
     def preflight(body:Preflight):
-        warnings=[];blocking=[];opts=body.options
+        warnings=[];blocking=[];opts=body.options;refuse_ai_when_off(opts)
         if opts.engine=="invoice2data":warnings.append("invoice2data reads native text and supplier templates. Scanned PDFs and images use PaddleOCR locally as the input reader; the trace names both components.")
         if opts.engine in ("auto","invoice2data","paddleocr"):
             warnings.append("Short scanned PDFs with unread quantities or prices may receive one higher-resolution local OCR pass, within a six-minute reader limit. It is retained only when consistency checks improve; all values still require review. Local OCR files wait their turn to keep the workspace responsive.")
@@ -774,7 +802,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             expired=[k for k,v in plans.items() if v["expires"]<time.time()]
             for k in expired:plans.pop(k)
             if len(plans)>200:raise HTTPException(429,"Too many pending plans; try again later")
-            plans[token]={"expires":time.time()+PLAN_TTL,"signature":rule_signature(opts),"confirmed":False,"files":[x.model_dump() for x in body.files]}
+            plans[token]={"expires":time.time()+PLAN_TTL,"signature":rule_signature(opts),"confirmed":False,"files":[x.model_dump() for x in body.files],"owner":actor.get()}  # attack pack F2: a plan serves only the account that made it
             summary={**opts.model_dump(),"reference_version":references().get("version"),"policy":policy().model_dump(mode="json"),"file_count":len(body.files)}
         return {"token":token,"summary":summary,"warnings":warnings,"blocking":blocking}
 
@@ -783,7 +811,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def confirm_plan(body:PreflightToken):
         with plans_lock:
             plan=plans.get(body.token)
-            if not plan or plan["expires"]<time.time():raise HTTPException(409,"Processing plan expired. Review it again.")
+            if not plan or plan["expires"]<time.time() or plan.get("owner")!=actor.get():raise HTTPException(409,"Processing plan expired. Review it again.")
             plan["confirmed"]=True
         store.audit("processing_plan_confirmed",{"signature":plan["signature"],"files":plan["files"]})
         return {"confirmed":True}
@@ -794,7 +822,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         """Keeps a confirmed plan alive while a long batch is still uploading; the files and rules do not change."""
         with plans_lock:
             plan=plans.get(body.token)
-            if not plan or plan["expires"]<time.time() or not plan["confirmed"]:raise HTTPException(409,"Processing plan expired. Review it again.")
+            if not plan or plan["expires"]<time.time() or not plan["confirmed"] or plan.get("owner")!=actor.get():raise HTTPException(409,"Processing plan expired. Review it again.")
             plan["expires"]=time.time()+PLAN_TTL
             return {"renewed":True,"expires_in":PLAN_TTL,"files_remaining":len(plan["files"])}
 
@@ -922,6 +950,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
+            if view is not None and view["signature"]!=rules_signature(c):
+                raise HTTPException(409,"Catalog or rules changed. Refresh before confirming review.")
             body.invoice=carry_unchecked(body.invoice,j["invoice"])
             inv,provenance=enrich(body.invoice,references(c)) if demo_references else (body.invoice,[])
             before=j["invoice"]
@@ -948,7 +978,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/retry")
     @access(MEMBER)
     def retry(jid:str,body:Retry):
-        j=job_or_404(jid);assert_editable(j)
+        j=job_or_404(jid);assert_editable(j);refuse_ai_when_off(body.options)
         if not slots.acquire(blocking=False):raise HTTPException(429,QUEUE_FULL)
         try:
             with plans_lock:
@@ -974,6 +1004,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if j.get("export_id"):return {"id":j["export_id"],"url":"/api/exports/"+j["export_id"]}
             assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before exporting.")
+            if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
+                                        j["rules"].get("evidence_hash") != evidence_hash(j)):
+                raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
             evaluate(j,c)
             if not j["validation"]["ready"]:raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
             inv=Invoice.model_validate(j["invoice"]);eid=uuid.uuid4().hex
@@ -989,8 +1022,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
-                         "allocations":[],"evidence":evidence.get(1,{}),"target_check":target[1]}
-            c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,key(inv),jid,json.dumps(receipt),content))
+                         "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1]}
+            c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
         learn_later(j)
         return {"id":eid,"url":"/api/exports/"+eid}
@@ -1173,13 +1206,16 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 j=job_or_404(request.id,c);assert_editable(j)
                 if j["revision"]!=request.revision:raise HTTPException(409,f"Invoice {j['filename']} changed. Refresh before exporting.")
                 inv=Invoice.model_validate(j["invoice"])
+                if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
+                                        j["rules"].get("evidence_hash") != evidence_hash(j)):
+                    raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
                 if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
                 else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
                 if not result["ready"]:raise HTTPException(409,f"Invoice {j['filename']} is held: {result['issues'][0]['message']}")
                 receipt={"id":uuid.uuid4().hex,"job_id":j["id"],"batch_id":batch_id,"transaction_number":index,
                          "invoice_key":key(inv) if demo_references else rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "reference_version":references(c).get("version"),"policy":policy(c).model_dump(mode="json"),
-                         "allocations":[m["allocation"] for m in result["matches"]] if demo_references else []}
+                         "allocations":[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])}
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {})
                 ledger.append(receipt);entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
@@ -1285,7 +1321,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/demo")
     @access(ADMIN)
     def demo(body:DemoRequest):
-        content=(ROOT/"samples/invoice.pdf").read_bytes();name="SYNTHETIC-demo-invoice.pdf";opts=ProcessingOptions()
+        content=(ROOT/"samples/invoice.pdf").read_bytes();name="SYNTHETIC-demo-invoice.pdf";opts=ProcessingOptions(ai_fallback=not ai_off())
         return submit(content,name,opts,body.preflight_token)
 
     @app.get("/api/samples/reference.xlsx")
@@ -1333,6 +1369,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/connections/azure")
     @access(ADMIN)
     def connect_azure(body:AzureConnection):
+        refuse_provider("azure")
         result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
         store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
         return result
@@ -1348,6 +1385,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def connect(provider:str,body:Connection):
         if provider not in API_KEY_PROVIDERS:raise ValueError("Use API keys only for OpenAI or Anthropic API connections")
+        refuse_provider(provider)
         key=body.api_key.get_secret_value().strip()
         verified=providers.verify_key(provider,key)
         store.secret(provider,key);store.audit("connection_connected",{"provider":provider,"verified":verified})
@@ -1356,6 +1394,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/subscriptions/claude/import")
     @access(ADMIN)
     def import_claude_subscription(body:SubscriptionToken):
+        refuse_provider("claude_local")
         result=providers.claude_subscription.connect(body.setup_token.get_secret_value())
         store.audit("subscription_connected",{"provider":"claude_local"})
         return result
@@ -1379,6 +1418,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def import_chatgpt_bundle(body:ChatGPTBundle):
         if not identity.cloud:raise HTTPException(403,"Credential transfer is for your authenticated self-hosted workspace")
+        refuse_provider("chatgpt")
         account=auth.import_bundle(open_bundle(body.bundle,body.passphrase))
         store.audit("subscription_connected",{"provider":"chatgpt"})
         return account
@@ -1606,6 +1646,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def model_list(provider:str):
         if provider not in AI_PROVIDERS:raise ValueError("Unknown provider")
+        refuse_provider(provider)
         try:return {"models":providers.models(provider)}
         except ValueError:raise
         except Exception:raise ValueError("Could not retrieve models. Check the connection and try again.") from None
@@ -1614,7 +1655,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def save_settings(body:Settings):
         if body.provider not in AI_PROVIDERS:raise ValueError("Unknown provider")
-        # Security pack N3: these settings decide whether an invoice may go to an AI service, so a change is audited.
+        # Security pack N3: a change is audited. ai_fallback off refuses every AI read (N9, refuse_ai_when_off); provider and model are only defaults.
         with store.connection(True) as c:
             before=store.get("settings",Settings().model_dump(),c)
             store.set("settings",body.model_dump(),c)
@@ -1637,6 +1678,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/chatgpt/select")
     @access(ADMIN)
     def select_account(body:Account):
+        refuse_provider("chatgpt")
         if not any(a["id"]==body.id and a["connected"] for a in auth.accounts()):raise ValueError("Connect this account before selecting it")
         with store.connection(True) as c:
             store.set("chatgpt_active",body.id,c);store.audit("subscription_selected",{"provider":"chatgpt","account_id":body.id},c)
@@ -1659,6 +1701,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
 
     @app.get("/health")
     def health():return {"status":"ok","version":"0.1.0"}
+
+    @app.get("/api/health/dependencies")
+    @access(MEMBER)
+    def dependencies():
+        """Signed-in readiness: the database and the evidence storage each answer, through the private endpoints once
+        the vault and Blob are locked down (scripts/azure_lockdown.py). Names and ok/failed only, never an address."""
+        check=getattr(store,"check_dependencies",None)
+        if check is None:return {"status":"ok","database":"ok","storage":"ok"}  # the local install: SQLite and the data directory
+        pool=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:result=pool.submit(check).result(timeout=20)
+        except concurrent.futures.TimeoutError:result={"database":"unknown","storage":"failed: timeout"}
+        finally:pool.shutdown(wait=False)
+        healthy=all(v=="ok" for v in result.values())
+        return JSONResponse({"status":"ok" if healthy else "degraded",**result},200 if healthy else 503)
 
     @app.get("/")
     def home():return FileResponse(ROOT/"app/static/index.html")

@@ -284,7 +284,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None):
         issues.append({"code":str(e.get("Exception Type") or "Exception"),"message":str(e.get("Description") or ""),
                        "owner":str(e.get("Owner") or ""),"line":e.get("Line No.") or None,"rule":str(e.get("Rule ID") or ""),
                        "evidence":str(e.get("Candidates / Evidence") or ""),"blocking":bool(e.get("blocking",True)),
-                       "level":"review" if e.get("blocking",True) else "warning",
+                       "level":"hard" if e.get("Rule ID") in ("M4-RECEIPT","ALG-028") else "review" if e.get("blocking",True) else "warning",
                        "check":str(e.get("Check ID") or ""),"type":str(e.get("Engine Type") or "")})
     # RULES raises its own ITEM-LINE-95 exception when lines exist; add ours only when it did not.
     if below and not any(i["rule"]=="ITEM-LINE-95" for i in issues):
@@ -313,6 +313,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None):
     return {"status":result.get("status") or "Review","fields":fields,"lines":out_lines,"issues":issues,
             "item_lines":{"resolved":resolved,"total":total,"rate":str(rate.quantize(Decimal("0.0001"))) if rate is not None else None,
                           "threshold":str(ITEM_THRESHOLD),"owner_review":below,"definition":definition},
+            **({"receipt_controls":result["receipt_controls"]} if "receipt_controls" in result else {}),
             "po_candidates":int(result.get("po_candidates") or 0),"config_version":result.get("config_version"),
             # Decision 76: Order Date is evidence only (review note and a Checks row), never an editable field.
             **({"order_date":result["order_date"]} if result.get("order_date") else {}),
@@ -354,8 +355,42 @@ def rules_validation(view,ledger=(),reviewed=False):
     if not reviewed:
         issues.append({"code":"REVIEW","message":"Compare values and evidence with the document, then confirm review","owner":"","line":None,
                        "blocking":True,"level":"review"})
+    allocations=[]
+    controls=view.get("receipt_controls")
+    if controls is not None:
+        used=defaultdict(Decimal)
+        for receipt in ledger:
+            for allocation in receipt.get("allocations",[]):
+                used[allocation["key"]]+=Decimal(allocation["qty"])
+        capacities=controls.get("capacities",[])
+        if not controls.get("known"):
+            issues.append({"code":"Receipt Evidence","message":"Receipt availability is unknown; supply authoritative receipt evidence",
+                           "owner":"Buyer","line":None,"blocking":True,"level":"hard"})
+        else:
+            if any(str(view["fields"].get(k,{}).get("value") or "") != str(v) for k,v in controls.get("scope",{}).items()):
+                issues.append({"code":"Receipt Scope","message":"Reviewed supplier, order or destination differs from receipt evidence",
+                               "owner":"Buyer","line":None,"blocking":True,"level":"hard"})
+            demand=defaultdict(Decimal)
+            for line in view["lines"]:
+                item=str(line["cells"]["Item"].get("value") or "")
+                qty=D(line["cells"]["Quantity"].get("value"))
+                if qty is None or qty<0:
+                    issues.append({"code":"Receipt Quantity","message":"Reviewed quantity has no valid receipt demand",
+                                   "owner":"Buyer","line":line["line"],"blocking":True,"level":"hard"})
+                else:demand[item]+=qty
+            for item,qty in demand.items():
+                remaining=qty
+                for capacity in sorted((c for c in capacities if c["item"]==item),key=lambda c:c["key"]):
+                    available=max(Decimal(0),Decimal(capacity["qty"])-used[capacity["key"]])
+                    take=min(remaining,available)
+                    if take>0:
+                        allocations.append({"key":capacity["key"],"qty":str(take),"item":item,"reference":capacity.get("reference","")})
+                        remaining-=take
+                if remaining>0:
+                    issues.append({"code":"Receipt Conflict","message":"Insufficient unallocated authoritative receipts for the selected invoices",
+                                   "owner":"Buyer","line":None,"blocking":True,"level":"hard"})
     ready=not any(i["blocking"] for i in issues)
     matches=[{"line":l["line"],"item":l["cells"]["Item"]["value"] or "","gtin":l["cells"]["UPC"]["value"] or ""} for l in view["lines"]]
     accepted=[{"rule":i.get("rule",""),"code":i["code"],"line":i.get("line")} for i in issues if i.get("accepted")]
-    return {"ready":ready,"issues":issues,"matches":matches,"source":"fine_rules","status":view["status"],"accepted":accepted,
+    return {"ready":ready,"issues":issues,"matches":matches,"allocations":allocations if ready else [],"source":"fine_rules","status":view["status"],"accepted":accepted,
             "item_lines":view["item_lines"],"location_type":view["fields"]["location_type"]["value"]}

@@ -21,7 +21,9 @@ the arithmetic checks so a reviewer sees which lines need attention.
 
 import re
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal
+
+from app.numbers import to_decimal
 
 TITLE = re.compile(r"^TAX INVOICE(?:\s|$)")
 NUMBER = re.compile(r"^#\s*([A-Z0-9][A-Z0-9./_-]{2,79})(?:\s|$)")
@@ -110,13 +112,6 @@ def _accented(char):
 
 def _text(words):
     return " ".join(w["text"] for w in words)
-
-
-def _decimal(value):
-    try:
-        return Decimal(str(value).replace(",", ""))
-    except (InvalidOperation, ValueError):
-        return None
 
 
 def _long_date(value):
@@ -236,7 +231,7 @@ def _tail(words):
             and MONEY.match(t[2]) and MONEY.match(t[3]) and RATE.match(t[4]) and MONEY.match(t[5])
             and MONEY.match(t[6])):
         return dict(zip(("qty", "uom", "price", "net_amount", "rate", "tax_amount", "total"),
-                        [_decimal(t[0]), t[1], *[_decimal(v) for v in t[2:]]]))
+                        [to_decimal(t[0]), t[1], *[to_decimal(v) for v in t[2:]]]))
     return None
 
 
@@ -318,11 +313,11 @@ def extract(text, boxes):
         "supplier_name": supplier, "buyer_name": buyer,
         "date_printed": issued[0] if issued else None, "date": _long_date(issued[0]) if issued else None,
         "currency": currencies.pop() if len(currencies) == 1 else None,
-        "net": _decimal(sub_total[1]) if sub_total else None,
-        "tax": _decimal(total_vat[1]) if total_vat else None,
+        "net": to_decimal(sub_total[1]) if sub_total else None,
+        "tax": to_decimal(total_vat[1]) if total_vat else None,
         "lines": out_lines,
     }
-    return invoice, reconcile(drafts, invoice, _decimal(total[1]) if total else None)
+    return invoice, reconcile(drafts, invoice, to_decimal(total[1]) if total else None)
 
 
 def reconcile(drafts, invoice, total):

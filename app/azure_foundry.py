@@ -21,6 +21,14 @@ ENV_API_KEY = "INV_STUDIO_AZURE_API_KEY"
 # The deployment the hosted workspace reads with when nobody has chosen a model: the
 # managed default, the way VERTEX_MODEL is for Vertex.
 ENV_DEPLOYMENT = "INV_STUDIO_AZURE_DEPLOYMENT"
+# key (default): the api-key header. managed_identity: an Entra access token for the app's own managed
+# identity, so no AI key exists anywhere (InfoSec LLD §9). The identity needs the Cognitive Services OpenAI
+# User role on the Foundry resource; a gateway in front (Citadel) may name its own scope.
+ENV_AUTH = "INV_STUDIO_AZURE_AUTH"
+ENV_SCOPE = "INV_STUDIO_AZURE_TOKEN_SCOPE"
+MANAGED_IDENTITY = "managed_identity"
+DEFAULT_SCOPE = "https://cognitiveservices.azure.com/.default"
+_SCOPE = re.compile(r"^(https://|api://)[A-Za-z0-9._:/-]{1,200}/\.default$")
 
 # Azure resource hosts that serve the Foundry/Azure OpenAI v1 data plane. The
 # server issues the request, so an endpoint outside these suffixes is refused:
@@ -74,11 +82,39 @@ def base_url(origin):
     return origin + "/openai/v1"
 
 
+def managed_identity():
+    """True when the deployment authenticates to Foundry with its managed identity instead of an api-key."""
+    return os.environ.get(ENV_AUTH, "").strip().casefold() == MANAGED_IDENTITY
+
+
+def token_scope():
+    scope = os.environ.get(ENV_SCOPE, "").strip()
+    return scope if _SCOPE.fullmatch(scope) else DEFAULT_SCOPE
+
+
+_credential = None
+
+
+def bearer_token(scope=None):
+    """An Entra access token for the app's managed identity. azure-identity caches it until near expiry."""
+    global _credential
+    if _credential is None:
+        from azure.identity import DefaultAzureCredential  # the cloud image installs the azure extra
+        _credential = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    return _credential.get_token(scope or token_scope()).token
+
+
 def env_connection():
-    """An endpoint/key pair supplied by deployment configuration, if both are set."""
+    """An endpoint and credential supplied by deployment configuration, if complete.
+
+    With managed identity the endpoint alone is enough: the key secret, if one is mounted, is never used."""
     endpoint = os.environ.get(ENV_ENDPOINT, "").strip()
+    if not endpoint:
+        return None
+    if managed_identity():
+        return {"endpoint": normalise_endpoint(endpoint), "api_key": None, "auth": MANAGED_IDENTITY}
     key = os.environ.get(ENV_API_KEY, "").strip()
-    if not endpoint or not key:
+    if not key:
         return None
     return {"endpoint": normalise_endpoint(endpoint), "api_key": key}
 
@@ -126,11 +162,24 @@ class AzureFoundry:
         return env_deployment() if env_connection() is not None else ""
 
     def credentials(self):
-        """The (base URL, key) the adapter calls with. A saved connection wins over the environment."""
+        """The (base URL, key) the adapter calls with. A saved connection wins over the environment.
+
+        The key is None when the deployment uses its managed identity: auth_headers() then sends a token."""
         saved = _saved(self.store) or env_connection()
         if not saved:
             raise ValueError("Connect Azure AI Foundry with its endpoint and API key first")
         return base_url(saved["endpoint"]), saved["api_key"]
+
+    def auth_headers(self):
+        """The header that authenticates one Foundry request: an api-key, or a managed identity bearer token."""
+        key = self.credentials()[1]
+        if key:
+            return {"api-key": key}
+        try:
+            return {"Authorization": "Bearer " + bearer_token()}
+        except Exception:
+            raise ValueError("The app identity could not get a token for Azure AI Foundry. Check that it has the "
+                             "Cognitive Services OpenAI User role on the resource.") from None
 
     def disconnect(self):
         self.store.secret(SECRET, delete=True)

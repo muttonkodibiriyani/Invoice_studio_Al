@@ -11,9 +11,9 @@ its own sources; on a scan with no text layer a later local OCR pass adds boxes 
 carries a near-identical value instead, a review flag. Nothing here ever changes a value.
 """
 import re
-from decimal import Decimal, InvalidOperation
 
 from .columnar_tax_invoice import _rows
+from .numbers import to_decimal
 
 HEADER_FIELDS = ("number", "supplier_name", "buyer_name", "po", "currency", "net", "tax")
 AMOUNT_FIELDS = ("net", "tax")
@@ -26,13 +26,6 @@ MAX_WINDOW = 12
 
 def _fold(value):
     return re.sub(r"[^0-9a-z]", "", str(value if value is not None else "").casefold())
-
-
-def _decimal(text):
-    try:
-        return Decimal(str(text).replace(",", "").replace(" ", ""))
-    except (InvalidOperation, ValueError):
-        return None
 
 
 def _words(boxes):
@@ -83,7 +76,7 @@ class Layout:
         target = _fold(value)
         if not target:
             return None
-        amount = _decimal(value) if numeric else None
+        amount = to_decimal(value) if numeric else None
         starts = self.index.get(target[:2], []) + (self.index.get(target[:1], []) if len(target) > 1 else [])
         for r, start in sorted(set(starts)):
             row = self.rows[r]
@@ -96,7 +89,7 @@ class Layout:
                 if folded == target:
                     return _entry(window)
                 if amount is not None and len(window) <= 2 and re.search(r"\d", window[-1]["text"]):
-                    printed = _decimal("".join(w["text"] for w in window).rstrip(":,"))
+                    printed = to_decimal("".join(w["text"] for w in window).rstrip(":,"))
                     if printed is not None and printed == amount:
                         return _entry(window)
                 if not target.startswith(folded):

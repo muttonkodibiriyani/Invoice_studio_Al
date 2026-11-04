@@ -10,13 +10,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from itertools import groupby
 from math import radians, tan
 from statistics import fmean, median
 from typing import Any, Iterable
 
 from app.models import Invoice, Line
+from app.numbers import to_decimal
 
 
 # An OCR reader may print a title's words with no space between them ("TaxInvoice"), so the
@@ -31,7 +32,6 @@ _PURCHASE_ORDER_HEADING = re.compile(r"(?im)^\s*purchase\s+order(?:\s+no\b[^\n]*
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]{0,79}$")
 # The same identifier as printed, with the single spaces between its parts kept.
 _SPACED_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]*(?: [A-Za-z0-9][A-Za-z0-9./_-]*){0,5}$")
-_PLAIN_NUMBER = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _GTIN = re.compile(r"(?i)\b(?:EAN|GTIN|UPC)\s*[:#-]?\s*([0-9][0-9 -]{6,22}[0-9])\b")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
 # What separates a label from its value. A scan adds marks of its own between the two -
@@ -198,10 +198,13 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     invoice_date = _extract_date(lines)
     if po is None:
         po = compact_header.get("po")
-    if invoice_date is None:
-        invoice_date = compact_header.get("date")
+    if invoice_date is None and compact_header.get("date"):
+        invoice_date = _parse_date(compact_header["date"])
     if invoice_date is None:
         invoice_date = _spatial_labeled_date(rows)
+    column_date = _column_labeled_date(rows)
+    if invoice_date is None and column_date is not None:
+        invoice_date = _parse_date(column_date)
     currency = _extract_currency(lines)
     net_patterns = (
             re.compile(
@@ -276,7 +279,8 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         po=po,
         location=None,
         date=invoice_date,
-        date_printed=_extract_printed_date(source_lines) or _extract_printed_date(lines),
+        date_printed=_extract_printed_date(source_lines) or _extract_printed_date(lines) or column_date
+        or compact_header.get("date"),
         currency=currency,
         origin=None,
         market=None,
@@ -620,6 +624,42 @@ def _spatial_labeled_date(rows: list[tuple[int, list[_Word]]]) -> str | None:
                         values.append(parsed)
                     break
                 break
+    return _only_distinct(values)
+
+
+# A date as printed: numeric in any order, or with a month name.
+_PRINTED_DATE = re.compile(
+    r"(?i)\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|\d{1,2}(?:st|nd|rd|th)?[- /][A-Za-z]{3,9},?[- /]\d{2,4}"
+    r"|[A-Za-z]{3,9}\.? \d{1,2},? \d{4}"
+)
+
+
+def _column_labeled_date(rows: list[tuple[int, list[_Word]]]) -> str | None:
+    """The date printed under an "Invoice Date" column heading, as printed.
+
+    A header strip prints "Invoice Date  Due Date  Delivery Date" on one row and the dates on the row
+    below, so the value is the one under the heading's own span: the due and delivery dates sit under
+    theirs. Only the row just below counts.
+    """
+
+    values: list[str] = []
+    for index, (page, row) in enumerate(rows):
+        for start in range(len(row) - 1):
+            if " ".join(_normal(word.text) for word in row[start:start + 2]) not in {"invoice date", "document date"}:
+                continue
+            label = row[start:start + 2]
+            left, right = label[0].x0, label[-1].x1
+            slack = label[0].height
+            below = next(
+                (other for other_page, other in rows[index + 1:index + 2] if other_page == page), None
+            )
+            if not below or below[0].y0 - label[0].y1 > 3 * slack:
+                continue
+            under = [word for word in below if left - slack <= word.x <= right + slack]
+            printed = re.sub(r"\s*([-/.,])\s*", r"\1", " ".join(word.text for word in under)).strip()
+            printed = re.sub(r",(?=\d{4})", ", ", printed)
+            if _PRINTED_DATE.fullmatch(printed):
+                values.append(printed)
     return _only_distinct(values)
 
 
@@ -996,8 +1036,8 @@ def _spatial_compact_header(rows: list[tuple[int, list[_Word]]]) -> dict[str, st
                 )
                 if candidate is None:
                     continue
-                if field == "date":
-                    parsed = _parse_compact_header_date(candidate)
+                if field == "date":  # kept as printed: an ambiguous date still marks the block
+                    parsed = candidate if _parse_date(candidate) or _PRINTED_DATE.fullmatch(candidate) else None
                 else:
                     compact = candidate.replace(" ", "")
                     parsed = (
@@ -1027,20 +1067,6 @@ def _spatial_compact_header(rows: list[tuple[int, list[_Word]]]) -> dict[str, st
             valid.append({field: next(iter(field_values)) for field, field_values in values.items()})
     distinct = {tuple(sorted(candidate.items())) for candidate in valid}
     return dict(next(iter(distinct))) if len(distinct) == 1 else {}
-
-
-def _parse_compact_header_date(value: str) -> str | None:
-    parsed = _parse_date(value)
-    if parsed is not None:
-        return parsed
-    day_first = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", value.strip())
-    if day_first is None:
-        return None
-    day, month, year = map(int, day_first.groups())
-    try:
-        return date(year, month, day).isoformat()
-    except ValueError:
-        return None
 
 
 def _unique_text(lines: list[str], patterns: tuple[re.Pattern[str], ...]) -> str | None:
@@ -1301,41 +1327,10 @@ def _extract_money(lines: list[str], patterns: tuple[re.Pattern[str], ...]) -> D
     return next(iter(distinct))
 
 
-def _group_separators(value: str) -> str:
-    """One printed amount as a plain number, whichever separators it was printed with.
-
-    "1,234.56" and "1.234,56" are the same amount in two conventions, and a scan of either
-    reads the separators interchangeably: "2,480.00" comes back as "2.480.00" often enough
-    that rejecting it loses a line total that is plainly printed. With three or more groups
-    the separators are unambiguous, so only that case is read: every separator but the last
-    groups thousands, and the last one is the decimal point unless its group is a thousand.
-    """
-
-    if not re.fullmatch(r"[0-9][0-9.,]*", value):
-        return value
-    groups = value.replace(",", ".").split(".")
-    if len(groups) < 3 or any(not group for group in groups):
-        return value
-    if any(len(group) != 3 for group in groups[1:-1]) or len(groups[0]) > 3:
-        return value
-    if len(groups[-1]) == 3:
-        return "".join(groups)
-    if len(groups[-1]) in (1, 2):
-        return "".join(groups[:-1]) + "." + groups[-1]
-    return value
-
-
 def _parse_decimal(value: str) -> Decimal | None:
-    cleaned = _group_separators(value.strip()).replace(",", "")
-    if not _PLAIN_NUMBER.fullmatch(cleaned):
-        return None
-    try:
-        result = Decimal(cleaned)
-    except InvalidOperation:
-        return None
-    if not result.is_finite() or result < 0 or len(result.as_tuple().digits) > 24:
-        return None
-    return result
+    """A printed amount (app.numbers.to_decimal); a negative is never an amount the layout reads."""
+    result = to_decimal(value)
+    return result if result is not None and result >= 0 else None
 
 
 # A reader can return a thousands separator as a word of its own, so "1 , 028.80" arrives as

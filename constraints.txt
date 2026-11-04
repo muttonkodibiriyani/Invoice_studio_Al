@@ -103,7 +103,7 @@ psutil==7.2.2
 psycopg-binary==3.3.6
 psycopg==3.3.6
 py-cpuinfo==9.0.0
-pyasn1==0.6.4
+pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pyclipper==1.4.0
 pycparser==3.0

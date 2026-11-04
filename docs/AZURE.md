@@ -711,8 +711,41 @@ app assumes `https://login.microsoftonline.com`).
 
 ## 7. Azure AI Foundry
 
-The Foundry resource lives in someone else's subscription; the app only needs the endpoint, the
-deployment name and the api-key.
+Release 1 runs with AI off. Two things change when AI is switched on: how the app authenticates to
+Foundry, and the outbound rule that lets the call out (the apps NSG denies the internet, InfoSec LLD §3).
+
+**Preferred: the app's managed identity, no key at all** (InfoSec LLD §9). Whoever owns the Foundry
+resource (or the Citadel gateway in front of it) grants the app identity *Cognitive Services OpenAI
+User*; then the app sends an Entra token instead of an api-key:
+
+```bash
+PRINCIPAL=$(az identity show -g "$RG" -n "${APP%-api}-app" --query principalId -o tsv)
+az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal-type ServicePrincipal \
+  --role "Cognitive Services OpenAI User" --scope "<Foundry resource id>"
+az containerapp update -n "$APP" -g "$RG" \
+  --set-env-vars "INV_STUDIO_AZURE_AUTH=managed_identity" \
+                 "INV_STUDIO_AZURE_ENDPOINT=https://<resource>.openai.azure.com" \
+                 "INV_STUDIO_AZURE_DEPLOYMENT=<deployment name>"
+# A gateway that names its own audience: also INV_STUDIO_AZURE_TOKEN_SCOPE=api://<gateway app id>/.default
+```
+
+**Let the call out.** Allow 443 to the Foundry private endpoint's address, or to the service tag
+`CognitiveServicesFrontend` (confirm it against the published Service Tags file for the region). The
+rule has the name and priority `main.bicep` gives it with `aiEgressDestination`:
+
+```bash
+APPS_PREFIX=$(az network vnet subnet show -g "$RG" --vnet-name "${APP%-api}-vnet" -n apps --query addressPrefix -o tsv)
+az network nsg rule create -g "$RG" --nsg-name "${APP%-api}-vnet-apps-nsg" -n allow-out-ai --priority 270 \
+  --direction Outbound --access Allow --protocol Tcp --source-address-prefixes "$APPS_PREFIX" \
+  --destination-address-prefixes "<Foundry private endpoint IP>/32 or CognitiveServicesFrontend" \
+  --destination-port-ranges 443
+```
+
+Only Azure AI Foundry can be used: the template sets `INV_STUDIO_AI_PROVIDERS=azure`, so the app refuses
+to connect or call any other provider (403), and the NSG blocks their hosts as well.
+
+**With an api-key instead.** The Foundry resource lives in someone else's subscription; the app only
+needs the endpoint, the deployment name and the api-key.
 
 ```bash
 az keyvault secret set --vault-name "$VAULT" --name inv-studio-foundry-key --value '<api-key>' --output none
@@ -736,6 +769,33 @@ az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[
 
 The template sends all traffic to the latest revision. With `containerImage` empty it creates a
 revision on the hello-world image, and that takes the app down until you move traffic back (§9).
+
+**Prove the connection before switching AI on.** Once the endpoint, key and deployment name arrive, run the
+connection check with them. It goes through the app's own code: the endpoint allow-list, the auth header and
+the read every job makes. It sends one tiny request, then reads the synthetic sample invoice as text, as a PDF
+and as an image, a few thousand tokens in all. It never prints or saves the key.
+
+```bash
+# From a checkout with .venv. The values may also sit in .env (git-ignored), read the way scripts/run.sh reads it.
+export INV_STUDIO_AZURE_ENDPOINT=https://<resource>.openai.azure.com
+export INV_STUDIO_AZURE_DEPLOYMENT=<deployment name>
+read -rs INV_STUDIO_AZURE_API_KEY && export INV_STUDIO_AZURE_API_KEY   # paste the key: not echoed, not in history
+.venv/bin/python scripts/azure_ai_check.py        # the same check as a test: .venv/bin/pytest -m azure_live -rs
+```
+
+Every line `ok` (exit code 0) means the app reads invoices with that deployment. A `FAILED` line names what to
+change: the key (HTTP 401), the role or the resource's network rules (403), the deployment name (404), the
+`allow-out-ai` rule or the private DNS zone (no connection), or a model that cannot take a PDF or an image. Exit
+code 2 means nothing is configured yet. With managed identity, set `INV_STUDIO_AZURE_AUTH=managed_identity`
+instead of the key and run the check where that identity can get a token.
+
+Run from a laptop or Cloud Shell, the check proves the endpoint, the key and the deployment, not the app's own
+network route. Once the revision runs with AI on, read `samples/invoice-scan.png` in the app with Azure AI Foundry
+as the reader: that proves the NSG rule and the private DNS as well.
+
+The endpoint must be the Foundry resource itself. A Citadel gateway address (`*.azure-api.net`) is refused by
+the app's allow-list today, and while `INV_STUDIO_AZURE_ENDPOINT` holds a refused value every page fails to load
+(`/api/state` answers 400). The check reports both before anything is deployed.
 
 ## 8. Go live
 
@@ -868,6 +928,22 @@ The Azure client libraries live in the optional `azure` extra: `pip install -e '
 image installs it, so one image runs on both clouds.
 
 ## 13. Known limits of phase 1
+
+- **Closed (InfoSec LLD §9): outbound traffic was open.** The apps NSG now allows only Entra ID, the
+  registries, Storage, Key Vault and Azure Monitor on 443, plus the private endpoints, and denies the
+  internet (`restrictEgress`, default on). `HUB_FIREWALL_IP` in the kit adds a route of all outbound
+  traffic through the hub firewall.
+- **Closed (InfoSec LLD §9): Key Vault and Blob had only public endpoints.** Both now get private
+  endpoints and private DNS (`privatelink.bicep`). `scripts/azure_lockdown.py` switches their public
+  endpoints off once the Cloud Shell steps that read the vault are done, proves the app still starts and
+  reaches the database and Blob, and opens them again by itself if it does not
+  ([DEPLOY_CLOUD_SHELL.md](DEPLOY_CLOUD_SHELL.md) step 8). The registry stays public: Basic has no
+  private endpoint, and the image build needs it.
+- **Closed (InfoSec LLD §9): the AI call needed a key, and an admin could add a non-Azure provider.**
+  §7: managed identity, and `INV_STUDIO_AI_PROVIDERS=azure`.
+- **Closed (InfoSec LLD §8, "Now"): failures were not alerted.** `alerts.bicep` fires on a container
+  restart, more than 5 server errors in 5 minutes, database CPU above 80% and storage above 85%; the
+  kit's optional `ALERT_EMAILS` line mails them.
 
 - **Closed: the database had a public endpoint.** The Container Apps environment now runs in a delegated
   subnet of `<prefix>-vnet`, the server has a private endpoint in a second subnet, the zone

@@ -21,10 +21,11 @@ import tempfile
 import threading
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
+
+from .numbers import parse_number, to_decimal
 
 STORE_DIR = "learned"
 TEMPLATES_DIR = "templates"
@@ -72,20 +73,12 @@ def _text(value):
     return "" if value is None else " ".join(str(value).split())
 
 
-def _dec(value):
-    try:
-        parsed = Decimal(_text(value).replace(",", "").replace(" ", ""))
-    except (InvalidOperation, ValueError):
-        return None
-    return parsed if parsed.is_finite() else None
-
-
 def _same(field, verified, produced):
     left, right = _text(verified), _text(produced)
     if not left:
         return not right
     if field in NUMERIC:
-        return _dec(left) is not None and _dec(left) == _dec(right)
+        return to_decimal(left) is not None and to_decimal(left) == to_decimal(right)
     return left.casefold() == right.casefold()
 
 
@@ -100,7 +93,7 @@ def _squash(value):
 
 def _plain_number(value):
     value = _text(value)
-    return value.replace(",", "") if re.fullmatch(r"-?\d{1,3}(,\d{3})+(\.\d+)?", value) else value
+    return parse_number(value) or value
 
 
 def plain_invoice(invoice):
@@ -175,9 +168,9 @@ def _printed(lines, field, value):
     """Where a verified value is printed: (line index, start, end, value patterns, extra)."""
     for index, line in enumerate(lines):
         if field in ("net", "tax"):
-            target = _dec(value)
+            target = to_decimal(value)
             for match in TOKEN_NUMBER.finditer(line):
-                if target is not None and _dec(match.group()) == target:
+                if target is not None and to_decimal(match.group()) == target:
                     decimals = len(match.group().split(".")[1]) if "." in match.group() else 0
                     pattern = r"-?\d[\d,]*\.\d{%d}" % decimals if decimals else r"-?\d[\d,]*"
                     yield index, match.start(), match.end(), [pattern], {"type": "float", "decimals": decimals}
@@ -266,14 +259,14 @@ def _numeric(token):
     token = token.strip(",;")
     if token.endswith("%"):
         return None
-    return _dec(token) if re.fullmatch(NUMBER, token) else None
+    return to_decimal(token) if re.fullmatch(NUMBER, token) else None
 
 
 def _locate_rows(lines, rows):
     anchors = []
     position = 0
     for number, row in enumerate(rows, 1):
-        needed = [_dec(row.get(field)) for field in ("qty", "price", "net_amount")]
+        needed = [to_decimal(row.get(field)) for field in ("qty", "price", "net_amount")]
         needed = [value for value in needed if value is not None]
         if len(needed) < 2:
             return None, f"line {number} has too few numbers to locate"
@@ -295,7 +288,7 @@ def _assign_numbers(clean, roles, row):
     price equal to the amount) lands on the same column in every row. None when that order
     does not hold; the caller then falls back to matching by value alone.
     """
-    wanted = [(field, _dec(row.get(field))) for field in ("qty", "price", "net_amount", "tax_amount")]
+    wanted = [(field, to_decimal(row.get(field))) for field in ("qty", "price", "net_amount", "tax_amount")]
     wanted = [(field, value) for field, value in wanted if value is not None]
     positions = {}
     limit = len(clean)
@@ -323,7 +316,7 @@ def _assign_roles(line, row, ordinal):
             roles[k] = field
     else:
         for field in ("net_amount", "price", "tax_amount", "qty"):
-            target = _dec(row.get(field))
+            target = to_decimal(row.get(field))
             if target is None:
                 continue
             hits = [k for k, token in enumerate(clean) if roles[k] is None and _numeric(token) == target]

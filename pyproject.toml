@@ -26,8 +26,10 @@ app = ["static/*", "templates/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The golden scan tests need PaddleOCR, Docling and their models: pytest -m scan_readers (docs/GOLDEN_SAMPLES.md).
-addopts = "-m 'not scan_readers'"
-markers = ["scan_readers: reads a golden sample with PaddleOCR and Docling and their cached models"]
+# The Azure live test calls the configured Foundry deployment for real: pytest -m azure_live (docs/AZURE.md §7).
+addopts = "-m 'not scan_readers and not azure_live'"
+markers = ["scan_readers: reads a golden sample with PaddleOCR and Docling and their cached models",
+           "azure_live: reads the synthetic samples with the configured Azure AI Foundry deployment (costs tokens)"]
 [tool.ruff]
 line-length = 110
 [tool.ruff.lint]

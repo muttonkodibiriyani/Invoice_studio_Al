@@ -1,8 +1,11 @@
 """Evidenced joins between the master's independent blocks; no receipt balances are inferred."""
 import re
 from collections import defaultdict
+from decimal import Decimal
 
-from .fine_rules import (STORE, WAREHOUSE, _refs, ebs_key, evaluate_pogrn, location_market,
+from . import item_rules
+from . import location_type as location
+from .fine_rules import (_refs, ebs_key, evaluate_pogrn, location_market,
                          location_type, name_key, scan_pages, text, to_decimal)
 
 
@@ -42,13 +45,21 @@ def destination(invoice, scan, directory, config):
     if len(by_id) != 1:
         return None
     number, rows = next(iter(by_id.items()))
-    names = " ".join(str(v) for row in rows for v in row["data"].values())
-    warehouse = bool(re.search(r"(?i)\b(?:warehouse|w/h|wh)\b", names))
+    # L4.1 / L4.2: the row's location name, read through the rules workbook's Location_Type_Variants.
+    variants = item_rules.rules().location_type_variants()
+    found = {location.resolve(row["data"], variants) for row in rows}
+    kinds = {f.type for f in found}
     configured = location_type(number, config)
-    if configured["conflict"] or warehouse and configured["type"] == STORE:
+    if any(location.ASK_LOCATION in f.prompts for f in found) or configured["conflict"] or len(kinds) != 1:
         return None
-    kind = WAREHOUSE if warehouse else configured["type"] or STORE
-    kind_source = "Master location directory" if warehouse else configured["source"] or "Owner Store default (M4)"
+    kind = kinds.pop()
+    if configured["type"] and kind not in (None, configured["type"]):
+        return None
+    # A name the variants do not list is held for the user (P-LOCTYPE) unless the owner configured the type.
+    kind_source = "Rules workbook Location_Type_Variants (L4.2)" if kind else configured["source"]
+    kind = kind or configured["type"]
+    if not kind:
+        return None
     return {"number": number, "rows": rows, "kind": kind, "kind_source": kind_source,
             "refs": ", ".join(f"{r['source_hash']}:location:{r['source_sheet']}!{r['source_row']}" for r in rows)}
 
@@ -67,32 +78,33 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     groups = defaultdict(list)
     for row in rows:
         groups[text(row.get("RMS_ORDER_NO"))].append(row)
-    groups = {order: group for order, group in groups.items() if order and
-              parents <= {text(r.get("RMS_ITEM_ID")) for r in group}}
-    printed = text(run.invoice.po)
-    printed_match = printed in groups
-    if printed_match:
-        groups = {printed: groups[printed]}
-    elif printed:
-        manual = {order: group for order, group in groups.items()
-                  if any(text(r.get("MANUAL ORDER NO")) == printed for r in group)}
-        if manual:
-            groups = manual
-        else:
-            # Unrecognized printed PO may use the established scoped item/quantity fallback.
-            groups = {order: group for order, group in groups.items() if quantities_agree(group, invoiced)}
-    else:
-        groups = {order: group for order, group in groups.items() if quantities_agree(group, invoiced)}
-    outcome["candidates"] = len(groups)
-    if len(groups) != 1:
-        run.exception("Ambiguous PO" if groups else "Missing PO",
-                      "No unique supplier-scoped RMS order agrees with the invoice evidence", "M4", owner="Buyer")
+    groups.pop("", None)
+    pick = choose_order(groups, parents, invoiced or {}, item_rules.rules().coverage_tiers())
+    order, share = pick["order"], f"{pick['covered']} of {pick['total']} matched items"
+    outcome["candidates"] = len(pick["tied"]) or int(order is not None)
+    if pick["tied"]:
+        run.exception("Ambiguous PO", f"Orders {', '.join(pick['tied'])} each cover {share}; pick one (P-PO)", "O3.3",
+                      owner="Buyer")
         return outcome
-    order, selected = next(iter(groups.items()))
+    if order is None:
+        run.exception("Missing PO", "No RMS order holds the matched items (P-PO-NF)", "O3.3", owner="Buyer")
+        return outcome
+    if pick["tier"].export_mode == "no":
+        run.exception("Missing PO", f"Order {order} covers only {share} ({pick['tier'].name}); add the missing "
+                      "items to the item master, then Update item master", "O3.3", owner="Buyer")
+        return outcome
+    if pick["tier"].export_mode != "yes":
+        run.exception("Ambiguous PO", f"Order {order} covers {share} ({pick['tier'].name}); confirm it (P-PO)",
+                      "O3.3", owner="Buyer")
+    selected = groups[order]
+    # O3.2: the printed PO only validates the item-based order; a different printed PO is noted, never a failure.
+    printed = text(run.invoice.po)
+    printed_match = bool(printed) and any(printed in (order, text(r.get("MANUAL ORDER NO"))) for r in selected)
     # Every order row has an exact barcode/parent bridge to this supplier's item rows.
     order_refs = _refs(selected)
-    run.trace("Order No", order, "M4", "Master PO block RMS_ORDER_NO", reference=order_refs,
-              original=printed if printed_match else None)
+    run.trace("Order No", order, "O3.1" if pick["covered"] == pick["total"] else "O3.3",
+              "Master PO block RMS_ORDER_NO" + ("" if printed_match or not printed else f"; invoice PO {printed} differs"),
+              reference=order_refs, original=printed if printed_match else None)
     outcome.update(order=order, source="Master order bridge", cited=selected)
     scan = scan_pages(getattr(run, "master_text", ""), getattr(run, "master_boxes", ()))
     dest = destination(run.invoice, scan, catalog.get("locations", []), run.config)
@@ -176,13 +188,21 @@ def receipt_capacities(rows, supplier_site, order, location, invoiced):
             "demand": {p: str(q) if q is not None else None for p, q in invoiced.items()}}
 
 
-def quantities_agree(rows, invoiced):
-    """One distinct observed quantity per item may corroborate an order; repeats never add availability."""
-    if not invoiced or any(v is None for v in invoiced.values()):
-        return False
-    observed = defaultdict(set)
-    for row in rows:
-        qty = to_decimal(row.get("QTY_RECEIVED"))
-        if qty is not None:
-            observed[text(row.get("RMS_ITEM_ID"))].add(qty)
-    return all(observed.get(parent) == {qty} for parent, qty in invoiced.items())
+def choose_order(groups, parents, invoiced, tiers):
+    """O3.1 / O3.3: the RMS order holding the most matched items (ITEM_PARENT), then the most invoice quantity.
+
+    ``groups`` is RMS_ORDER_NO -> order rows, ``invoiced`` ITEM_PARENT -> invoice quantity (None when unknown) and
+    ``tiers`` RuleSet.coverage_tiers(). Returns ``{order, covered, total, tier, tied}``: a tie quantity cannot break
+    leaves ``order`` None and lists the tied orders for the user (P-PO)."""
+    ranked = []
+    for order, group in groups.items():
+        held = parents & {text(r.get("RMS_ITEM_ID")) for r in group}
+        if held:
+            ranked.append((len(held), sum(to_decimal(invoiced.get(p)) or 0 for p in held), order))
+    ranked.sort(key=lambda r: r[:2], reverse=True)
+    best = ranked[0] if ranked else (0, 0, None)
+    tied = sorted(r[2] for r in ranked if r[:2] == best[:2]) if len(ranked) > 1 and ranked[1][:2] == best[:2] else []
+    pct = Decimal(100) * best[0] / len(parents) if parents else Decimal(0)
+    tier = next((t for t in tiers if t.low <= pct and (t.high is None or pct < t.high)), None)
+    return {"order": None if tied else best[2], "covered": best[0], "total": len(parents), "tier": tier,
+            "tied": tied}

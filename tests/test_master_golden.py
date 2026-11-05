@@ -11,8 +11,8 @@ supplier confirmation applied (v0.3 searches items only inside the confirmed sit
 ``confirm: false`` must equal the golden value. A cell with ``confirm: true`` waits for a reviewer: it may be
 blank or already hold the golden value, never another value, and the invoice may not be Approved.
 
-Every case is xfail(strict) until the business owner signs off (task "Confirm the expected outputs are right") and the rule
-fixes land; a case that starts passing fails the run, so flip it to a plain test in the same PR as the fix.
+Every case passes since the rule fixes in PR #29. The expected values still wait for the business owner's sign-off
+(task "Confirm the expected outputs are right"); the assumed ones are listed in doc 01a1a88a-0301.
 """
 import hashlib
 import hmac
@@ -40,7 +40,6 @@ PUBLIC_VALUES = {"", "Store (S)", "Warehouse (W)", "UAEV5", "KSAV15"}
 CONFIG = {"version": "golden-v0.3", "vat_codes": [
     {"region": "ARE", "code": "UAEV5", "rate": "5", "active_from": "2020-01-01"},
     {"region": "SAU", "code": "KSAV15", "rate": "15", "active_from": "2020-01-01"}]}
-PENDING = pytest.mark.xfail(strict=True, reason="pending sign-off")
 
 
 @pytest.fixture(scope="module")
@@ -123,7 +122,7 @@ def run(path, source, confirmations):
 
 
 
-@pytest.mark.parametrize("case", [pytest.param(c, id=c["case"], marks=PENDING) for c in EXPECTED["cases"]])
+@pytest.mark.parametrize("case", EXPECTED["cases"], ids=lambda c: c["case"])
 def test_master_golden(case, source, invoices, key, confirmations):
     path = invoices.get(case["invoice"])
     assert path, f"{case['case']}: invoice not found in INV_MASTER_GOLDEN_DIR/invoices"

@@ -95,6 +95,7 @@ ITEM_LINE_DEFINITION = ("lines resolved to exactly one Item Master ITEM_PARENT w
                         "accepted PO/GRN, divided by all invoice lines")
 # Owner form 01a10c4f (answered 2026-10-05 13:48Z): pre-tax value tolerance per currency, compared at two decimals.
 # The owner sheets name the check (POG-007, C-16); the amounts are this form answer, cited as the evidence.
+CURRENCY_REGION = {"AED": "ARE", "SAR": "SAU"}  # VAT region of a currency used in one VAT country only (T5.1)
 VALUE_TOLERANCE_BY_CURRENCY = {"KWD": Decimal("1"), "AED": Decimal("2")}
 VALUE_DECIMALS = 2
 VALUE_TOLERANCE_SOURCE = "owner form 01a10c4f (2026-10-05 13:48Z): up to 1 KWD or 2 AED, rounded to 2 digits"
@@ -1129,6 +1130,21 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     return None, None, None
 
 
+def one_supplier_site(probe, source, candidates, deliver_to):
+    """v0.3 step 1 (A2): when the printed name is on several sites of one EBS supplier (one six-character code,
+    entity suffixes differ), the items are searched in all of them; the one site holding every matched item is the
+    site. Otherwise None, and the reviewer picks among the listed sites (S1.2)."""
+    offered = [c for c in probe.site_candidates if "supplier_site" in c]
+    names = [c["sites"][0]["site_name"] for c in offered]
+    if len(offered) < 2 or len({ebs_key(n) for n in names}) != 1 or not all(entity_hint(n)["entity"] for n in names):
+        return None
+    trial = Run(probe.invoice, probe.config, probe.filename)
+    sites = {c["supplier_site"] for c in offered}
+    matches = [match_line(trial, n, line, source, sites) for n, line in enumerate(probe.invoice.lines, 1)]
+    site = resolve_supplier(trial, source, matches, candidates, deliver_to)[0]
+    return {site} if site else None
+
+
 def choose_site(run, family, group):
     """SUP-003 with owner form 01a10c4f (site_choice = order_entity): the Active family site whose Item Master
     SUPPLIER_NAME starts with the accepted order's EBS code and whose entity/currency suffix equals the
@@ -1825,6 +1841,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
                                                   owner_supplier_code, owner_supplier_site)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
+    sites = sites or one_supplier_site(probe, source, candidates, deliver_to)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
                                                           owner_supplier_code, owner_supplier_site)
@@ -1902,6 +1919,12 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     elif po["status"] != "Location ambiguous":
         run.exception("Location ID", "Location waits for an accepted POGRN order (never from Item Master)",
                       "ALG-011", owner="Buyer")
+    if not location:
+        # L4.2 (A6): a location still unknown has an empty location name, which the rules workbook types as Store.
+        from . import location_type as loc
+        loc_type = loc.resolve({}, rules().location_type_variants()).type
+        if loc_type:
+            run.trace("Location Type", loc_type, "L4.2", "Rules workbook Location_Type_Variants: empty location name")
     if hint and hint["mapped"] and market and not same_market(hint["mapped"]["market"], market):
         run.exception("Market Mapping", f"Supplier suffix suggests {hint['mapped']['market']} but the receiving "
                       f"location is {market}", "R-027", owner="Business")
@@ -1911,8 +1934,10 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
                       "ALG-023", owner="Finance")
 
     # Line outputs (ALG-021/022/026/027).
-    tax_code = resolve_tax_code(run, market, document_date)
-    tax_source = "Owner VAT code table (C/PV), receiving market"
+    # T5.1 (A7): without a receiving market the country is the invoice currency's; the rate check still applies.
+    country = market or CURRENCY_REGION.get(text(invoice.currency).upper())
+    tax_code = resolve_tax_code(run, country, document_date)
+    tax_source = "Owner VAT code table (C/PV), " + ("receiving market" if market else "country of the invoice currency")
     lines_out = []
     discount = invoice_discount(invoice, scan)
     for line, m in zip(invoice.lines, matches):

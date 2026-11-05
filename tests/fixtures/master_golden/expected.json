@@ -11,8 +11,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:ca701be1b7fe995472582a6738c3a3f6915d389e4951adfef879b1ac0ac395df",
@@ -202,8 +202,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:4f7f20ce8d27290fcb4fcc12b8621d9ff1175de6848abc65264ff392c83f4bf7",
@@ -341,8 +341,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:ec926892b89e961759bb5b53bbfd1c2a27d902bc262049d909f42eb39f712af6",
@@ -441,8 +441,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:ce3bb4ee11ce3b61c94e60c4f119c2ea3a56cb81ed1737bc6e69bdb2d576a522",
@@ -502,8 +502,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:ce8e8a1bd629c31782eb3de2eaec7448646dce25708a9a4e7073dede546e7d98",
@@ -550,8 +550,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:95195c8f140f2150113ff0511893d8cadc4170018b9c2288c021f43ee8c1c566",
@@ -598,8 +598,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:5c8e0d09b6c8ced2002e225ccf5a4f9137a40d0f01c1da3210f8d0393cacaaf2",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 the one available site"
     },
     "Order No": {
      "value": "hmac:4f7f20ce8d27290fcb4fcc12b8621d9ff1175de6848abc65264ff392c83f4bf7",

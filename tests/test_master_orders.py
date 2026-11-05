@@ -56,6 +56,39 @@ def test_invoice_quantity_breaks_an_item_tie_across_several_orders():
     assert (pick["order"], pick["covered"], pick["tied"], pick["decided"]) == ("B", 2, [], "quantity")
 
 
+def received(**qty):
+    return [{"RMS_ITEM_ID": p, "QTY_RECEIVED": q} for p, q in qty.items()]
+
+
+def test_a_tie_goes_to_the_order_whose_received_quantity_matches_the_invoice():
+    """D10 (Tharak, 5 Nov, provisional): among tied orders, QTY_RECEIVED equal to the invoice quantity wins."""
+    invoiced = {"P1": Decimal(5), "P2": Decimal(2)}
+    pick = choose_order({"1": received(P1=3, P2=2), "2": received(P1=5, P2=2), "3": received(P1=5, P2=1)},
+                        set(invoiced), invoiced, TIERS)
+    assert (pick["order"], pick["decided"], pick["quantity_matched"]) == ("2", "received-exact", True)
+
+
+def test_without_an_exact_received_match_the_nearest_order_wins_and_says_so():
+    """D10 (provisional): the smallest total |invoice qty - QTY_RECEIVED| wins; the Order No is still filled."""
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"1": received(P1=3), "2": received(P1=9), "3": received(P1=None)}, {"P1"}, invoiced, TIERS)
+    assert (pick["order"], pick["decided"], pick["quantity_matched"]) == ("1", "received-nearest", False)
+
+
+def test_received_quantity_sums_an_orders_rows_of_one_item():
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"1": received(P1=5), "2": [*received(P1=2), *received(P1=3)]}, {"P1"}, invoiced, TIERS)
+    assert pick["tied"] == ["1", "2"] and pick["decided"] == "lowest-tie" and pick["quantity_matched"] is True
+
+
+def test_a_tie_received_quantity_cannot_break_goes_to_the_lowest_order():
+    """D10 (provisional) step 3: still tied, the lowest order, every tied order listed for review."""
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"20": received(P1=3), "10": received(P1=7)}, {"P1"}, invoiced, TIERS)
+    assert (pick["order"], pick["tied"], pick["decided"], pick["quantity_matched"]) == \
+        ("10", ["10", "20"], "lowest-tie", False)
+
+
 @pytest.mark.parametrize("invoiced", [{"P1": 1, "P2": 1}, {"P1": None, "P2": None}])
 def test_a_tie_quantity_cannot_break_goes_to_the_lowest_order_and_lists_the_tie(invoiced):
     """D3 (provisional): never blank; the lowest tied RMS_ORDER_NO, every tied order listed for review."""

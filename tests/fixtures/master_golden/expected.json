@@ -345,9 +345,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "hmac:015bbd8b6ed775ea5a10b78bcc2c60bcb78f2d97821cd1ae6685bb60349538c9",
+     "value": "hmac:ec926892b89e961759bb5b53bbfd1c2a27d902bc262049d909f42eb39f712af6",
      "confirm": false,
-     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
+     "rule": "D10 tied orders, received-nearest by QTY_RECEIVED, no exact match (provisional)"
     },
     "Location": {
      "value": "",
@@ -447,7 +447,7 @@
     "Order No": {
      "value": "hmac:ce3bb4ee11ce3b61c94e60c4f119c2ea3a56cb81ed1737bc6e69bdb2d576a522",
      "confirm": false,
-     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
+     "rule": "D10 tied orders, received-nearest by QTY_RECEIVED, no exact match (provisional)"
     },
     "Location": {
      "value": "",
@@ -1891,9 +1891,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "hmac:61fa3c5e01474700883bb4a60412e0faeab87acf6249595e001c5217b0260abc",
+     "value": "hmac:ebc10dda1d14acff7a85cbaef0e250b39d2d0aaddc0d87f696f23b7b691a2580",
      "confirm": false,
-     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
+     "rule": "D10 tied orders, received-nearest by QTY_RECEIVED, no exact match (provisional)"
     },
     "Location": {
      "value": "",

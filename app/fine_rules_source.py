@@ -131,5 +131,6 @@ class LookupRulesSource:
                 if order and not any("quarant" in f.lower() for f in payload.get("flags", [])):
                     found.append({"RMS_ORDER_NO": order, "MANUAL ORDER NO": payload["data"].get("MANUAL ORDER NO", ""),
                                   "RMS_ITEM_ID": str(item.get("ITEM_PARENT")),
+                                  "QTY_RECEIVED": payload["data"].get("QTY_RECEIVED"),
                                   "_ref": f"{source_hash}:po:{sheet}!{number}", "_item_ref": item["_ref"]})
         return found

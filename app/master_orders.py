@@ -79,9 +79,13 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     if order is None:
         run.exception("Missing PO", "No RMS order holds the matched items (P-PO-NF)", "O3.3", owner="Buyer")
         return outcome
+    if pick["quantity_matched"] is False:
+        run.exception("Quantity Mismatch", f"Tied orders: no order matches the invoiced quantity; {order} is the "
+                      "nearest by QTY_RECEIVED, confirm or pick another (P-PO)", "D10", owner="Buyer")
     if pick["tied"]:
         run.exception("Ambiguous PO", f"Orders {', '.join(pick['tied'])} each cover {share} with the same invoice "
-                      f"quantity; {order} is the lowest, confirm or pick another (P-PO)", "O3.3", owner="Buyer")
+                      f"and received quantity; {order} is the lowest, confirm or pick another (P-PO)", "O3.3",
+                      owner="Buyer")
     elif len(groups) > 1:
         # D3 + D2: the found items carry several orders; the chosen one is confirmed in review.
         run.exception("Ambiguous PO", f"The found items carry orders {', '.join(sorted(groups, key=lambda o: (len(o), o)))};"
@@ -199,18 +203,21 @@ def order_rank(held, invoiced):
 
 
 def lowest_order(tied):
-    """D3 (provisional, awaiting Tharak): a tie D2 cannot break goes to the lowest RMS_ORDER_NO."""
+    """D3 (provisional, awaiting Tharak): a tie neither D2 nor D10 breaks goes to the lowest RMS_ORDER_NO."""
     return min(tied, key=lambda order: (len(order), order))
 
 
 def choose_order(groups, parents, invoiced, tiers):
-    """O3.1 / O3.3 with D2 / D3: the RMS order the found items (ITEM_PARENT) carry, ranked by order_rank; a tie
-    still standing goes to lowest_order.
+    """O3.1 / O3.3 with D2 / D3 / D10: the RMS order the found items (ITEM_PARENT) carry, ranked by order_rank; a tie
+    goes to the order whose QTY_RECEIVED matches the invoice, else the nearest (received_gap); one still standing
+    goes to lowest_order.
 
     ``groups`` is RMS_ORDER_NO -> order rows, ``invoiced`` ITEM_PARENT -> invoice quantity (None when unknown) and
     ``tiers`` RuleSet.coverage_tiers(). Returns ``{order, covered, total, tier, tied, decided}``: ``tied`` lists every
-    tied order for the reviewer (P-PO) and ``decided`` says how the order was chosen: unique, items, quantity or
-    lowest-tie. ``order`` is None only when no order holds a found item."""
+    tied order for the reviewer (P-PO) and ``decided`` says how the order was chosen: unique, items, quantity,
+    received-exact, received-nearest or lowest-tie. ``quantity_matched`` is False when no tied order's QTY_RECEIVED
+    matches the invoice (D10), None when received quantities did not decide. ``order`` is None only when no order
+    holds a found item."""
     ranked = {}
     for order, group in groups.items():
         held = parents & {text(r.get("RMS_ITEM_ID")) for r in group}
@@ -218,12 +225,35 @@ def choose_order(groups, parents, invoiced, tiers):
             ranked[order] = order_rank(held, invoiced)
     best = max(ranked.values(), default=None)
     tied = sorted((o for o, rank in ranked.items() if rank == best), key=lambda o: (len(o), o))
-    order = lowest_order(tied) if tied else None
     runner_up = max((rank for rank in ranked.values() if rank != best), default=None)
     decided = ("lowest-tie" if len(tied) > 1 else "unique" if runner_up is None else
-               "items" if runner_up[0] < best[0] else "quantity") if order else None
+               "items" if runner_up[0] < best[0] else "quantity") if tied else None
+    quantity_matched = None
+    gaps = {o: received_gap(groups[o], parents, invoiced) for o in tied} if len(tied) > 1 else {}
+    if gaps and None not in gaps.values():
+        least = min(gaps.values())
+        quantity_matched = least == 0
+        tied = [o for o in tied if gaps[o] == least]
+        if len(tied) == 1:
+            decided = "received-exact" if quantity_matched else "received-nearest"
+    order = lowest_order(tied) if tied else None
     covered = best[0] if best else 0
     pct = Decimal(100) * covered / len(parents) if parents else Decimal(0)
     tier = next((t for t in tiers if t.low <= pct and (t.high is None or pct < t.high)), None)
     return {"order": order, "covered": covered, "total": len(parents), "tier": tier,
-            "tied": tied if len(tied) > 1 else [], "decided": decided}
+            "tied": tied if len(tied) > 1 else [], "decided": decided, "quantity_matched": quantity_matched}
+
+
+def received_gap(group, parents, invoiced):
+    """D10 (Tharak, 5 Nov; provisional, awaiting Tharak): the total |invoice quantity - QTY_RECEIVED| over the found
+    items an order holds, its rows of one item summed and a blank QTY_RECEIVED read as nothing received. None when
+    an invoice quantity is unknown, so the received quantity cannot decide."""
+    gap = Decimal(0)
+    for parent in parents & {text(r.get("RMS_ITEM_ID")) for r in group}:
+        wanted = to_decimal(invoiced.get(parent))
+        if wanted is None:
+            return None
+        got = sum((to_decimal(r.get("QTY_RECEIVED")) or 0 for r in group if text(r.get("RMS_ITEM_ID")) == parent),
+                  Decimal(0))
+        gap += abs(wanted - got)
+    return gap

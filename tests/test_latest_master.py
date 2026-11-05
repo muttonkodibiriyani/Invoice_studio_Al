@@ -439,3 +439,27 @@ def test_found_items_on_several_orders_take_the_d2_order_and_stay_in_review(clie
     assert result["status"] != "Approved"
     assert any(e["Rule ID"] == "O3.3" and "450001" in e["Description"] and "450003" in e["Description"]
                for e in result["exceptions"])
+
+
+def test_tied_orders_without_a_matching_received_quantity_fill_the_nearest_and_say_so(client, owner, app):
+    """D10 (provisional): the item sits on 450001 (received 2) and 450009 (received 4); the invoice says 5. Neither
+    matches, so the nearest, 450009, is the Order No and the invoice is held with its own reason."""
+    def edit(sheet):
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-9", 450009, "00012345678905", 100000001, 4])
+    activate(client, owner, master_bytes(edit))
+    result = run(app.state.store, invoice(qty=5))
+    assert result["header"]["Order No"] == "450009"
+    assert result["status"] != "Approved"
+    held = [e for e in result["exceptions"] if e["Rule ID"] == "D10"]
+    assert len(held) == 1 and "no order matches the invoiced quantity" in held[0]["Description"]
+
+
+def test_a_tied_order_with_the_matching_received_quantity_raises_no_quantity_reason(client, owner, app):
+    def edit(sheet):
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-9", 450009, "00012345678905", 100000001, 4])
+    activate(client, owner, master_bytes(edit))
+    result = run(app.state.store, invoice(qty=4))
+    assert result["header"]["Order No"] == "450009"
+    assert not any(e["Rule ID"] == "D10" for e in result["exceptions"])

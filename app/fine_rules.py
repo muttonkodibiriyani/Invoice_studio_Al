@@ -1009,6 +1009,42 @@ def tolerant_supplier_names(run, source, candidates):
         run.exception("Supplier Exception", "Printed supplier name is close to several master supplier names; "
                       "confirm the supplier", "SUP-001", evidence="; ".join(sorted(n for _, n in hits.values()))[:500],
                       owner="Supplier operations")
+        return candidates
+    return keyword_supplier_names(run, candidates, names)
+
+
+# R1: words that say what kind of company a supplier is, never which one.
+GENERIC_SUPPLIER_WORDS = _COMPANY_TYPES | {"general", "trading", "trade", "traders", "the", "and", "of", "group"}
+
+
+def _key_words(value):
+    return {w for w in _tokens(value) if len(w) > 1 and w not in GENERIC_SUPPLIER_WORDS}
+
+
+def _same_word(a, b):
+    return a == b or (min(len(a), len(b)) >= 6 and _edits(a, b, 1) <= 1)
+
+
+def keyword_supplier_names(run, candidates, names):
+    """R1 / SUP-001: when neither the exact nor the D8 lookup finds the reader's supplier field, a master supplier
+    name holding every key word of it (generic words gone) is taken, but only when exactly one master name does.
+    Words match whole, never as a part of a longer word; one typo is allowed on a key word of 6 characters or more."""
+    hits = {}
+    for candidate in candidates:
+        printed = _key_words(candidate["name"]) if candidate["region"] == "extracted" else set()
+        for master_key, name in names.items() if printed else ():
+            master = _key_words(name)
+            if all(any(_same_word(p, m) for m in master) for p in printed):
+                hits.setdefault(master_key, (candidate, name))
+    if len(hits) == 1:
+        candidate, name = next(iter(hits.values()))
+        run.trace("Supplier Name", name, "SUP-001", "the only Item Master / SUPPLIER SITES supplier name holding the "
+                  "key words of the printed name (R1)", original=candidate["name"], confidence="Tolerant")
+        return [*candidates, {**candidate, "name": name, "method": f"key-word match of {candidate['name']!r}"}]
+    if hits:
+        run.exception("Supplier Exception", "Printed supplier name's key words are in several master supplier names; "
+                      "confirm the supplier", "SUP-001", evidence="; ".join(sorted(n for _, n in hits.values()))[:500],
+                      owner="Supplier operations")
     return candidates
 
 

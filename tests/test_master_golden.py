@@ -148,6 +148,12 @@ def test_master_golden(case, source, invoices, key, confirmations):
     if not result["header"].get("Location") and (result["status"] == "Approved" or
                                                  ASK_LOCATION not in [p["id"] for p in result["prompts"]]):
         problems.append("Location: blank without the location prompt and review")
+    # D10 (provisional): a received-nearest Order No is kept in review because no order matches the invoiced quantity.
+    if case["header"]["Order No"]["rule"].startswith("D10") and not any(
+            e["Rule ID"] == "D10" and e["Engine Type"] == "Quantity Mismatch" and
+            e["Description"].startswith("Tied orders: no order matches the invoiced quantity")
+            for e in result["exceptions"]):
+        problems.append("Order No: D10 order without the 'no order matches the invoiced quantity' review")
     assert not problems, f"{case['case']} differs from the golden output:\n  " + "\n  ".join(problems)
 
 

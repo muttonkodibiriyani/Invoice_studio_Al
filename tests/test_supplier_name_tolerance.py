@@ -106,3 +106,25 @@ def test_r1_a_name_unlike_the_master_is_not_guessed():
     # An issuer name that shares no key word with its master needs an owner alias, never a guess.
     result = run("Northwind Floral Supplies", master("Almaluxe General Trading LLC", "Synthetic Flowers Co"))
     assert result["header"]["Supplier Site"] == "" and not_found(result) and not tolerant(result)
+
+
+@pytest.mark.parametrize("printed", ["General Trading LLC", "GENERAL TRADING L.L.C.", "The Trading Group"])
+def test_r1_a_name_of_generic_words_only_finds_no_supplier(printed):
+    # Nothing is left once the generic words go: an empty key-word set matches no master, it never matches all.
+    result = run(printed, master("Almaluxe General Trading LLC", "Synthetic Flowers Co"))
+    assert result["header"]["Supplier Site"] == "" and not_found(result) and not keyword(result)
+
+
+LUX_FAMILY = ("Almaluxe General Trading LLC", "Luxor Flowers Co", "Deluxe Blooms Est")
+
+
+@pytest.mark.parametrize("printed", ["LUX", "Luxe Trading", "Lux General Trading LLC"])
+def test_r1_a_short_shared_stem_crosses_into_no_lux_family_name(printed):
+    result = run(printed, master(*LUX_FAMILY))
+    assert result["header"]["Supplier Site"] == "" and not_found(result) and not keyword(result)
+
+
+@pytest.mark.parametrize("printed, site", [("Almaluxe", "101"), ("LUXOR", "102"), ("Deluxe Blooms", "103")])
+def test_r1_each_lux_family_name_finds_only_its_own(printed, site):
+    result = run(printed, master(*LUX_FAMILY))
+    assert result["header"]["Supplier Site"] == site and not not_found(result)

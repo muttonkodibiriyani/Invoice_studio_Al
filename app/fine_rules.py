@@ -540,9 +540,10 @@ def location_market(location, config):
 
 
 def parse_printed_date(printed, parsed):
-    """ALG-004: keep raw and parsed; n/n/yyyy with both parts <= 12 and different is ambiguous (V-008)."""
+    """ALG-004: keep raw and parsed; n/n/yyyy with both parts <= 12 and different is ambiguous (V-008).
+    Dotted and hyphenated numeric dates are day first (UAE/KSA), so only the slash form is ambiguous."""
     raw = text(printed)
-    match = re.fullmatch(r"(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})", raw)
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", raw)
     ambiguous = bool(match and int(match.group(1)) <= 12 and int(match.group(2)) <= 12
                      and match.group(1).lstrip("0") != match.group(2).lstrip("0"))
     valid = None

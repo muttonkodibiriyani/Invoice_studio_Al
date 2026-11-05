@@ -14,8 +14,12 @@ from tests.test_batch import studio
 OPTIONS = {"engine": "auto", "ai_fallback": False, "provider": "openai", "model": "", "language": "en"}
 
 
-def _bound_pdf():
-    """Two synthetic one-page tax invoices bound in one PDF: one item line each, with its own number and totals.
+INVOICES = ((1, "ZZTI26-00000101", "Hydra Gel Cream 50ml,", "3.000", "12.50", "37.50", "1.88", "39.38"),
+            (2, "ZZTI26-00000102", "Lip Tint Coral LTC-04,", "4.000", "6.00", "24.00", "1.20", "25.20"))
+
+
+def _bound_pdf(invoices=INVOICES):
+    """Synthetic one-page tax invoices bound in one PDF (two by default): one item line each, with its own number and totals.
 
     Rows are (top, [(x, text), ...]) in 7 pt Helvetica, the layout of the dropped fixture two-invoices-synthetic.pdf."""
     from reportlab.pdfgen import canvas
@@ -24,9 +28,7 @@ def _bound_pdf():
                "VAT Amount,", "Amount (Incl. VAT),")
     buffer = io.BytesIO()
     page = canvas.Canvas(buffer, pagesize=(595, 842))
-    for store, number, item, quantity, price, net, tax, gross in (
-            (1, "ZZTI26-00000101", "Hydra Gel Cream 50ml,", "3.000", "12.50", "37.50", "1.88", "39.38"),
-            (2, "ZZTI26-00000102", "Lip Tint Coral LTC-04,", "4.000", "6.00", "24.00", "1.20", "25.20")):
+    for store, number, item, quantity, price, net, tax, gross in invoices:
         rows = [(44, [(220, "TAX INVOICE")]), (55, [(31, f"# {number}")]),
                 (66, [(31, "Date of Issuing: March 7, 2026")]), (77, [(31, "Date of Supply: March 7, 2026")]),
                 (88, [(31, "Issued By:"), (300, "Issued To:")]),
@@ -201,17 +203,10 @@ def test_upload_of_mixed_page_pdf_is_refused_with_both_numbers(tmp_path, monkeyp
         assert "ZZTI26-00000201" in job["error"] and "ZZTI26-00000202" in job["error"]
         assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "error"
         assert len(client.get("/api/state").json()["jobs"]) == 1
-        # The queue slot is released: another upload still runs.
-        again = _upload(client, "single.pdf", _single_pdf())
+        # The queue slot is released: another upload still runs. A full invoice page, not one line: a PDF with almost
+        # no text goes on to PaddleOCR where it is installed, over a minute on a loaded host.
+        again = _upload(client, "single.pdf", _bound_pdf(INVOICES[:1]))
         assert _settled(client, again["id"])["status"] == "review"
-
-
-def _single_pdf():
-    from reportlab.pdfgen import canvas
-    buffer = io.BytesIO()
-    page = canvas.Canvas(buffer, pagesize=(595, 842))
-    page.drawString(40, 800, "TAX INVOICE # ZZTI26-00000301"); page.showPage(); page.save()
-    return buffer.getvalue()
 
 
 def test_a_split_part_read_again_keeps_one_split_note(tmp_path, monkeypatch):

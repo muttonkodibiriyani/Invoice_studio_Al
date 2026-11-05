@@ -1,8 +1,10 @@
-"""Owner decision A (5 Nov): bulk export of the selected invoices.
+"""Owner decisions A (5 Nov) and D11: bulk export of the selected invoices.
 
-'Export selected' first asks /api/exports/batch/check for the ready set and the held list with reasons; the real
-export then holds only the three template sheets, Transaction Number 1..n. Held invoices stay unexported. The draft of
-everything is marked DRAFT in its file name and on every sheet. An exported invoice is never exported again.
+D11: 'don't invent, I just need information in the excel, export team will validate manually'. The real export
+writes what was found for every selected invoice into the three template sheets only, Transaction Number 1..n, blanks
+blank. Validation and review holds no longer block it; they travel in each receipt as the open holds. Only integrity
+blocks: still processing or not read, changed since the check, already exported, the same invoice twice. The draft of
+everything is marked DRAFT in its file name and on every sheet, with the Checks sheet.
 """
 import io
 import json
@@ -20,8 +22,9 @@ def found(value="1001"):
     return {"value": value, "evidence": [{"kind": "lookup", "rule": "I2.1"}], "flagged": False}
 
 
-def job(client, owner, app, tmp_path, jid, number, reviewed=True):
-    """An invoice whose current rules view has every target cell evidenced and no issue; held while not reviewed."""
+def job(client, owner, app, tmp_path, jid, number, reviewed=True, held=False):
+    """An invoice whose current rules view has every target cell evidenced and no issue. ``held``: no receipt evidence,
+    no evidenced Location (Missing Evidence) and never reviewed, the holds that used to block the real export."""
     store = app.state.store
     source = tmp_path / f"{jid}.pdf"
     source.write_bytes(b"%PDF-1.4")
@@ -35,8 +38,14 @@ def job(client, owner, app, tmp_path, jid, number, reviewed=True):
     fields = evidenced(j["rules"]["fields"])
     fields["location_type"]["value"], fields["date"]["value"] = "Store (S)", "2026-11-04"
     fields["number"] = {**fields["number"], **found(number)}
-    j["rules"] = {k: v for k, v in j["rules"].items() if k != "receipt_controls"} | {"issues": [], "lines": lines, "fields": fields}
-    store.job(jid, {**j, "reviewed": reviewed})
+    rules = {k: v for k, v in j["rules"].items() if k != "receipt_controls"} | {"issues": [], "lines": lines, "fields": fields}
+    if held:
+        fields["location"] = {**fields["location"], "value": None, "evidence": [], "flagged": True}
+        rules["issues"] = [{"code": "Missing Evidence", "message": "Location has no evidence", "field": "Location",
+                            "owner": "Accounts payable", "line": None, "rule": "EVIDENCE", "evidence": "", "blocking": True,
+                            "level": "hard"}]
+        rules["receipt_controls"] = {"known": False, "capacities": []}
+    store.job(jid, {**j, "rules": rules, "reviewed": reviewed})
     return jid
 
 
@@ -63,81 +72,112 @@ def column(sheet, name):
     return [sheet.cell(r, n).value for r in range(2, sheet.max_row + 1)]
 
 
+def receipts(app, jid):
+    with app.state.store.connection() as c:
+        return [json.loads(r[0]) for r in c.execute("SELECT payload FROM exports WHERE job_id=?", (jid,))]
+
+
 @pytest.fixture
 def three(client, owner, app, tmp_path):
     return (job(client, owner, app, tmp_path, "a", "INV-A"), job(client, owner, app, tmp_path, "b", "INV-B"),
-            job(client, owner, app, tmp_path, "c", "INV-C", reviewed=False))
+            job(client, owner, app, tmp_path, "c", "INV-C", reviewed=False, held=True))
 
 
-def test_the_check_lists_the_ready_set_and_the_held_ones_with_reasons_and_changes_nothing(client, owner, app, three):
+def test_the_check_lists_open_holds_as_attention_not_as_blockers_and_changes_nothing(client, owner, app, three):
     before = {jid: app.state.store.job(jid)["revision"] for jid in three}
     result = check(client, owner, app, *three)
-    assert [r["id"] for r in result["ready"]] == ["a", "b"]
-    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["held"]] == [("c", ["REVIEW"])]
-    assert all(r["message"] for h in result["held"] for r in h["reasons"])
+    assert [r["id"] for r in result["ready"]] == ["a", "b", "c"] and result["blocked"] == []
+    assert [r["transaction_number"] for r in result["ready"]] == [1, 2, 3]
+    attention = {h["code"] for h in result["ready"][2]["attention"]}
+    assert {"Receipt Evidence", "Missing Evidence", "REVIEW"} <= attention
+    assert result["ready"][0]["attention"] == []
     assert {jid: app.state.store.job(jid)["revision"] for jid in three} == before
     assert not any(app.state.store.job(jid).get("export_id") for jid in three)
 
 
-def test_export_selected_writes_the_ready_ones_to_one_workbook_with_only_the_template_sheets(client, owner, app, three):
-    ready = [r["id"] for r in check(client, owner, app, *three)["ready"]]
-    response = export(client, owner, app, *ready)
+def test_a_held_invoice_is_exported_with_what_was_found_and_its_blanks(client, owner, app, three):
+    response = export(client, owner, app, *three)
     assert response.status_code == 200, response.text
-    assert response.json()["count"] == 2
+    assert response.json()["count"] == 3
     workbook = book(client.get(response.json()["url"], headers=bearer(owner)))
     assert workbook.sheetnames == list(OWNER_TEMPLATE)  # no Checks sheet in the real export
     for name, columns in OWNER_TEMPLATE.items():
         assert [c.value for c in workbook[name][1]] == columns
-    assert column(workbook["Header"], "Transaction Number") == [1, 2]
-    assert column(workbook["Tax_Breakdown"], "Transaction Number") == [1, 2]
-    assert column(workbook["Details"], "Transaction Number") == [1, 1, 2, 2]
-    assert column(workbook["Header"], "Document") == ["INV-A", "INV-B"]
+    header = workbook["Header"]
+    assert column(header, "Transaction Number") == [1, 2, 3]
+    assert column(workbook["Tax_Breakdown"], "Transaction Number") == [1, 2, 3]
+    assert column(workbook["Details"], "Transaction Number") == [1, 1, 2, 2, 3, 3]
+    assert column(header, "Document") == ["INV-A", "INV-B", "INV-C"]
+    assert column(header, "Location") == [1001, 1001, None]  # found values written, the gap stays blank
+    assert app.state.store.job("c")["status"] == "exported"
 
 
-def test_held_invoices_stay_unexported_and_available_for_a_later_batch(client, owner, app, three):
-    assert export(client, owner, app, "a", "b").status_code == 200
-    held = app.state.store.job("c")
-    assert not held.get("export_id") and held["status"] != "exported" and held["revision"] == 1
-    j = app.state.store.job("c")
-    app.state.store.job("c", {**j, "reviewed": True})
-    assert [r["id"] for r in check(client, owner, app, "c")["ready"]] == ["c"]
-    response = export(client, owner, app, "c")
-    assert response.status_code == 200, response.text
-    assert column(book(client.get(response.json()["url"], headers=bearer(owner)))["Header"], "Transaction Number") == [1]
+def test_the_receipt_records_the_open_holds_and_the_owner_decision(client, owner, app, three):
+    assert export(client, owner, app, *three).status_code == 200
+    [receipt] = receipts(app, "c")
+    assert receipt["validation"] == "exported unvalidated by owner decision D11"
+    holds = {(h["code"], h["cell"]) for h in receipt["open_holds"]}
+    assert {("Receipt Evidence", None), ("Missing Evidence", "Location"), ("REVIEW", None)} <= holds
+    assert all(h["message"] for h in receipt["open_holds"])
+    assert receipt["target_check"]["transaction"] == 3
+    [clean] = receipts(app, "a")
+    assert clean["open_holds"] == [] and clean["validation"] == "exported unvalidated by owner decision D11"
 
 
-def test_a_batch_with_a_held_invoice_still_exports_nothing(client, owner, app, three):
+def test_the_real_export_has_the_cells_of_the_draft_of_everything(client, owner, app, three):
+    draft = book(client.post("/api/exports/target-draft", headers=bearer(owner), json=selection(app, *three)))
     response = export(client, owner, app, *three)
-    assert response.status_code == 409 and "held" in response.json()["detail"]
-    assert not any(app.state.store.job(jid).get("export_id") for jid in three)
+    real = book(client.get(response.json()["url"], headers=bearer(owner)))
+    for name in OWNER_TEMPLATE:
+        assert [[c.value for c in row] for row in real[name].iter_rows()] == \
+               [[c.value for c in row] for row in draft[name].iter_rows()]
+    for sheet in real.worksheets:
+        assert sheet["A1"].comment is None and "DRAFT" not in (sheet.oddHeader.center.text or "")
+
+
+def test_a_processing_or_changed_invoice_is_not_exported(client, owner, app, three):
+    store = app.state.store
+    store.job("b", {**store.job("b"), "status": "processing"})
+    body = selection(app, "a", "b", "c")
+    body["jobs"][2]["revision"] = 0  # changed since the check
+    result = client.post("/api/exports/batch/check", headers=bearer(owner), json=body).json()
+    assert [r["id"] for r in result["ready"]] == ["a"]
+    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["blocked"]] == [("b", ["Processing"]), ("c", ["Changed"])]
+    response = client.post("/api/exports/batch", headers=bearer(owner), json=body)
+    assert response.status_code == 409
+    assert not any(store.job(jid).get("export_id") for jid in three)
 
 
 def test_an_exported_invoice_is_locked_against_a_second_real_export(client, owner, app, three):
-    assert export(client, owner, app, "a").status_code == 200
-    result = check(client, owner, app, "a", "b")
+    assert export(client, owner, app, "c").status_code == 200
+    result = check(client, owner, app, "c", "b")
     assert [r["id"] for r in result["ready"]] == ["b"]
-    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["held"]] == [("a", ["Exported"])]
-    assert "already exported" in result["held"][0]["reasons"][0]["message"]
-    response = export(client, owner, app, "a", "b")
+    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["blocked"]] == [("c", ["Exported"])]
+    assert "already exported" in result["blocked"][0]["reasons"][0]["message"]
+    response = export(client, owner, app, "c", "b")
     assert response.status_code == 409 and "already exported" in response.json()["detail"]
     assert not app.state.store.job("b").get("export_id")
-    with app.state.store.connection() as c:
-        assert c.execute("SELECT COUNT(*) FROM exports WHERE job_id='a'").fetchone()[0] == 1
+    assert len(receipts(app, "c")) == 1
 
 
-def test_the_same_invoice_twice_in_one_selection_is_held_as_a_duplicate(client, owner, app, tmp_path, three):
+def test_the_same_invoice_twice_in_one_selection_is_blocked_as_a_duplicate(client, owner, app, tmp_path, three):
     job(client, owner, app, tmp_path, "a2", "INV-A")
     result = check(client, owner, app, "a", "a2")
     assert [r["id"] for r in result["ready"]] == ["a"]
-    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["held"]] == [("a2", ["Duplicate"])]
+    assert [(h["id"], [r["code"] for r in h["reasons"]]) for h in result["blocked"]] == [("a2", ["Duplicate"])]
+    assert export(client, owner, app, "a", "a2").status_code == 409
+    assert not app.state.store.job("a").get("export_id")
 
 
-def test_the_single_export_holds_only_the_template_sheets(client, owner, app, three):
-    response = client.post("/api/jobs/a/export", headers=bearer(owner), json={"revision": 1})
+def test_the_single_export_takes_a_held_invoice_with_only_the_template_sheets(client, owner, app, three):
+    response = client.post("/api/jobs/c/export", headers=bearer(owner), json={"revision": 1})
     assert response.status_code == 200, response.text
     assert book(client.get(response.json()["url"], headers=bearer(owner))).sheetnames == list(OWNER_TEMPLATE)
+    assert ("Missing Evidence", "Location") in {(h["code"], h["cell"]) for h in receipts(app, "c")[0]["open_holds"]}
     evidence = client.get(f"/api/exports/{response.json()['id']}/evidence", headers=bearer(owner))
     assert evidence.status_code == 200
+    again = client.post("/api/jobs/c/export", headers=bearer(owner), json={"revision": 2})
+    assert again.json()["id"] == response.json()["id"] and len(receipts(app, "c")) == 1
 
 
 def test_the_draft_of_everything_includes_held_ones_and_is_marked_draft_on_every_sheet(client, owner, app, three):

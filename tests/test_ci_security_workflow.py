@@ -68,7 +68,10 @@ def test_each_scan_fails_on_findings_against_its_reviewed_baseline():
     assert "fetch-depth: 0" in text and "gitleaks\" git " in text
     assert "--baseline security/checkov-baseline.json" in text and "az bicep build" in text
     assert "check_base_image.py" in text
-    assert text.count("--exit-code 1") == 2
+    assert text.count("--exit-code 1") == 1  # trivy config; the base image scan is gated by the exception list
+    assert "--ignore-unfixed" in text and "--severity HIGH,CRITICAL --format json" in text
+    assert 'check_trivy_exceptions.py "${reports[@]}"' in text
+    assert not (ROOT / ".trivyignore").exists() and "trivyignore" not in text.replace("No .trivyignore", "")
 
 
 def test_the_doc_names_every_job_tool_version_and_the_branch_protection_checks():

@@ -442,18 +442,27 @@ def barcode_candidates(line):
     return out
 
 
+TRAILING_CODE = "description end code"
+
+
 def vpn_candidates(line):
-    """M3 supersedes ITM-004: explicit VPN, labeled/bracketed code, then a leading code."""
+    """M3 supersedes ITM-004: explicit VPN, labeled/bracketed code, then a leading code. D7 (Tharak, 5 Nov): a code
+    holding a digit at the end of the description is tried after them; match_line accepts it only on an exact VPN
+    in the supplier scope."""
     if text(getattr(line, "sku", None)):
         return [{"value": text(line.sku), "origin": "VPN column", "primary": True}]
     description = text(getattr(line, "description", None))
     labeled = re.search(r"(?i)\b(?:VPN|supplier\s*(?:code|item)|part\s*(?:no|number))\s*[:#-]?\s*([A-Z0-9][A-Z0-9./_-]*)", description)
     bracketed = re.match(r"\s*\[([A-Za-z0-9][A-Za-z0-9./_-]*)\]", description)
     leading = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9./_-]*)", description)
+    trailing = re.search(r"([A-Za-z0-9][A-Za-z0-9./_-]*?)[.,;:]*\s*$", description)
     match = labeled or bracketed or leading
+    out = []
     if match and (labeled or bracketed or any(c.isdigit() for c in match.group(1))):
-        return [{"value": match.group(1), "origin": "description code", "primary": True}]
-    return []
+        out.append({"value": match.group(1), "origin": "description code", "primary": True})
+    if trailing and any(c.isdigit() for c in trailing.group(1)) and trailing.group(1) not in {c["value"] for c in out}:
+        out.append({"value": trailing.group(1), "origin": TRAILING_CODE, "primary": False})
+    return out
 
 
 _UNITS = ((r"(\d)\s*(ml|millilit(?:er|re)s?)\b", r"\1ml"), (r"(\d)\s*(g|gm|gms|grams?)\b", r"\1g"),
@@ -745,10 +754,14 @@ def match_line(run, n, line, source, sites=None):
             run.exception("Data Quality", MISPRINT, "D102", n, evidence=f"printed {unchecked}", owner="Item steward")
     vpn_hits = {}
     for candidate in vpns:
+        if candidate["origin"] == TRAILING_CODE and vpn_hits:
+            continue
         rows = [r for r in source.items_by_vpn(candidate["value"]) if text(r.get("VPN")) == candidate["value"]]
         rows = _constrain(rows, sites)[0]
         if rows:
             vpn_hits[candidate["value"]] = (candidate, rows)
+    # D7: a trailing code counts only as an exact VPN in the supplier scope; otherwise it is not a VPN at all.
+    vpns = [c for c in vpns if c["origin"] != TRAILING_CODE or c["value"] in vpn_hits]
     ocr = None
     if not barcode_hits and not vpn_hits and run.ocr_lines and sites:
         # Only after both exact routes found nothing, on a scan read, under a known supplier (decision 44).

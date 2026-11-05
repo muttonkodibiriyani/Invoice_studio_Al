@@ -76,6 +76,16 @@ class LookupRulesSource:
         value = normalize_name(value)
         return self._rows("item", [f"f:supplier:{value}"]) if value else []
 
+    def supplier_names(self):
+        """Every indexed Item Master supplier name (SUPPLIER_NAME, SUPPLIER SITE NAME), normalized as indexed."""
+        if "supplier_names" not in self._cache:
+            with self.store.connection() as connection:
+                # A range on the (kind, term) key, not LIKE, so the index serves it.
+                found = connection.execute("SELECT DISTINCT term FROM lookup_terms WHERE kind='item' "
+                                           "AND term >= ? AND term < ?", ["f:supplier:", "f:supplier;"]).fetchall()
+            self._cache["supplier_names"] = sorted(row["term"][len("f:supplier:"):] for row in found)
+        return self._cache["supplier_names"]
+
     def items_by_site(self, value, limit=None):
         # Semantic uniqueness requires every scoped row, never an arbitrary first-page sample.
         value = normalize_name(value)

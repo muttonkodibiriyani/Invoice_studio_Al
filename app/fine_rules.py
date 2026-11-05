@@ -920,6 +920,53 @@ def supplier_family(run, candidates):
     return codes
 
 
+def _edits(a, b, limit):
+    """Levenshtein distance between a and b, or limit + 1 as soon as it is past limit."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        current = [i]
+        for j, y in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x != y)))
+        if min(current) > limit:
+            return limit + 1
+        previous = current
+    return previous[-1]
+
+
+def tolerant_supplier_names(run, source, candidates):
+    """D8 / SUP-001: when no printed name is a master supplier name, one within a typo or two of exactly one Item
+    Master SUPPLIER_NAME / SUPPLIER SITE NAME or SUPPLIER SITES supplier name is added as a candidate. Names compare
+    by name_key (case, accents, spaces and punctuation gone): 1 edit from 6 characters, 2 from 16, none below.
+    Several names that close: none is taken, and they are listed for review."""
+    families = run.config.supplier_families
+    if any(families.get(name_key(c["name"])) or source.items_by_supplier_name(c["name"]) for c in candidates):
+        return candidates
+    names = {}
+    bridged = [s["supplier_name"] for s in run.config.supplier_sites.values() if name_key(s["supplier_name"]) in families]
+    for name in [*source.supplier_names(), *bridged]:
+        if name_key(name):
+            names.setdefault(name_key(name), text(name))
+    hits = {}
+    for candidate in candidates:
+        key = name_key(candidate["name"])
+        limit = 2 if len(key) >= 16 else 1 if len(key) >= 6 else 0
+        for master_key, name in names.items():
+            if limit and _edits(key, master_key, limit) <= limit:
+                hits.setdefault(master_key, (candidate, name))
+    if len(hits) == 1:
+        candidate, name = next(iter(hits.values()))
+        run.trace("Supplier Name", name, "SUP-001", "the only Item Master / SUPPLIER SITES supplier name within a "
+                  "typo or two of the printed name", original=candidate["name"], confidence="Tolerant")
+        return [*candidates, {**candidate, "name": name, "method": f"tolerant match of {candidate['name']!r}"}]
+    if hits:
+        run.exception("Supplier Exception", "Printed supplier name is close to several master supplier names; "
+                      "confirm the supplier", "SUP-001", evidence="; ".join(sorted(n for _, n in hits.values()))[:500],
+                      owner="Supplier operations")
+    return candidates
+
+
 _DELIVER_TO = re.compile(r"(?i)\bdeliver(?:y)?\s*(?:to|address)\b\s*:?")
 _PRINTED_ID = r"(?<![\d.,/-]){}(?![\d.,/-])"
 
@@ -1836,6 +1883,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     # Supplier discovery uses issuer evidence, followed by scoped product search.
     buyer_page, buyer_rows = buyer_party(scan)
     candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows)
+    candidates = tolerant_supplier_names(run, source, candidates)
     # Resolve the issuer/site or approved family before any product search (M2).
     probe = Run(invoice, config, filename)
     deliver_to = deliver_to_location(invoice, scan, config)
@@ -2169,6 +2217,9 @@ class RowsSource:
 
     def items_by_site(self, value):
         return [r for r in self.items if text(r.get("SUPPLIER")) == text(value)]
+
+    def supplier_names(self):
+        return sorted({text(r.get(c)) for r in self.items for c in ("SUPPLIER_NAME", "SUPPLIER SITE NAME")} - {""})
 
     def items_by_supplier_name(self, value):
         key = re.sub(r"[^\w]", "", fold(value))

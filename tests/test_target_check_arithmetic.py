@@ -56,9 +56,9 @@ AMOUNTS = (("Header", "Total Cost Ex Tax"), ("Header", "Tax Amount"), ("Tax_Brea
 
 def test_a_consistent_invoice_stays_fully_verified():
     result = check(view(), "Widget 2 x 50.00 100.00", "Net 100.00", "VAT 5% 5.00", "Total 105.00")
-    for sheet, column in (*AMOUNTS, ("Header", "Document"), ("Details", "Unit Cost", 1), ("Details", "Quantity", 1)):
-        got = cell(result, sheet, column, *((1,) if sheet == "Details" else ()))
-        assert got["status"] == tc.VERIFIED, (sheet, column, got["reason"])
+    for key in (*AMOUNTS, ("Header", "Document"), ("Details", "Unit Cost", 1), ("Details", "Quantity", 1)):
+        got = cell(result, *key)
+        assert got["status"] == tc.VERIFIED, (key, got["reason"])
     assert not any(c["status"] == tc.CHECK_FAILED for c in result["cells"])
     assert result["failed"] == [] and not result["holds"]
 

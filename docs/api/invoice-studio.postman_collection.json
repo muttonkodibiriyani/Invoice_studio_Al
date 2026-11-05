@@ -2383,7 +2383,7 @@
                     "target-draft"
                   ]
                 },
-                "description": "**Member.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export.",
+                "description": "**Member.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every sheet (red tab and header row, a note on A1, the printed header); sheet names and headers stay the template's. Never an export.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",

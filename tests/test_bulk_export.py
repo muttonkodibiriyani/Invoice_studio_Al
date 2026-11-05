@@ -146,10 +146,11 @@ def test_the_draft_of_everything_includes_held_ones_and_is_marked_draft_on_every
     assert 'filename="DRAFT_' in response.headers["content-disposition"]
     assert response.headers["x-draft-included"] == "3"
     workbook = book(response)
-    assert workbook.sheetnames == [f"DRAFT {name}" for name in [*OWNER_TEMPLATE, "Checks"]]
+    assert workbook.sheetnames == [*OWNER_TEMPLATE, "Checks"]  # the template's names: layout readers keep working
+    for sheet in workbook.worksheets:
+        assert "DRAFT" in sheet.oddHeader.center.text and sheet["A1"].comment.text.startswith("DRAFT")
+        assert sheet.sheet_properties.tabColor.rgb.endswith("C00000")
     for name, columns in OWNER_TEMPLATE.items():
-        sheet = workbook[f"DRAFT {name}"]
-        assert [c.value for c in sheet[1]] == columns
-        assert "DRAFT" in sheet.oddHeader.center.text
-    assert column(workbook["DRAFT Header"], "Transaction Number") == [1, 2, 3]
+        assert [c.value for c in workbook[name][1]] == columns
+    assert column(workbook["Header"], "Transaction Number") == [1, 2, 3]
     assert not any(app.state.store.job(jid).get("export_id") for jid in three)

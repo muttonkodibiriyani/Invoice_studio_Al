@@ -1216,10 +1216,14 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             sheet.append([None]*len(tc.CHECKS_COLUMNS));n=sheet.max_row
             for name,value in (("Sheet",kind),("Column",column),("Status","Draft" if kind=="(draft)" else "Skipped"),("Reason",reason)):
                 cell=sheet.cell(n,tc.CHECKS_COLUMNS.index(name)+1);cell.value=str(value);cell.data_type="s"
-        # Every tab says DRAFT (name, colour, printed header), so the file cannot pass for, or import as, a real export.
+        # Every sheet says DRAFT (red tab and header row, a note on A1, the printed header); its name and row-1 headers
+        # stay the template's, so readers of the layout keep working.
+        from openpyxl.comments import Comment
+        from openpyxl.styles import PatternFill
         for s in book.worksheets:
-            s.title=f"DRAFT {s.title}";s.sheet_properties.tabColor="C00000"
-            s.oddHeader.center.text="DRAFT - not exported, not for ERP import"
+            s.sheet_properties.tabColor="C00000";s.oddHeader.center.text="DRAFT - not exported, not for ERP import"
+            for cell in s[1]:cell.fill=PatternFill("solid",fgColor="C00000")
+            s["A1"].comment=Comment("DRAFT: not exported, approved or confirmed. Not for ERP import.","Invoice Studio")
         book.properties.title="DRAFT target workbook";buffer=io.BytesIO();book.save(buffer);return buffer.getvalue()
 
     def batch_readiness(request,c,ledger):

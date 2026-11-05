@@ -2223,7 +2223,7 @@ async function downloadBatchDraft() {
     // Decision 72: the server leaves out any invoice without fresh rules and says how many, with the reasons in Checks.
     const included = Number(response.headers.get("x-draft-included") ?? jobs.length);
     const skipped = Number(response.headers.get("x-draft-skipped") ?? 0);
-    notify(`${included} invoice${included === 1 ? "" : "s"} in one draft target workbook${skipped ? `; ${skipped} left out, see the DRAFT Checks sheet` : ""}. Nothing was exported or approved.`, skipped ? "warning" : "success", skipped ? 10000 : undefined);
+    notify(`${included} invoice${included === 1 ? "" : "s"} in one draft target workbook${skipped ? `; ${skipped} left out, see the Checks sheet` : ""}. Nothing was exported or approved.`, skipped ? "warning" : "success", skipped ? 10000 : undefined);
     // The server's rules refresh can rewrite rules or reset "reviewed" on a stale invoice, so the inbox reloads to show it.
     await loadState().catch(() => {});
   } catch (error) {

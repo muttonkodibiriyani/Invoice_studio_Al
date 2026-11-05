@@ -247,7 +247,7 @@ Download exports and batch workbooks; long downloads run in the background.
 | `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order) and held, each held one with its reasons as code and message (Exported is the lock on an invoice already exported). Send the ready ones to /api/exports/batch. |
 | `GET` | `/api/batches/{bid}` | Member | **Download a batch export.** The batch workbook. |
 | `POST` | `/api/exports/extraction-batch` | Member | **Unvalidated batch workbook.** What was read for several invoices, before validation. |
-| `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export. |
+| `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every sheet (red tab and header row, a note on A1, the printed header); sheet names and headers stay the template's. Never an export. |
 | `POST` | `/api/background/{kind}` | Member | **Start a long download.** kind is target-draft, extraction-batch, export-check, export-batch, fine-rules-target or fine-rules-review; the body is that download's body. Returns a task id to poll. |
 | `GET` | `/api/background/tasks/{tid}` | Member | **Poll a long download.** Running, or the finished file. Only the account that started it can read it. |
 

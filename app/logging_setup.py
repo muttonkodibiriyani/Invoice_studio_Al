@@ -17,21 +17,41 @@ from datetime import datetime, timezone
 request_id = ContextVar("invoice_request_id", default="")
 
 _SEVERITY = {"DEBUG": "DEBUG", "INFO": "INFO", "WARNING": "WARNING", "ERROR": "ERROR", "CRITICAL": "CRITICAL"}
+# A field whose name holds one of these words carries a credential: api-key, Authorization,
+# Ocp-Apim-Subscription-Key, client_secret, access_token, password and the like.
+_SECRET_NAME = r"[\w-]{0,40}(?:key|secret|token|password|authorization)[\w-]{0,40}"  # bounded: no quadratic backtracking
+_SECRET_FIELD = re.compile(r"(?i)^" + _SECRET_NAME + r"$")
 _REDACTIONS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"(?i)\b(oobCode|oob_code|token|apiKey|api_key|secret|password|key)=[^&\s\"']+"),
+    # Dict, JSON and header-object shapes: {'api-key': 'v'}, {"client_secret": "v"}, Headers({'authorization': 'v'}).
+    # The name is kept so the line still says what was there; a quoted value is masked whole, escapes included.
+    re.compile(r"""(?i)((["'])""" + _SECRET_NAME + r"""\2\s*:\s*)(?:b?"(?:[^"\\]|\\.)*"|b?'(?:[^'\\]|\\.)*'|[^\s,}\]]+)"""),
+    # An HTTP header line: "api-key: v", "Ocp-Apim-Subscription-Key: v".
+    re.compile(r"(?im)^(\s*" + _SECRET_NAME + r"\s*:\s*)(?!\[redacted\])\S.*$"),
+    re.compile(r"(?i)\b((?:oobCode|oob_code|" + _SECRET_NAME + r")=)[^&\s\"']+"),
     re.compile(r"https?://[^\s\"'<>]+"),
 )
 
 
 def redact(text):
-    """Remove bearer tokens, JWT-shaped strings, code/secret query parameters and whole URLs from a string."""
+    """Remove bearer tokens, JWT-shaped strings, credential-named fields (query, dict, JSON or header shape) and whole URLs."""
     if not isinstance(text, str):
         text = str(text)
     for pattern in _REDACTIONS:
-        text = pattern.sub("[redacted]", text)
+        text = pattern.sub(lambda m: (m.group(1) if pattern.groups else "") + "[redacted]", text)
     return text
+
+
+def redact_value(value, name=""):
+    """Redact a structured log field: a credential-named field is masked whole, containers are walked."""
+    if name and _SECRET_FIELD.match(str(name)) and value is not None:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {k: redact_value(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_value(v) for v in value]
+    return redact(value) if isinstance(value, (str, bytes)) else value
 
 
 def new_request_id(header_value=None):
@@ -57,7 +77,7 @@ class JsonFormatter(logging.Formatter):
         fields = getattr(record, "studio", None)
         if isinstance(fields, dict):
             for key, value in fields.items():
-                payload[key] = redact(value) if isinstance(value, str) else value
+                payload[key] = redact_value(value, key)
         if record.exc_info:
             payload["exception"] = redact("".join(traceback.format_exception(*record.exc_info)))[-8000:]
         return json.dumps(payload, default=str, ensure_ascii=False)

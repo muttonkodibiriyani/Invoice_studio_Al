@@ -15,6 +15,8 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from . import scan_guard
+from .evidence import lookup_trace
+from .item_rules import rules
 
 
 WAREHOUSE = "Warehouse (W)"
@@ -93,6 +95,7 @@ ITEM_LINE_DEFINITION = ("lines resolved to exactly one Item Master ITEM_PARENT w
                         "accepted PO/GRN, divided by all invoice lines")
 # Owner form 01a10c4f (answered 2026-10-05 13:48Z): pre-tax value tolerance per currency, compared at two decimals.
 # The owner sheets name the check (POG-007, C-16); the amounts are this form answer, cited as the evidence.
+CURRENCY_REGION = {"AED": "ARE", "SAR": "SAU"}  # VAT region of a currency used in one VAT country only (T5.1)
 VALUE_TOLERANCE_BY_CURRENCY = {"KWD": Decimal("1"), "AED": Decimal("2")}
 VALUE_DECIMALS = 2
 VALUE_TOLERANCE_SOURCE = "owner form 01a10c4f (2026-10-05 13:48Z): up to 1 KWD or 2 AED, rounded to 2 digits"
@@ -497,16 +500,30 @@ def entity_hint(supplier_name, entity_map=ENTITY_MAP):
     return {"suffix": suffix, "entity": entity, "currency_hint": currency, "mapped": entity_map.get(entity)}
 
 
-def location_type(location, config=None):
-    """ALG-012/013/014, R-026: exact master first; 800/380 prefix fallback kept as a cross-check."""
+def location_type(location, config=None, variants=None):
+    """ALG-012/013/014, R-026: exact master first, normalised through the rules workbook's Location_Type_Variants
+    (a type that is not a variant is held for the user, P-LOCTYPE); 800/380 prefix fallback kept as a cross-check."""
+    from . import location_type as loc  # it imports STORE and WAREHOUSE from here
     location = text(location)
     prefix = next((kind for start, kind in LOCATION_PREFIXES if location.startswith(start)), None)
     master = (config.location_master.get(location) if config else None) or {}
-    master_type = master.get("type") or None
-    if master_type:
-        conflict = prefix is not None and prefix != master_type
-        return {"type": master_type, "source": "location master", "prefix_type": prefix, "conflict": conflict}
+    master_type = text(master.get("type"))
+    if location and master_type:
+        found = loc.resolve({"LOCATION NUMBER": location, "LOCATION NAME": master_type},
+                            rules().location_type_variants() if variants is None else variants)
+        conflict = found.type is not None and prefix is not None and prefix != found.type
+        return {"type": found.type, "source": "location master", "prefix_type": prefix, "conflict": conflict,
+                "held": None if found.type else master_type}
     return {"type": prefix, "source": "prefix fallback" if prefix else None, "prefix_type": prefix, "conflict": False}
+
+
+def location_prompts(location, kind):
+    """P-LOC when the location is blank, P-LOCTYPE when it has no type and no conflict: the rules view's prompts."""
+    from . import location_type as loc
+    kind = kind or {}
+    asks = (loc.ASK_LOCATION,) if not location else () if kind.get("type") or kind.get("conflict") \
+        else (loc.ASK_LOCATION_TYPE,)
+    return loc.prompts(asks, rules().prompts(), kind.get("held"))
 
 
 def same_market(a, b):
@@ -1004,12 +1021,33 @@ def _site_names(source, site, rows):
     return names, rows
 
 
-def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_code=None):
+def offer_sites(run, source, offered, rows, sites, owner_site):
+    """S1.2: when the printed name is the Item Master supplier name of several sites and no SUPPLIER SITES row bridges
+    it, each of those ``offered`` sites is listed for the reviewer's pick. A pick among them becomes the only site;
+    any other pick is ignored, and said."""
+    if offered:
+        run.site_candidates = [
+            {"supplier_site": site, "rule": "SUP-003", "reason": f"{len(offered)} Item Master sites carry the printed "
+             "supplier name", "sites": [{"supplier_site": site, "site_name": " / ".join(sorted(names)),
+                                         "reference": _refs(site_rows)}]}
+            for site, (names, site_rows) in ((s, _site_names(source, s, rows)) for s in sorted(offered))]
+    if not owner_site:
+        return sites
+    if owner_site not in offered:
+        run.exception("Supplier Exception", "Owner supplier-site pick is not one of this run's candidates; ignored",
+                      OWNER_PICK, evidence=f"{len(offered)} candidates", owner="Supplier operations")
+        return sites
+    run.owner_pick = owner_site
+    return {owner_site}
+
+
+def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_code=None, owner_site=None):
     """SUP-001 / SUP-003, R-006 / ALG-002 / ALG-005: supplier site from the Item Master item-supplier relation.
 
     Returns (site, SUPPLIER_NAME, family). When several Active sites of one supplier family remain, the
     site is left open and ``family`` maps each site to its Item Master SUPPLIER_NAME; the accepted
-    POGRN order then picks it (owner form 01a10c4f, site_choice).
+    POGRN order then picks it (owner form 01a10c4f, site_choice). ``owner_site`` is the reviewer's pick when the
+    printed name alone gives several Item Master sites (S1.2).
     """
     by_name = []
     for candidate in candidates:
@@ -1043,6 +1081,10 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         sites = name_sites & item_sites
     else:
         sites = name_sites or item_sites or set()
+    owner_site = text(owner_site)
+    offered = name_sites if len(name_sites) > 1 and not families else set()
+    if offered or owner_site:
+        sites = offer_sites(run, source, offered, by_name, sites, owner_site)
     rows = [r for m in matches for r in source.items_by_parent(m["parent"] or "")] + by_name
     version = run.config.version
     if len(sites) == 1:
@@ -1050,10 +1092,12 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         names, site_rows = _site_names(source, site, rows)
         name = next(iter(names)) if len(names) == 1 else None
         bridged = site in family_sites
-        picked = bridged and run.owner_pick
+        picked = run.owner_pick if bridged or site == run.owner_pick else None
         run.trace("Supplier Site", site, OWNER_PICK if picked else "SUP-003",
                   "Item Master SUPPLIER" + (" via SUPPLIER SITES" if bridged else "") +
-                  (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked else ""),
+                  (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked and bridged else
+                   f" picked by the owner among the {len(name_sites)} sites of the printed supplier name" if picked
+                   else ""),
                   reference=", ".join(x for x in (_refs(site_rows), f"{site}|{version}" if bridged else "",
                                                   market_ref if bridged else "") if x),
                   confidence="Owner entry" if picked else "Exact", evidence_kind=EVIDENCE_OWNER_ENTRY if picked else None)
@@ -1076,10 +1120,29 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         run.exception("Supplier Exception", "Supplier not found in the Item Master or SUPPLIER SITES by name or "
                       "matched items", "R-006", evidence="; ".join(c["name"] for c in candidates)[:500],
                       owner="Supplier operations")
+    elif offered:
+        run.exception("Supplier Exception", "The printed supplier name is on several Item Master supplier sites; "
+                      "pick the site to search its items", "SUP-003", evidence=", ".join(sorted(sites)),
+                      owner="Supplier operations")
     else:
         run.exception("Supplier Exception", "Several Item Master supplier sites remain; resolve with market/entity",
                       "R-006", evidence=", ".join(sorted(sites)), owner="Supplier operations")
     return None, None, None
+
+
+def one_supplier_site(probe, source, candidates, deliver_to):
+    """v0.3 step 1 (A2): when the printed name is on several sites of one EBS supplier (one six-character code,
+    entity suffixes differ), the items are searched in all of them; the one site holding every matched item is the
+    site. Otherwise None, and the reviewer picks among the listed sites (S1.2)."""
+    offered = [c for c in probe.site_candidates if "supplier_site" in c]
+    names = [c["sites"][0]["site_name"] for c in offered]
+    if len(offered) < 2 or len({ebs_key(n) for n in names}) != 1 or not all(entity_hint(n)["entity"] for n in names):
+        return None
+    trial = Run(probe.invoice, probe.config, probe.filename)
+    sites = {c["supplier_site"] for c in offered}
+    matches = [match_line(trial, n, line, source, sites) for n, line in enumerate(probe.invoice.lines, 1)]
+    site = resolve_supplier(trial, source, matches, candidates, deliver_to)[0]
+    return {site} if site else None
 
 
 def choose_site(run, family, group):
@@ -1161,9 +1224,11 @@ def evaluate_pogrn(run, rows, keys, invoice_qty, invoice_value, invoice_currency
             reasons.append("Location ID blank")
         elif len(locations_per_order[order]) > 1:
             reasons.append("Order has several locations; no approved multi-location rule")
-        kind = location_type(location, config) if location else {"type": None, "conflict": False}
+        kind = location_type(location, config)
         type_ok = bool(kind["type"]) and not kind["conflict"]
-        if location and not kind["type"]:
+        if kind.get("held"):
+            reasons.append(f'Location type "{kind["held"]}" is not in Location_Type_Variants')
+        elif location and not kind["type"]:
             reasons.append("Location type unresolved (no master row and no 800/380 prefix)")
         if kind.get("conflict"):
             reasons.append(f"Location master type {kind['type']} disagrees with prefix {kind['prefix_type']}")
@@ -1734,9 +1799,10 @@ def item_resolution(run, matches, group):
 
 
 def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=(), page_count=None,
-                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False):
+                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None):
     """Run the whole rule chain for one invoice (ALG-028: every invoice, every rule). ``owner_supplier_code`` is
-    the owner's pick among the R-006 candidates of an earlier run (decision 41)."""
+    the owner's pick among the R-006 candidates of an earlier run (decision 41); ``owner_supplier_site`` the
+    reviewer's pick among the Item Master sites of the printed supplier name (S1.2)."""
     config = config or RulesConfig()
     # The probe pass stays exact; only the recorded pass may correct an OCR I/1, O/0 read (decision 44).
     run = Run(invoice, config, filename, ocr_lines)
@@ -1773,11 +1839,12 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     probe = Run(invoice, config, filename)
     deliver_to = deliver_to_location(invoice, scan, config)
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
-                                                  owner_supplier_code)
+                                                  owner_supplier_code, owner_supplier_site)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
+    sites = sites or one_supplier_site(probe, source, candidates, deliver_to)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
-                                                          owner_supplier_code)
+                                                          owner_supplier_code, owner_supplier_site)
     if supplier_site:
         # Re-check items under the resolved supplier where the first pass was unconstrained.
         for m in matches:
@@ -1852,6 +1919,12 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     elif po["status"] != "Location ambiguous":
         run.exception("Location ID", "Location waits for an accepted POGRN order (never from Item Master)",
                       "ALG-011", owner="Buyer")
+    if not location:
+        # L4.2 (A6): a location still unknown has an empty location name, which the rules workbook types as Store.
+        from . import location_type as loc
+        loc_type = loc.resolve({}, rules().location_type_variants()).type
+        if loc_type:
+            run.trace("Location Type", loc_type, "L4.2", "Rules workbook Location_Type_Variants: empty location name")
     if hint and hint["mapped"] and market and not same_market(hint["mapped"]["market"], market):
         run.exception("Market Mapping", f"Supplier suffix suggests {hint['mapped']['market']} but the receiving "
                       f"location is {market}", "R-027", owner="Business")
@@ -1861,8 +1934,10 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
                       "ALG-023", owner="Finance")
 
     # Line outputs (ALG-021/022/026/027).
-    tax_code = resolve_tax_code(run, market, document_date)
-    tax_source = "Owner VAT code table (C/PV), receiving market"
+    # T5.1 (A7): without a receiving market the country is the invoice currency's; the rate check still applies.
+    country = market or CURRENCY_REGION.get(text(invoice.currency).upper())
+    tax_code = resolve_tax_code(run, country, document_date)
+    tax_source = "Owner VAT code table (C/PV), " + ("receiving market" if market else "country of the invoice currency")
     lines_out = []
     discount = invoice_discount(invoice, scan)
     for line, m in zip(invoice.lines, matches):
@@ -1957,11 +2032,14 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "raw_invoice": raw_invoice_rows(invoice, filename, barcode_candidates, vpn_candidates),
         "tax": tax_rows(invoice, tax_code), "scan": {k: v for k, v in scan.items() if k != "pages"},
         "supplier_candidates": candidates, "missing_mandatory": missing,
+        "prompts": location_prompts(location, group and group["_location_type"]),
         "po": {"order": po["order"], "source": po["source"], "status": po["status"], "value_source": value_source},
         "order_date": order_date,
         "receipt_date": check_receipt_dates(po, order_date, document_date),
         "ebs_supplier_code": key or "/".join(sorted(keys)), "entity_hint": hint, "config_version": config.version,
         "item_resolution": resolution, "po_candidates": po["candidates"],
+        "lookup_traces": [lookup_trace(line, m, run.exceptions, sites, barcode_candidates, vpn_candidates)
+                          for line, m in zip(invoice.lines, matches)],
         **({"receipt_controls": po["receipt_controls"]} if "receipt_controls" in po else {}),
         "supplier_site_candidates": [] if supplier_site and not run.owner_pick else run.site_candidates,
     }
@@ -2019,7 +2097,8 @@ def run_batch(entries, source, config=None):
         try:
             result = run_invoice(entry["invoice"], source, config, entry.get("filename", ""), entry.get("text", ""),
                                  entry.get("boxes", ()), entry.get("page_count"), transaction, seen,
-                                 entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False))
+                                 entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False),
+                                 owner_supplier_site=entry.get("owner_supplier_site"))
         except Exception as error:  # isolated per invoice; the error is the evidence
             result = {"status": "Blocked", "filename": entry.get("filename", ""), "transaction": transaction,
                       "header": {"Document": text(entry["invoice"].number), "Validation Status": "Blocked"},

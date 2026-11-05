@@ -11,6 +11,7 @@ FROM ${BASE}
 USER root
 RUN rm -rf /opt/inv-studio/app
 COPY app /opt/inv-studio/app
+COPY docs/rules /opt/inv-studio/docs/rules
 # Model folders read-only for the app's account, and no model hub lookups (N6, N8; the same as the Dockerfile).
 RUN set -e; \
     rapidocr="$(python -c 'import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec("rapidocr").origin).parent/"models")')"; \

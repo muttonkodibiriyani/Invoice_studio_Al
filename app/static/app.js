@@ -568,48 +568,52 @@ function renderRulesResult(job) {
 }
 
 // When the rules leave 2+ supplier codes, the reviewer picks one: a click saves the form with that code and the
-// rules re-run on it (decision 41). The candidates stay listed with the pick marked; "Clear pick" sends "".
+// rules re-run on it (decision 41). When the supplier name is on 2+ Item Master sites, the candidates are those
+// sites and the pick is a site (S1.2). The candidates stay listed with the pick marked; "Clear pick" sends "".
 function renderSupplierPick(dd, job) {
   const candidates = job.rules?.supplier_site_candidates || [];
   if (candidates.length < 2) return;
-  const picked = job.owner_supplier_code ? String(job.owner_supplier_code) : "";
+  const field = candidates[0].supplier_site ? "supplier_site" : "supplier_code";
+  const noun = field === "supplier_site" ? "supplier site" : "supplier code";
+  const picked = job[`owner_${field}`] ? String(job[`owner_${field}`]) : "";
   const locked = ["queued", "processing", "exported"].includes(job.status);
   const box = make("div", "supplier-pick");
   box.append(make("small", "", picked
-    ? `Supplier code ${picked} picked at review · the rules filled the site from it`
-    : `${candidates.length} supplier codes match this supplier · pick the right one`));
+    ? `${noun[0].toUpperCase()}${noun.slice(1)} ${picked} picked at review · the rules filled the site from it`
+    : `${candidates.length} ${noun}s match this supplier · pick the right one`));
   const options = make("div", "supplier-pick-options");
   candidates.forEach((candidate) => {
-    const code = String(candidate.supplier_code ?? "");
+    const code = String(candidate[field] ?? "");
     const sites = candidate.sites || [];
     const first = sites[0] || {};
     const button = make("button", `supplier-pick-option${code === picked ? " picked" : ""}`);
     button.type = "button";
     button.dataset.supplierCode = code;
     button.setAttribute("aria-pressed", String(code === picked));
-    button.setAttribute("aria-label", `Pick supplier code ${code}`);
+    button.setAttribute("aria-label", `Pick ${noun} ${code}`);
     const where = [first.site_name || first.entity || "", sites.length > 1 ? `+${sites.length - 1} more` : ""].filter(Boolean).join(" ");
     button.append(make("strong", "", code), make("span", "", where || candidate.location || ""));
     button.title = [candidate.reason, ...sites.map((site) => [site.supplier_site, site.site_name].filter(Boolean).join(" · "))].filter(Boolean).join("\n");
     button.disabled = locked;
-    button.addEventListener("click", () => { if (code !== picked) pickSupplier(code); });
+    button.addEventListener("click", () => { if (code !== picked) pickSupplier(code, field, noun); });
     options.append(button);
   });
   if (picked) {
     const clear = make("button", "button button-quiet supplier-pick-clear", "Clear pick");
     clear.type = "button";
     clear.disabled = locked;
-    clear.addEventListener("click", () => pickSupplier(""));
+    clear.addEventListener("click", () => pickSupplier("", field, noun));
     options.append(clear);
   }
   box.append(options);
   dd.append(box);
 }
 
-async function pickSupplier(code) {
+async function pickSupplier(code, field = "supplier_code", noun = "supplier code") {
   $$(".supplier-pick button").forEach((button) => { button.disabled = true; });
-  const done = code ? `Supplier code ${code} picked. The rules re-ran with it.` : "Supplier code pick cleared. The rules re-ran.";
-  if (!(await submitReview({ supplier_code: code, confirm: false }, done))) {
+  const label = `${noun[0].toUpperCase()}${noun.slice(1)}`;
+  const done = code ? `${label} ${code} picked. The rules re-ran with it.` : `${label} pick cleared. The rules re-ran.`;
+  if (!(await submitReview({ [field]: code, confirm: false }, done))) {
     $$(".supplier-pick button").forEach((button) => { button.disabled = false; });
   }
 }

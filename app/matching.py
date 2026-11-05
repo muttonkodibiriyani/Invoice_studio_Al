@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 import re
+from .item_rules import RulesError, rules as default_rules
 from .models import Invoice, Policy
 from .references import decimal as D
 
@@ -221,10 +222,12 @@ def _entered(value,rules_value):
             "original":"" if _blank(rules_value) else f"rules value {rules_value} had no evidence","rule":"","confidence":"Reviewer"}
 
 
-def rules_view(result,text="",boxes=(),printed=None,entries=None):
+def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=None):
     """Turn one run_invoice result into evidence-checked review fields, lines and banner issues.
 
     ``entries`` are reviewer-entered values (owner_entries); they fill only cells the rules left empty or unevidenced.
+    A held Item cell carries the engine's ``lookup_trace`` with ``master_version`` (the active Item Master) and the
+    reviewer's manual fix.
     """
     header=result.get("header") or {}; lineage=result.get("lineage") or []
     entries=entries or {};typed=entries.get("header") or {};typed_lines=entries.get("lines") or {}
@@ -242,13 +245,18 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None):
             flags.append((label,line,"has no evidence and is left empty"))
             return {"value":None,"evidence":[],"flagged":True,"reason":"No evidence"}
         return {"value":str(value),"evidence":evidence,"flagged":False,"reason":""}
-    out_lines=[]
+    out_lines=[];traces=result.get("lookup_traces") or []
     for n,row in enumerate(lines,1):
         cells={}
         for c in LINE_FIELDS:
             entry=(typed_lines.get(str(n)) or {}).get(c)
             if c=="Unit Tax Code" and _blank(entry):entry=typed.get("taxCode")
             cells[c]=field(c,row.get(c),found.get((c,n),[]),c,n,entry,(row.get("Field Reasons") or {}).get(c))
+        trace=traces[n-1] if n<=len(traces) else None
+        if trace:
+            entry=(typed_lines.get(str(n)) or {}).get("Item")
+            cells["Item"]["lookup_trace"]={**trace,"item_master_version":master_version,
+                                           "manual_fix":{"kind":"entered","value":entry} if entry else None}
         out_lines.append({"line":n,"cells":cells,"status":row.get("Validation Status") or "","source_row":row.get("Source Row") or "",
                           "match_method":row.get("Match Method") or ""})
     fields={}
@@ -394,3 +402,39 @@ def rules_validation(view,ledger=(),reviewed=False):
     accepted=[{"rule":i.get("rule",""),"code":i["code"],"line":i.get("line")} for i in issues if i.get("accepted")]
     return {"ready":ready,"issues":issues,"matches":matches,"allocations":allocations if ready else [],"source":"fine_rules","status":view["status"],"accepted":accepted,
             "item_lines":view["item_lines"],"location_type":view["fields"]["location_type"]["value"]}
+
+
+# --------------------------------------------------------------------------- item lookup, in rules workbook order
+def lookup_item(search,rules=None):
+    """The workbook's item step (2) for one line, in its Lookup_Sequence order.
+
+    ``search(column, match)`` returns this line's ITEM_PARENT candidates for one item master column, best first,
+    already limited to the supplier site (match is exact | number | fuzzy). The first rule with candidates decides;
+    later exact ID rules only narrow it or turn it into a Conflict. A suggestion rule (the reviewer confirms) runs
+    only when no ID matched. No candidates anywhere ends on the terminal row (I2.5, Not in item master).
+    """
+    found=terminal=None
+    for rule in (rules or default_rules()).lookup_order(2):
+        if rule.terminal:terminal=rule;break
+        if found and rule.confirm:break
+        if not rule.match:raise RulesError(f"{rule.id}: the matcher cannot run match type for {', '.join(rule.columns)}")
+        parents=next((hits for column in rule.columns if (hits:=list(dict.fromkeys(search(column,rule.match))))),[])
+        if not parents:continue
+        if found is None:
+            found=rule,parents
+            if rule.confirm:break
+            continue
+        both=[p for p in found[1] if p in parents]
+        if not both:
+            conflict=re.search(r"Conflict \((P-[\w-]+)\)",rule.on_one)
+            return {"rule":rule.id,"status":"Conflict","parents":sorted({*found[1],*parents}),"confirm":False,
+                    "prompt":conflict.group(1) if conflict else None}
+        found=found[0],both
+    if found is None:
+        return {"rule":terminal and terminal.id,"status":"Not in item master","parents":[],"confirm":False,
+                "prompt":terminal and (terminal.prompts or (None,))[0]}
+    rule,parents=found
+    parents=parents[:rule.limit] if rule.limit else parents
+    status="Suggestion" if rule.confirm else "Found" if len(parents)==1 else "Ambiguous"
+    return {"rule":rule.id,"status":status,"parents":parents,"confirm":rule.confirm,
+            "prompt":None if status=="Found" else (rule.prompts or (None,))[0]}

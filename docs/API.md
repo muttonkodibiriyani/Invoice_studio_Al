@@ -313,6 +313,11 @@ Mapping-table driven checks, review and target workbooks.
 | `GET` | `/api/fine-rules/feedback` | Member | **Rule feedback.** Corrections sent by reviewers. |
 | `POST` | `/api/fine-rules/feedback` | Member | **Send rule feedback.** A reviewer's correction to a rule outcome, with evidence. |
 | `POST` | `/api/fine-rules/feedback/{fid}/decision` | Admin | **Decide on feedback.** Admin accepts or rejects a correction. |
+| `GET` | `/api/rules-assistant` | Member | **Rules assistant state.** Whether the AI rules assistant is on and, if not, why. |
+| `POST` | `/api/rules-assistant/test` | Admin | **Test the rules assistant connection.** Admin check of the Azure AI Foundry connection; the assistant stays off until it passes. |
+| `POST` | `/api/rules-assistant/search` | Member | **Rules assistant: search the item master.** Ranked item master rows for a code or description. No AI call. |
+| `POST` | `/api/rules-assistant/explain` | Member | **Rules assistant: explain a match.** Why an invoice line matched an item master row or not, from the engine's facts. |
+| `POST` | `/api/rules-assistant/propose` | Member | **Rules assistant: propose rules.** Drafts rule rows for a line and logs them as Proposed rule feedback; an admin decides. |
 | `GET` | `/api/target-export/config` | Member | **Target export settings.** Which UPC column the target export fills. |
 | `POST` | `/api/target-export/config` | Admin | **Save target export settings.** Admin sets the UPC column. |
 
@@ -365,6 +370,36 @@ Mapping-table driven checks, review and target workbooks.
   "decision": "accepted",
   "approver": "",
   "version": ""
+}
+```
+
+`POST /api/rules-assistant/search`
+```json
+{
+  "query": "rose cream"
+}
+```
+
+`POST /api/rules-assistant/explain`
+```json
+{
+  "line": {
+    "description": "Rose hand cream 50ml",
+    "gtin": "",
+    "sku": ""
+  }
+}
+```
+
+`POST /api/rules-assistant/propose`
+```json
+{
+  "line": {
+    "description": "Rose hand cream 50ml",
+    "gtin": "",
+    "sku": ""
+  },
+  "note": ""
 }
 ```
 
@@ -422,6 +457,8 @@ Admin uploads of the owner's master data, with validation, activation and rollba
 | `POST` | `/api/item-master/uploads/{version}/activate` | Admin | **Activate an item master.** Makes a validated upload the active version. |
 | `POST` | `/api/item-master/versions/{version}/rollback` | Admin | **Roll back the item master.** Returns to an earlier version; ?expected_signature= guards against a concurrent change. |
 | `DELETE` | `/api/item-master/uploads/{version}` | Admin | **Discard an upload.** Removes a validated upload that was never activated. |
+| `POST` | `/api/item-master/refresh` | Admin | **Update item master.** Re-matches every open (not exported) invoice against the live item master in the background; activate and rollback start this too. |
+| `GET` | `/api/item-master/refresh` | Admin | **Item master refresh result.** The latest re-match: status, counts and, per changed invoice, the lines newly matched, lost or changed. |
 | `GET` | `/api/mapping-tables` | Admin | **Mapping-table versions.** Uploaded and active mapping-table versions. |
 | `POST` | `/api/mapping-tables/validate` | Admin | **Validate mapping tables.** Multipart file upload; validates without activating. |
 | `POST` | `/api/mapping-tables/uploads/{upload_id}/activate` | Admin | **Activate mapping tables.** Makes a validated upload active. |
@@ -579,4 +616,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 78 routes: 1 public, 41 member, 35 admin, 1 without a token (health).
+Totals: 85 routes: 1 public, 45 member, 38 admin, 1 without a token (health).

@@ -40,16 +40,20 @@ from .drafts import ManualDraftRequest, build_draft_workbook, draft_filename, dr
 from .deletion import DeletionError, delete_invoices, remove_uploads
 from .reference_lookup import ReferenceLookup
 from .master_catalog import MAX_BYTES as MAX_MASTER_UPLOAD, register_item_master
+from .master_refresh import register_master_refresh
 from .fine_rules import RulesConfig, decide_feedback, feedback_entry, ocr_read, run_batch
 from .fine_rules_export import review_workbook, target_workbook
 from .fine_rules_source import LookupRulesSource
 from .mapping_tables import register_mapping_tables
 from .product_candidates import ProductCandidates
+from .coverage import coverage, refusal
+from .item_rules import rules as item_rules
 from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
 from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
 from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
+from .rules_assistant import TESTED as RULES_ASSISTANT_TESTED, register_rules_assistant
 from .sandbox import protect_process
 from .store import Store
 from .upload_check import check as check_upload
@@ -77,6 +81,8 @@ class Review(StrictModel):
     entries: dict | None = None
     # The owner's pick among the rules' supplier_site_candidates (a supplier code); "" clears it.
     supplier_code: str | None = None
+    # The reviewer's pick among the Item Master sites of the printed supplier name (S1.2); "" clears it.
+    supplier_site: str | None = None
 
 
 class Revision(StrictModel):
@@ -258,6 +264,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     auth=ChatGPTAuth(store);providers=Providers(store,auth,learned)
     lookup=ReferenceLookup(store)
     register_item_master(app,store)
+    register_rules_assistant(app,store,providers,lookup)
     products=ProductCandidates(lookup)
     # Admission is separate from processing: a batch is accepted whole, up to INV_STUDIO_MAX_QUEUED unfinished jobs
     # (queued or processing) on this instance, and the jobs wait their turn in the pool instead of being refused.
@@ -461,14 +468,18 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             config=store.get("fine_rules_config",{},catalog_lock);signature=rules_signature(catalog_lock)
             entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
             if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
+            if j.get("owner_supplier_site"):entry["owner_supplier_site"]=j["owner_supplier_site"]
             # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
             entry["ocr_lines"]=ocr_read(j)
             result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
             entries=j.get("owner_entries") if entries is None else entries
-            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries)
+            view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries,store.get("item_master_active",None,catalog_lock))
             view.update(signature=signature,evidence_hash=evidence_hash(j),computed_at=datetime.now(timezone.utc).isoformat())
             entries,attribution=picked_site_entry(view,j,entries,j.get("owner_entry_attribution"))
             attach_target_check(view,config,tc.TextChecks(checks),entries,attribution)
+            view["coverage"]=coverage(view,item_rules().coverage_tiers())
+            # P-LOC / P-LOCTYPE: what the user must answer about the location (rules workbook Prompts).
+            view["prompts"]=result.get("prompts") or []
             return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
@@ -489,7 +500,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         attributed to the stored pick's actor and time; without them it stays an unattributed owner entry."""
         site=(view.get("fields") or {}).get("site") or {}
         first=(site.get("evidence") or [{}])[0]
-        if first.get("kind")!="owner_entry" or first.get("rule")!="OWNER-PICK" or not j.get("owner_supplier_code"):
+        if first.get("kind")!="owner_entry" or first.get("rule")!="OWNER-PICK" or not (j.get("owner_supplier_code") or j.get("owner_supplier_site")):
             return entries,attribution
         entries=owner_entries(entries) if entries else {"header":{},"lines":{}}
         entries={**entries,"header":{**entries["header"],"site":site.get("value")}}
@@ -540,6 +551,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if reset:store.audit("review_reset",{"job_id":jid,"revision":current["revision"],"reason":"fine rules issues changed"},c)
             store.audit("fine_rules_applied",{"job_id":jid,"revision":current["revision"],"status":view["status"],
                         "item_lines":view["item_lines"],"approved":False},c)
+    register_master_refresh(app,store,ensure_rules,pool)
     def scan_evidence(jid,path,opts,selected_engine):
         """After an AI-only scan read is saved: a local OCR pass that adds boxes and review flags to the
         job's evidence. The AI values, revision and status never change; the pass is recorded in the trace."""
@@ -583,7 +595,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                         j["progress"]["characters"]=details.get("characters",0)
                     store.job(jid,j,c)
             if identity.cloud:store.ensure_blob(Path(job["path"]))
-            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"))
+            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
+                             supplier_site=job.get("owner_supplier_site"))
             annotated=result.pop("annotated_evidence")
             lines=Invoice.model_validate(result["invoice"]).model_dump(mode="json")["lines"]
             view=None
@@ -892,17 +905,19 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         store.audit("extraction_draft_downloaded",{"job_id":jid,"revision":j["revision"],"approved":False,"line_items":len(invoice.lines)})
         return Response(content,media_type=MIME_XLSX,headers={"Content-Disposition":f'attachment; filename="EXTRACTION_REVIEW_ONLY_{jid[:8]}.xlsx"'})
 
-    def supplier_pick(j,body):
-        """The owner's supplier code for the rules: only one of the candidates the rules last offered on this job.
-        A changed supplier name drops an earlier pick; the rules re-check the pick against their own candidates."""
-        if body.supplier_code is None:
+    def supplier_pick(j,body,field="supplier_code",label="Supplier code"):
+        """The owner's supplier code (or Item Master site, field="supplier_site") for the rules: only one of the
+        candidates the rules last offered on this job. A changed supplier name drops an earlier pick; the rules
+        re-check the pick against their own candidates."""
+        value,stored=getattr(body,field),j.get("owner_"+field)
+        if value is None:
             same=body.invoice.supplier_name==(j.get("invoice") or {}).get("supplier_name")
-            return j.get("owner_supplier_code") if same else None
-        code=body.supplier_code.strip()
-        if not code:return None
-        offered={str(c.get("supplier_code")) for c in (j.get("rules") or {}).get("supplier_site_candidates") or []}
-        if code not in offered and code!=j.get("owner_supplier_code"):raise ValueError("Supplier code is not one of the candidates the rules offered")
-        return code
+            return stored if same else None
+        value=value.strip()
+        if not value:return None
+        offered={str(c.get(field)) for c in (j.get("rules") or {}).get("supplier_site_candidates") or [] if c.get(field)}
+        if value not in offered and value!=stored:raise ValueError(f"{label} is not one of the candidates the rules offered")
+        return value
     def carry_unchecked(invoice,stored):
         """D102(3): the review client does not send barcode_unchecked. The stored value stays on the line at the same
         index while that line still has no gtin and the same description and code (compared through text_key); a
@@ -930,7 +945,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/review")
     @access(MEMBER)
     def review(jid:str,body:Review):
-        view=entries=pick=None;cleared=0
+        view=entries=pick=site=None;cleared=0
         if not demo_references:
             j=job_or_404(jid);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -943,10 +958,11 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 if not same_lines(body.invoice.lines,j):
                     cleared=sum(len(cells or {}) for cells in (entries.get("lines") or {}).values());entries["lines"]={}
             attribution=entry_attribution(j.get("owner_entries"),entries,j.get("owner_entry_attribution"))
-            pick=supplier_pick(j,body)
-            picked_by=j.get("owner_supplier_pick") if pick and pick==j.get("owner_supplier_code") else {"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()} if pick else None
+            pick=supplier_pick(j,body);site=supplier_pick(j,body,"supplier_site","Supplier site")
+            kept=(pick,site)==(j.get("owner_supplier_code"),j.get("owner_supplier_site"))
+            picked_by=None if not (pick or site) else j.get("owner_supplier_pick") if kept else {"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()}
             checks=stored_text_checks(j)
-            view=compute_rules(body.invoice,{**j,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_pick":picked_by},entries)
+            view=compute_rules(body.invoice,{**j,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by},entries)
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -959,8 +975,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if view is not None:
                 j["rules"]={**view,"revision":j["revision"]};j["owner_entries"]=entries;j["owner_entry_attribution"]=attribution
                 j["text_checks"]=checks  # same revision as the read above, so the same text
-                if pick:j.update(owner_supplier_code=pick,owner_supplier_pick=picked_by)
-                else:j.pop("owner_supplier_code",None);j.pop("owner_supplier_pick",None)
+                for name,value in (("owner_supplier_code",pick),("owner_supplier_site",site),("owner_supplier_pick",picked_by)):
+                    if value:j[name]=value
+                    else:j.pop(name,None)
                 if body.confirm:
                     # Confirm-time accuracy: per field, its status before and changed yes/no; never a value.
                     supplier=(view["fields"].get("site") or {}).get("value") or ""
@@ -971,7 +988,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             j["provenance"]+=provenance
             evaluate(j,c);store.job(jid,j,c)
             store.audit("reviewed" if body.confirm else "edited",{"job_id":jid,"before":before,"after":j["invoice"],"revision":j["revision"],"reference_version":references(c).get("version"),
-                        **({"owner_entries":entries,"accepted":j["validation"].get("accepted",[]),"owner_supplier_pick":bool(pick),
+                        **({"owner_entries":entries,"accepted":j["validation"].get("accepted",[]),"owner_supplier_pick":bool(pick or site),
                            "owner_line_entries_cleared":cleared} if view is not None else {})},c)
         return public(j)
 
@@ -1009,6 +1026,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
             evaluate(j,c)
             if not j["validation"]["ready"]:raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
+            # V7.1: the Coverage_Tiers tier of the lines the rules found decides whether the invoice may leave.
+            why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
+            if why:raise HTTPException(409,why)
             inv=Invoice.model_validate(j["invoice"]);eid=uuid.uuid4().hex
             if demo_references:
                 content=workbook(inv,j["validation"])
@@ -1371,6 +1391,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def connect_azure(body:AzureConnection):
         refuse_provider("azure")
         result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
+        store.set(RULES_ASSISTANT_TESTED,None)  # a new key or auth mode needs the assistant's connection test again
         store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
         return result
 
@@ -1378,6 +1399,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def disconnect_azure():
         result=providers.azure.disconnect()
+        store.set(RULES_ASSISTANT_TESTED,None)
         store.audit("connection_disconnected",{"provider":"azure"})
         return result
 
@@ -1567,7 +1589,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             store.set("fine_rules_feedback",log,c)
             entry=next(x for x in log if x["Feedback ID"]==fid);store.audit("fine_rules_feedback_decided",entry,c)
         # After the commit: the learned store's lock can be held for a whole learning run, never with the database's.
-        if learned is not None:
+        # An approved assistant draft is model output shaped by invoice text: it goes live only through the rules
+        # workbook and the goldens, never as a learned correction in every AI prompt.
+        if learned is not None and not str(entry.get("Rule Candidate","")).startswith("assistant:"):
             try:
                 if entry["Decision"]=="Approved":
                     record=learned.promote_feedback(entry,store.jobs())

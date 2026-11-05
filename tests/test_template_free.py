@@ -130,16 +130,27 @@ def test_a_line_that_cites_an_invoice_does_not_cost_a_text_read_its_number(cited
 
 
 @pytest.mark.parametrize("keyword", ["", "Lumena Beauty Trading LLC\n"], ids=["layout", "demo-template"])
-@pytest.mark.parametrize("line", [f"Net total: {'7' * 150_000}x", f"Net total{' ' * 150_000}x", "Net total:" * 15_000,
-                                  f"Invoice date{' ' * 150_000}x"], ids=["digits", "spaces", "labels", "date-spaces"])
+@pytest.mark.parametrize("line", [lambda n: f"Net total: {'7' * n}x", lambda n: f"Net total{' ' * n}x",
+                                  lambda n: "Net total:" * (n // 10), lambda n: f"Invoice date{' ' * n}x"],
+                         ids=["digits", "spaces", "labels", "date-spaces"])
 def test_a_long_line_is_read_in_linear_time(keyword, line):
     # The stored text is capped at 150,000 characters, and a later export parses it in the API process.
+    # A line ten times longer takes at most ten times as long; a backtracking regex takes about a hundred,
+    # and seconds already at 15,000 characters. The ratio of the best of five runs holds on a loaded host,
+    # where a wall-clock bound does not.
     import time
-    text = f"{keyword}Invoice: DEMO-1\n{line}\n"
     templates = templates_from([engines.ROOT / "templates"])
-    started = time.monotonic()
-    structured_extract(text, [], templates, [])
-    assert time.monotonic() - started < 1.0
+
+    def seconds(n):
+        text = f"{keyword}Invoice: DEMO-1\n{line(n)}\n"
+        runs = []
+        for _ in range(5):
+            started = time.perf_counter()
+            structured_extract(text, [], templates, [])
+            runs.append(time.perf_counter() - started)
+        return min(runs)
+    short, long = seconds(1_500), seconds(15_000)
+    assert long < 25 * short, f"{long:.3f}s for 15,000 characters, {short:.3f}s for 1,500"
 
 
 @pytest.mark.parametrize("printed, field, value", [

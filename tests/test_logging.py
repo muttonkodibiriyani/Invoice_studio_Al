@@ -3,7 +3,9 @@ import logging
 
 import pytest
 
-from app.logging_setup import JsonFormatter, configure, new_request_id, redact, request_id
+import time
+
+from app.logging_setup import JsonFormatter, configure, new_request_id, redact, redact_value, request_id
 
 
 @pytest.fixture
@@ -38,6 +40,56 @@ def test_redact_removes_tokens_codes_and_links():
     for secret in ("eyJhbGci", "ABC123", "XYZ", "k1", "hunter2", "studio.example.test"):
         assert secret not in out, (secret, out)
     assert "[redacted]" in out
+
+
+CANARY = "sk-CANARY-9f3a7c"
+
+
+@pytest.mark.parametrize("text", [
+    "headers={'api-key': '%s', 'Content-Type': 'application/json'}",
+    'request {"api-key": "%s", "model": "gpt"}',
+    "Headers({'host': 'x', 'authorization': 'Bearer-less %s'})",
+    "{'Ocp-Apim-Subscription-Key': '%s'}",
+    '{"client_secret":"%s"}',
+    "{'access_token': b'%s'}",
+    '{"password": "a\\"b%s"}',
+    "{'api_key': %s}",
+    "api-key: %s",
+    "  Ocp-Apim-Subscription-Key:   %s trailing",
+    "Authorization: Basic %s",
+    "client_secret=%s&x=1",
+])
+def test_redact_masks_dict_json_and_header_shaped_secrets(text):
+    out = redact(text % CANARY)
+    assert CANARY not in out and "CANARY" not in out, out
+    assert "[redacted]" in out
+
+
+def test_redact_keeps_the_field_name_and_harmless_fields():
+    out = redact("{'api-key': 'x1', 'Content-Type': 'application/json', 'deployment': 'gpt-4o'}")
+    assert "'api-key': [redacted]" in out
+    assert "'Content-Type': 'application/json'" in out and "'deployment': 'gpt-4o'" in out
+
+
+def test_redact_is_linear_on_hostile_input():
+    started = time.monotonic()
+    redact("a-" * 100_000 + "x" * 100_000 + "'" * 50_000)
+    assert time.monotonic() - started < 2
+
+
+def test_redact_value_masks_credential_named_fields_and_walks_containers():
+    value = {"api-key": CANARY, "Authorization": "Basic " + CANARY, "nested": {"client_secret": CANARY, "n": 3},
+             "items": [{"token": CANARY}, "Bearer " + CANARY], "count": 2}
+    out = redact_value(value)
+    assert CANARY not in json.dumps(out)
+    assert out["count"] == 2 and out["nested"]["n"] == 3 and out["api-key"] == "[redacted]"
+
+
+def test_json_formatter_masks_structured_secret_fields():
+    record = logging.LogRecord("x", logging.INFO, __file__, 1, "foundry call", None, None)
+    record.studio = {"api_key": CANARY, "headers": {"api-key": CANARY}, "status": 401}
+    out = JsonFormatter().format(record)
+    assert CANARY not in out and json.loads(out)["status"] == 401
 
 
 def test_json_formatter_fields_and_redaction():

@@ -293,17 +293,24 @@ def register_item_master(app, store):
         store.audit("item_master_rolled_back" if rollback else "item_master_activated", {"version_id": version, "actor": who}, c)
         return {"active": version, "signature": fingerprint(c)}
 
+    def refreshed(request, result, reason):
+        """Open invoices are matched again once the new catalog has committed (app/master_refresh)."""
+        start = getattr(request.app.state, "item_master_refresh", None)
+        return {**result, "refresh": start(reason, result["active"])} if start else result
+
     @app.post("/api/item-master/uploads/{version}/activate")
     @access(ADMIN)
     def activate(version: str, request: Request):
         with store.connection(True) as c:
-            return activate_version(c, version, request.state.identity["email"])
+            result = activate_version(c, version, request.state.identity["email"])
+        return refreshed(request, result, "activated")
 
     @app.post("/api/item-master/versions/{version}/rollback")
     @access(ADMIN)
     def rollback(version: str, request: Request, expected_signature: str):
         with store.connection(True) as c:
-            return activate_version(c, version, request.state.identity["email"], True, expected_signature)
+            result = activate_version(c, version, request.state.identity["email"], True, expected_signature)
+        return refreshed(request, result, "rolled_back")
 
     @app.delete("/api/item-master/uploads/{version}")
     @access(ADMIN)

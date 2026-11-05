@@ -1038,7 +1038,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             else:
                 accepted=j["validation"].get("accepted",[])
                 content,evidence=rules_workbook([{**j["rules"],"owner_accepted":accepted}],target_upc(c))
-                content,target=with_checks_sheet(content,[j["rules"]])
+                content,target=target_checks(content,[j["rules"]],sheet=False)
                 receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
@@ -1081,17 +1081,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 old=((before.get("lines") or {}).get(str(line)) or {}).get(name)
                 out[k]=previous[k] if k in previous and old==value else {"actor":actor.get(),"at":now}
         return out
-    def with_checks_sheet(content,views):
-        """Append the 'Checks' sheet (cells by status with evidence, row and workbook checks) to a written
-        target workbook; returns it with each transaction's target-sheet accuracy for its receipt (counts only)."""
+    def target_checks(content,views,sheet=True):
+        """Each transaction's target-sheet accuracy for its receipt (counts only), with the workbook. ``sheet`` appends
+        the 'Checks' sheet (cells by status with evidence, row and workbook checks); only drafts carry it, the real
+        export holds the three template sheets alone (owner decision A, 5 Nov)."""
         results=[]
         for n,view in enumerate(views,1):
             check=view.get("target_check") or {}
             cells=[{**x,"value":str(n)} if x["column"]=="Transaction Number" else x for x in check.get("cells",[])]
             results.append({**check,"transaction":n,"cells":cells,"checks":check.get("checks",[])})
         currencies=[((v.get("fields") or {}).get("currency") or {}).get("value") for v in views]
-        content,workbook_checks=tc.add_checks_sheet(content,results,currencies)
-        content=order_date_rows(content,views)
+        if sheet:
+            content,workbook_checks=tc.add_checks_sheet(content,results,currencies)
+            content=order_date_rows(content,views)
+        else:workbook_checks=tc.check_workbook(content,currencies)
         receipts={r["transaction"]:{"summary":r.get("summary",""),"counts":r.get("counts",{}),"metric":r.get("metric",{}),
                   "checks":{k["check"]:k["status"] for k in r["checks"]},
                   "workbook_checks":{k["check"]:k["status"] for k in workbook_checks}} for r in results}
@@ -1195,7 +1198,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             views.append(j["rules"]);included.append(j)
         if not views:raise HTTPException(409,"None of the selected invoices has a current fine-rules result. "+skipped[0][1])
         content,_=rules_workbook(views,target_upc(),draft=True)
-        content,_=with_checks_sheet(content,views)
+        content,_=target_checks(content,views)
         content=draft_disclosure(content,skipped)
         store.audit("target_draft_downloaded",{"approved":False,"count":len(included),
                     "invoices":[{"job_id":j["id"],"revision":j["revision"],"transaction_number":n} for n,j in enumerate(included,1)],
@@ -1213,37 +1216,83 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             sheet.append([None]*len(tc.CHECKS_COLUMNS));n=sheet.max_row
             for name,value in (("Sheet",kind),("Column",column),("Status","Draft" if kind=="(draft)" else "Skipped"),("Reason",reason)):
                 cell=sheet.cell(n,tc.CHECKS_COLUMNS.index(name)+1);cell.value=str(value);cell.data_type="s"
+        # Every tab says DRAFT (name, colour, printed header), so the file cannot pass for, or import as, a real export.
+        for s in book.worksheets:
+            s.title=f"DRAFT {s.title}";s.sheet_properties.tabColor="C00000"
+            s.oddHeader.center.text="DRAFT - not exported, not for ERP import"
         book.properties.title="DRAFT target workbook";buffer=io.BytesIO();book.save(buffer);return buffer.getvalue()
+
+    def batch_readiness(request,c,ledger):
+        """(job, validation, held reasons) for one selected invoice, read-only; no reasons means a real export may take
+        it now. The same gates as the single export, the export lock first. A ready invoice's key and allocations go
+        on ``ledger``, so a later copy of it in the same selection is held as a duplicate."""
+        j=store.job(request.id,c=c)
+        if not j:return None,None,[("Not Found","Invoice not found")]
+        if j.get("export_id"):
+            return j,None,[("Exported",f"{j['filename']} was already exported; it cannot be exported again. Download its existing export.")]
+        if j["status"] in ("queued","processing"):return j,None,[("Processing","Wait for extraction to finish")]
+        if j["revision"]!=request.revision:return j,None,[("Changed",f"Invoice {j['filename']} changed. Refresh before exporting.")]
+        if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
+                                    j["rules"].get("evidence_hash") != evidence_hash(j)):
+            return j,None,[("Rules Changed","Catalog or rules changed. Refresh and confirm review before exporting.")]
+        inv=Invoice.model_validate(j["invoice"])
+        if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
+        else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
+        if not result["ready"]:return j,result,[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True)]
+        why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
+        if why:return j,result,[("Coverage",why)]
+        result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"])
+        result["allocations"]=[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])
+        ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"]})
+        return j,result,[]
+
+    @app.post("/api/exports/batch/check")
+    @access(MEMBER)
+    def check_batch(body:Batch):
+        """Before 'Export selected' (owner decision A): the selected invoices a real export would take now, in
+        transaction order, and the held ones with every reason. Exports nothing; held invoices stay as they are."""
+        if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
+        for request in body.jobs:
+            if store.job(request.id):ensure_rules(request.id)  # the same refresh as the export; unknown ids are held
+        ready=[];held=[]
+        with store.connection() as c:
+            ledger=store.ledger(c)
+            for request in body.jobs:
+                j,_,reasons=batch_readiness(request,c,ledger)
+                item={"id":request.id,"filename":(j or {}).get("filename",""),"revision":(j or {}).get("revision")}
+                if reasons:held.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
+                else:ready.append({**item,"transaction_number":len(ready)+1})
+        return {"ready":ready,"held":held}
 
     @app.post("/api/exports/batch")
     @access(MEMBER)
     def export_batch(body:Batch):
+        """All or nothing: every selected invoice must be ready, else 409 and nothing is exported. 'Export selected'
+        sends the ready set from /api/exports/batch/check. The workbook holds only the three template sheets."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:ensure_rules(request.id)
         with store.connection(True) as c:
             selected=[];entries=[];ledger=store.ledger(c);batch_id=uuid.uuid4().hex
             for index,request in enumerate(body.jobs,1):
-                j=job_or_404(request.id,c);assert_editable(j)
-                if j["revision"]!=request.revision:raise HTTPException(409,f"Invoice {j['filename']} changed. Refresh before exporting.")
+                j,result,reasons=batch_readiness(request,c,ledger)
+                if not j:raise HTTPException(404,"Invoice not found")
+                if reasons:
+                    code,message=reasons[0]
+                    raise HTTPException(409,message if code in ("Exported","Processing","Changed","Rules Changed")
+                                        else f"Invoice {j['filename']} is held: {message}")
                 inv=Invoice.model_validate(j["invoice"])
-                if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
-                                        j["rules"].get("evidence_hash") != evidence_hash(j)):
-                    raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
-                if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
-                else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
-                if not result["ready"]:raise HTTPException(409,f"Invoice {j['filename']} is held: {result['issues'][0]['message']}")
                 receipt={"id":uuid.uuid4().hex,"job_id":j["id"],"batch_id":batch_id,"transaction_number":index,
-                         "invoice_key":key(inv) if demo_references else rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
+                         "invoice_key":result["invoice_key"],"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "reference_version":references(c).get("version"),"policy":policy(c).model_dump(mode="json"),
-                         "allocations":[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])}
+                         "allocations":result["allocations"]}
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {})
-                ledger.append(receipt);entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
+                entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
                 selected.append((j,receipt))
             if demo_references:content=batch_workbook(entries)
             else:
                 content,evidence=rules_workbook(entries,target_upc(c))
-                content,target=with_checks_sheet(content,entries)
+                content,target=target_checks(content,entries,sheet=False)
                 for _,receipt in selected:
                     row=receipt["transaction_number"];receipt["source"]="fine_rules"
                     receipt["evidence"]=evidence.get(row,{});receipt["target_check"]=target[row]
@@ -1531,7 +1580,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     # most BACKGROUND_WAIT seconds for it, so a request is always open while it runs (Cloud Run CPU is request-billed).
     background_tasks={};background_lock=threading.Lock()
     background_kinds={"target-draft":(Batch,download_target_draft),"extraction-batch":(ExtractionBatch,download_extraction_batch),
-                      "export-batch":(Batch,export_batch),"fine-rules-target":(FineRulesRequest,fine_rules_target),
+                      "export-batch":(Batch,export_batch),"export-check":(Batch,check_batch),"fine-rules-target":(FineRulesRequest,fine_rules_target),
                       "fine-rules-review":(FineRulesRequest,fine_rules_review)}
     def background_work(task,handler,body):
         try:

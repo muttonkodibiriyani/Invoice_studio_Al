@@ -243,14 +243,27 @@ Download exports and batch workbooks; long downloads run in the background.
 |---|---|---|---|
 | `GET` | `/api/exports/{eid}` | Member | **Download an export.** The export workbook. |
 | `GET` | `/api/exports/{eid}/evidence` | Member | **Evidence of an export.** The evidence record behind an export: sources, hashes, approvals. |
-| `POST` | `/api/exports/batch` | Member | **Export a batch.** One workbook for several approved invoices; each item names the invoice and its revision. |
+| `POST` | `/api/exports/batch` | Member | **Export a batch.** One workbook for several ready invoices; each item names the invoice and its revision. All or nothing: a held, changed or already exported invoice refuses the batch with 409. The workbook holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet since 5 Nov, decision A). |
+| `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order) and held, each held one with its reasons as code and message (Exported is the lock on an invoice already exported). Send the ready ones to /api/exports/batch. |
 | `GET` | `/api/batches/{bid}` | Member | **Download a batch export.** The batch workbook. |
 | `POST` | `/api/exports/extraction-batch` | Member | **Unvalidated batch workbook.** What was read for several invoices, before validation. |
-| `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The target workbook for selected invoices nobody approved yet. |
-| `POST` | `/api/background/{kind}` | Member | **Start a long download.** kind is target-draft, extraction-batch, export-batch, fine-rules-target or fine-rules-review; the body is that download's body. Returns a task id to poll. |
+| `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export. |
+| `POST` | `/api/background/{kind}` | Member | **Start a long download.** kind is target-draft, extraction-batch, export-check, export-batch, fine-rules-target or fine-rules-review; the body is that download's body. Returns a task id to poll. |
 | `GET` | `/api/background/tasks/{tid}` | Member | **Poll a long download.** Running, or the finished file. Only the account that started it can read it. |
 
 `POST /api/exports/batch`
+```json
+{
+  "jobs": [
+    {
+      "id": "{{jobId}}",
+      "revision": 1
+    }
+  ]
+}
+```
+
+`POST /api/exports/batch/check`
 ```json
 {
   "jobs": [
@@ -616,4 +629,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 85 routes: 1 public, 45 member, 38 admin, 1 without a token (health).
+Totals: 86 routes: 1 public, 46 member, 38 admin, 1 without a token (health).

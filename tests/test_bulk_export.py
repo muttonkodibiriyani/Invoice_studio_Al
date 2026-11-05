@@ -119,7 +119,7 @@ def test_the_receipt_records_the_open_holds_and_the_owner_decision(client, owner
     holds = {(h["code"], h["cell"]) for h in receipt["open_holds"]}
     assert {("Receipt Evidence", None), ("Missing Evidence", "Location"), ("REVIEW", None)} <= holds
     assert all(h["message"] for h in receipt["open_holds"])
-    assert receipt["target_check"]["transaction"] == 3
+    assert receipt["transaction_number"] == 3 and {"counts", "checks"} <= set(receipt["target_check"])
     [clean] = receipts(app, "a")
     assert clean["open_holds"] == [] and clean["validation"] == "exported unvalidated by owner decision D11"
 

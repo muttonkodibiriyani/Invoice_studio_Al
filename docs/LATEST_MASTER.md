@@ -48,7 +48,8 @@ status continue to use approved configuration. Invoice quantities, costs, date,
 net and VAT remain invoice values.
 
 Sparse master quantities have no receipt identity. They never establish available
-balances and final export remains held even after generic review confirmation.
+balances; the invoice stays on hold in review even after generic review confirmation. Since owner decision D11
+(5 Nov) that hold no longer blocks the export: it is exported with what was found and the receipt records it open.
 A richer configured PO source may establish capacity only with explicit
 `RECEIPT_ID`, order, location, supplier code, item and quantity. Duplicate receipt
 identity/item rows do not add capacity; contradictory quantities hold. Stable

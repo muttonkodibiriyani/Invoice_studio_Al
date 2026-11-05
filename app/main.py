@@ -1023,12 +1023,14 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before exporting.")
             if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
                                         j["rules"].get("evidence_hash") != evidence_hash(j)):
-                raise HTTPException(409,"Catalog or rules changed. Refresh and confirm review before exporting.")
+                raise HTTPException(409,"Catalog or rules changed. Refresh before exporting.")
             evaluate(j,c)
-            if not j["validation"]["ready"]:raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
-            # V7.1: the Coverage_Tiers tier of the lines the rules found decides whether the invoice may leave.
+            if demo_references and not j["validation"]["ready"]:
+                raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
+            blocked=[i["message"] for i in j["validation"]["issues"] if i["code"] in INTEGRITY and i.get("blocking",True)]
+            if blocked:raise HTTPException(409,blocked[0])
+            # V7.1: the Coverage_Tiers tier of the lines the rules found; since D11 a hold the receipt records, not a refusal.
             why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
-            if why:raise HTTPException(409,why)
             inv=Invoice.model_validate(j["invoice"]);eid=uuid.uuid4().hex
             if demo_references:
                 content=workbook(inv,j["validation"])
@@ -1037,12 +1039,13 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                          "allocations":[m["allocation"] for m in j["validation"]["matches"]]}
             else:
                 accepted=j["validation"].get("accepted",[])
-                content,evidence=rules_workbook([{**j["rules"],"owner_accepted":accepted}],target_upc(c))
+                content,evidence=rules_workbook([{**j["rules"],"owner_accepted":accepted}],target_upc(c),blanks=True)
                 content,target=target_checks(content,[j["rules"]],sheet=False)
                 receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
-                         "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1]}
+                         "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1],
+                         "open_holds":open_holds(j["validation"],why),"validation":D11}
             c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
         learn_later(j)
@@ -1197,7 +1200,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if reason:skipped.append((j,reason));continue
             views.append(j["rules"]);included.append(j)
         if not views:raise HTTPException(409,"None of the selected invoices has a current fine-rules result. "+skipped[0][1])
-        content,_=rules_workbook(views,target_upc(),draft=True)
+        content,_=rules_workbook(views,target_upc(),blanks=True)
         content,_=target_checks(content,views)
         content=draft_disclosure(content,skipped)
         store.audit("target_draft_downloaded",{"approved":False,"count":len(included),
@@ -1226,76 +1229,88 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             s["A1"].comment=Comment("DRAFT: not exported, approved or confirmed. Not for ERP import.","Invoice Studio")
         book.properties.title="DRAFT target workbook";buffer=io.BytesIO();book.save(buffer);return buffer.getvalue()
 
+    # Owner decision D11 (5 Nov): 'don't invent, I just need information in the excel, export team will validate
+    # manually'. Validation and review holds no longer stop the real export; each receipt lists the ones still open.
+    # Only integrity blocks: not read yet, changed since the check, already exported, the same invoice twice.
+    D11="exported unvalidated by owner decision D11"
+    INTEGRITY=("Duplicate","Rules Pending")
+    def open_holds(result,why=None):
+        """The holds still open at export time, each with the cell it applies to when it names one (D11)."""
+        holds=[{"code":i["code"],"cell":i.get("field"),"line":i.get("line"),"message":i["message"]}
+               for i in result["issues"] if i.get("blocking",True) and i["code"] not in INTEGRITY]
+        return holds+([{"code":"Coverage","cell":None,"line":None,"message":why}] if why else [])
     def batch_readiness(request,c,ledger):
-        """(job, validation, held reasons) for one selected invoice, read-only; no reasons means a real export may take
-        it now. The same gates as the single export, the export lock first. A ready invoice's key and allocations go
-        on ``ledger``, so a later copy of it in the same selection is held as a duplicate."""
+        """(job, validation, blocking reasons, open holds) for one selected invoice, read-only. No reasons means a real
+        export takes it now, with its open holds recorded (D11); the export lock first. A taken invoice's key and
+        allocations go on ``ledger``, so a later copy of it in the same selection is blocked as a duplicate."""
         j=store.job(request.id,c=c)
-        if not j:return None,None,[("Not Found","Invoice not found")]
+        if not j:return None,None,[("Not Found","Invoice not found")],[]
         if j.get("export_id"):
-            return j,None,[("Exported",f"{j['filename']} was already exported; it cannot be exported again. Download its existing export.")]
-        if j["status"] in ("queued","processing"):return j,None,[("Processing","Wait for extraction to finish")]
-        if j["revision"]!=request.revision:return j,None,[("Changed",f"Invoice {j['filename']} changed. Refresh before exporting.")]
+            return j,None,[("Exported",f"{j['filename']} was already exported; it cannot be exported again. Download its existing export.")],[]
+        if j["status"] in ("queued","processing"):return j,None,[("Processing","Wait for extraction to finish")],[]
+        if j["revision"]!=request.revision:return j,None,[("Changed",f"Invoice {j['filename']} changed. Refresh before exporting.")],[]
         if not demo_references and (not fresh_rules(j) or j["rules"].get("signature") != rules_signature(c) or
                                     j["rules"].get("evidence_hash") != evidence_hash(j)):
-            return j,None,[("Rules Changed","Catalog or rules changed. Refresh and confirm review before exporting.")]
+            return j,None,[("Not Read",f"Invoice {j['filename']} has no current read yet. Refresh before exporting.")],[]
         inv=Invoice.model_validate(j["invoice"])
         if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
         else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
-        if not result["ready"]:return j,result,[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True)]
-        why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
-        if why:return j,result,[("Coverage",why)]
+        reasons=[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True) and (demo_references or i["code"] in INTEGRITY)]
+        if reasons:return j,result,reasons,[]
+        holds=[] if demo_references else open_holds(result,refusal(coverage(j["rules"],item_rules().coverage_tiers())))
         result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"])
         result["allocations"]=[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])
         ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"]})
-        return j,result,[]
+        return j,result,[],holds
 
     @app.post("/api/exports/batch/check")
     @access(MEMBER)
     def check_batch(body:Batch):
         """Before 'Export selected' (owner decision A): the selected invoices a real export would take now, in
-        transaction order, and the held ones with every reason. Exports nothing; held invoices stay as they are."""
+        transaction order, each with the holds still open on it (information only, D11), and the blocked ones with every
+        reason. Exports nothing; blocked invoices stay as they are."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:
-            if store.job(request.id):ensure_rules(request.id)  # the same refresh as the export; unknown ids are held
-        ready=[];held=[]
+            if store.job(request.id):ensure_rules(request.id)  # the same refresh as the export; unknown ids are blocked
+        ready=[];blocked=[]
         with store.connection() as c:
             ledger=store.ledger(c)
             for request in body.jobs:
-                j,_,reasons=batch_readiness(request,c,ledger)
+                j,_,reasons,holds=batch_readiness(request,c,ledger)
                 item={"id":request.id,"filename":(j or {}).get("filename",""),"revision":(j or {}).get("revision")}
-                if reasons:held.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
-                else:ready.append({**item,"transaction_number":len(ready)+1})
-        return {"ready":ready,"held":held}
+                if reasons:blocked.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
+                else:ready.append({**item,"transaction_number":len(ready)+1,"attention":holds})
+        return {"ready":ready,"blocked":blocked}
 
     @app.post("/api/exports/batch")
     @access(MEMBER)
     def export_batch(body:Batch):
-        """All or nothing: every selected invoice must be ready, else 409 and nothing is exported. 'Export selected'
-        sends the ready set from /api/exports/batch/check. The workbook holds only the three template sheets."""
+        """All or nothing: a blocked invoice (not read, changed, already exported, duplicate) refuses the batch with 409
+        and nothing is exported. Open holds do not block (D11); each receipt records them. 'Export selected' sends the
+        ready set from /api/exports/batch/check. The workbook holds only the three template sheets, blanks blank."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:ensure_rules(request.id)
         with store.connection(True) as c:
             selected=[];entries=[];ledger=store.ledger(c);batch_id=uuid.uuid4().hex
             for index,request in enumerate(body.jobs,1):
-                j,result,reasons=batch_readiness(request,c,ledger)
+                j,result,reasons,holds=batch_readiness(request,c,ledger)
                 if not j:raise HTTPException(404,"Invoice not found")
                 if reasons:
-                    code,message=reasons[0]
-                    raise HTTPException(409,message if code in ("Exported","Processing","Changed","Rules Changed")
-                                        else f"Invoice {j['filename']} is held: {message}")
+                    message=reasons[0][1]
+                    raise HTTPException(409,message if j["filename"] in message else f"Invoice {j['filename']}: {message}")
                 inv=Invoice.model_validate(j["invoice"])
                 receipt={"id":uuid.uuid4().hex,"job_id":j["id"],"batch_id":batch_id,"transaction_number":index,
                          "invoice_key":result["invoice_key"],"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "reference_version":references(c).get("version"),"policy":policy(c).model_dump(mode="json"),
                          "allocations":result["allocations"]}
                 if not demo_references:
-                    receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {})
+                    receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {},
+                                   open_holds=holds,validation=D11)
                 entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
                 selected.append((j,receipt))
             if demo_references:content=batch_workbook(entries)
             else:
-                content,evidence=rules_workbook(entries,target_upc(c))
+                content,evidence=rules_workbook(entries,target_upc(c),blanks=True)
                 content,target=target_checks(content,entries,sheet=False)
                 for _,receipt in selected:
                     row=receipt["transaction_number"];receipt["source"]="fine_rules"

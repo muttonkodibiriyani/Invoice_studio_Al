@@ -316,7 +316,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
         key_=next((k for k,lab,_ in RULES_FIELDS if lab==label),label)
         required=label in REQUIRED_LINE if line is not None else key_ in REQUIRED_HEADER
         hint="; enter it on the review screen if you have it" if required else ""
-        issues.append({"code":"Missing Evidence","message":f"{label} {why}{hint}","owner":"Accounts payable","line":line,
+        issues.append({"code":"Missing Evidence","message":f"{label} {why}{hint}","field":label,"owner":"Accounts payable","line":line,
                        "rule":"EVIDENCE","evidence":"","blocking":required,"level":"hard" if required else "warning"})
     return {"status":result.get("status") or "Review","fields":fields,"lines":out_lines,"issues":issues,
             "item_lines":{"resolved":resolved,"total":total,"rate":str(rate.quantize(Decimal("0.0001"))) if rate is not None else None,

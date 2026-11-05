@@ -84,8 +84,11 @@ ROUTES = {
     ("POST", "/api/jobs/{jid}/retry"): dict(area="edits", title="Read again",
         text="Reads the invoice again under a new confirmed plan.",
         body={"options": LOCAL_ONLY, "preflight_token": "{{planToken}}"}),
-    ("POST", "/api/jobs/{jid}/export"): dict(area="edits", title="Export one approved invoice",
-        text="Creates the Excel export for an approved invoice at the given revision.", body={"revision": 1}),
+    ("POST", "/api/jobs/{jid}/export"): dict(area="edits", title="Export one invoice",
+        text="Creates the Excel export for an invoice at the given revision: the three template sheets with what was "
+             "found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt "
+             "records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an "
+             "invoice already exported returns its existing export.", body={"revision": 1}),
     ("POST", "/api/jobs/{jid}/extraction-draft"): dict(area="edits", title="Unvalidated extraction workbook",
         text="Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated.",
         body={"revision": 1, "acknowledge_unvalidated": True}),
@@ -97,14 +100,17 @@ ROUTES = {
     ("GET", "/api/exports/{eid}/evidence"): dict(area="exports", title="Evidence of an export",
         text="The evidence record behind an export: sources, hashes, approvals."),
     ("POST", "/api/exports/batch"): dict(area="exports", title="Export a batch",
-        text="One workbook for several ready invoices; each item names the invoice and its revision. All or nothing: a "
-             "held, changed or already exported invoice refuses the batch with 409. The workbook holds only the Header, "
-             "Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet since 5 Nov, decision A).",
+        text="One workbook for several invoices; each item names the invoice and its revision. Holds do not block "
+             "(owner decision D11): each invoice is written with what was found, blanks blank, and its receipt records "
+             "the open holds for the export team to validate by hand. All or nothing on integrity: an invoice still "
+             "processing or not read, changed, already exported or duplicated refuses the batch with 409. The workbook "
+             "holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet).",
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("POST", "/api/exports/batch/check"): dict(area="exports", title="Check a batch before export",
-        text="Read-only. Splits the selected invoices into ready (in transaction order) and held, each held one with "
-             "its reasons as code and message (Exported is the lock on an invoice already exported). Send the ready "
-             "ones to /api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
+        text="Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the "
+             "holds still open on it, information only since D11) and blocked, each blocked one with its reasons as "
+             "code and message (Processing, Not Read, Changed, Exported, Duplicate). Send the ready ones to "
+             "/api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("GET", "/api/batches/{bid}"): dict(area="exports", title="Download a batch export", text="The batch workbook."),
     ("POST", "/api/exports/extraction-batch"): dict(area="exports", title="Unvalidated batch workbook",
         text="What was read for several invoices, before validation.",

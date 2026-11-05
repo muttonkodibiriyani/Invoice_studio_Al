@@ -22,7 +22,7 @@ def exported(client, owner, app):
     """A synthetic invoice through the real path: Item Master upload, fine rules, rules view, export workbook."""
     activate(client, owner)
     view = rules_view(run(app.state.store), "", [])
-    content, _ = rules_workbook([view], draft=True)
+    content, _ = rules_workbook([view], blanks=True)
     return openpyxl.load_workbook(io.BytesIO(content))
 
 

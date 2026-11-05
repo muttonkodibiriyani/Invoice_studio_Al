@@ -1,0 +1,30 @@
+{
+  "Header": [
+    "Transaction Number",
+    "Document",
+    "Supplier Site",
+    "Order No",
+    "Location",
+    "Location Type",
+    "Document Date",
+    "Total Cost Ex Tax",
+    "Tax Amount",
+    "Ref No. 1",
+    "Ref No. 2",
+    "Ref No. 3",
+    "Comment"
+  ],
+  "Tax_Breakdown": [
+    "Transaction Number",
+    "Tax Code",
+    "Tax Basis"
+  ],
+  "Details": [
+    "Transaction Number",
+    "Item",
+    "UPC",
+    "Unit Cost",
+    "Quantity",
+    "Unit Tax Code"
+  ]
+}

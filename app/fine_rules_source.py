@@ -125,15 +125,22 @@ class LookupRulesSource:
             sources = [json.loads(r[0]) for r in c.execute("SELECT payload FROM lookup_sources ORDER BY id")]
         return next((s["master_catalog"] for s in sources if s.get("master_catalog")), None)
 
-    def master_orders(self, parents, sites):
-        rows = self._rows("po", [f"x:internal_item:{normalize_identifier(p)}" for p in parents])
-        accepted = []
-        for row in rows:
-            # Only the PO barcode and parent are joined. Adjacent worksheet supplier/location cells are independent.
-            item_rows = self.items_by_barcode(row.get("BARCODE_1", ""))
-            bridge = [r for r in item_rows if str(r.get("SUPPLIER")) in sites and
-                      str(r.get("ITEM_PARENT")) == str(row.get("RMS_ITEM_ID")) and
-                      str(r.get("BARCODE")) == str(row.get("BARCODE_1"))]
-            if bridge:
-                accepted.append({**row, "_bridge_refs": [r["_ref"] for r in bridge]})
-        return accepted
+    def item_orders(self, parents, sites):
+        """D3 (provisional, awaiting Tharak): the RMS_ORDER_NO on each found item's own master row. The item and PO
+        blocks of one worksheet row are stored apart; the shared row joins them. One record per item row of
+        ``sites`` that carries an order, with RMS_ITEM_ID set to that item's ITEM_PARENT."""
+        found = []
+        with self.store.connection() as connection:
+            for item in (r for p in parents for r in self.items_by_parent(p) if str(r.get("SUPPLIER")) in sites):
+                source_hash, _, place = item["_ref"].split(":", 2)
+                sheet, number = place.rsplit("!", 1)
+                row = connection.execute("SELECT payload FROM lookup_rows WHERE kind='po' AND source_hash=? AND "
+                                         "sheet=? AND row_number=?", (source_hash, sheet, int(number))).fetchone()
+                payload = json.loads(row["payload"]) if row else {}
+                order = str((payload.get("data") or {}).get("RMS_ORDER_NO") or "").strip()
+                if order and not any("quarant" in f.lower() for f in payload.get("flags", [])):
+                    found.append({"RMS_ORDER_NO": order, "MANUAL ORDER NO": payload["data"].get("MANUAL ORDER NO", ""),
+                                  "RMS_ITEM_ID": str(item.get("ITEM_PARENT")),
+                                  "QTY_RECEIVED": payload["data"].get("QTY_RECEIVED"),
+                                  "_ref": f"{source_hash}:po:{sheet}!{number}", "_item_ref": item["_ref"]})
+        return found

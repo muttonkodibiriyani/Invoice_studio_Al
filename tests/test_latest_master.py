@@ -26,11 +26,11 @@ def master_bytes(edit=None):
     sheet = book.active
     sheet.title = "Synthetic master"
     sheet.append([" " + h + " " for h in MASTER_HEADERS])
-    # Adjacent blocks deliberately describe DIFFERENT items: positional joins would be wrong.
+    # D3 (provisional): an item row's own RMS_ORDER_NO is the found item's order.
     sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co", 101,
-                  1200, "Synthetic shop", "Shop", "MAN-2", 450002, "00012345678912", 100000002, 3])
+                  1200, "Synthetic shop", "Shop", "MAN-1", 450001, "00012345678905", 100000001, 2])
     sheet.append([12, "00012345678912", 100000002, "Rose blue", "VPN-1", "Rose", "DEF001RA4AED", "Other Co", 202,
-                  None, None, None, "MAN-1", 450001, "00012345678905", 100000001, 2])
+                  None, None, None, "MAN-2", 450002, "00012345678912", 100000002, 3])
     if edit:
         edit(sheet)
     result = io.BytesIO()
@@ -92,15 +92,16 @@ def test_import_independent_blocks_source_identity_and_configuration(client, own
     source = LookupRulesSource(app.state.store)
     item = source.items_by_vpn("VPN-1")
     assert {r["SUPPLIER"] for r in item} == {"101", "202"}
-    orders = source.master_orders({"100000001"}, {"101"})
-    assert [r["RMS_ORDER_NO"] for r in orders] == ["450001"]
-    assert orders[0]["_ref"].endswith(":po:Synthetic master!3")
-    assert orders[0]["_bridge_refs"][0].endswith(":item:Synthetic master!2")
+    orders = source.item_orders({"100000001"}, {"101"})
+    assert [(r["RMS_ORDER_NO"], r["RMS_ITEM_ID"]) for r in orders] == [("450001", "100000001")]
+    assert orders[0]["_ref"].endswith(":po:Synthetic master!2")
+    assert orders[0]["_item_ref"].endswith(":item:Synthetic master!2")
+    assert source.item_orders({"100000001"}, {"202"}) == []
     rows = target_check.store_rows(app.state.store)
     assert rows("Synthetic master", 2) is None  # Unqualified physical row is ambiguous across blocks.
     digest = upload["report"]["source_sha256"]
     assert rows(f"{digest}:item:Synthetic master", 2)["ITEM_PARENT"] == "100000001"
-    assert rows(f"{digest}:po:Synthetic master", 2)["RMS_ITEM_ID"] == "100000002"
+    assert rows(f"{digest}:po:Synthetic master", 2)["RMS_ORDER_NO"] == "450001"
 
 
 def test_snapshot_rollback_preserves_declared_legacy_semantics(client, owner, app):
@@ -403,3 +404,62 @@ def test_missing_printed_variant_dimension_remains_unknown():
     assert variant_parents(Line(description="Rose red"),rows,{"P1","P2"})=={"P1","P2"}
     colors=[{"ITEM_PARENT":"P1","SUPP_COLOR":"red"},{"ITEM_PARENT":"P2","SUPP_COLOR":"blue"}]
     assert variant_parents(Line(description="Rose red"),colors,{"P1","P2"})=={"P1"}
+
+
+def test_order_no_is_filled_below_the_coverage_tier_and_the_invoice_stays_in_review(client, owner, app):
+    """D3 (provisional): Order No is the found items' RMS_ORDER_NO even when the order holds only part of them
+    (below the workbook's 90% Coverage_Tiers row); the coverage note keeps the invoice in review."""
+    def edit(sheet):
+        sheet.append([13, "00012345678929", 100000003, "Rose white", "VPN-3", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101] + [None] * 8)
+    activate(client, owner, master_bytes(edit))
+    inv = invoice()
+    inv.lines.append(Line(sku="VPN-3", description="Rose white", qty=1, price=50))
+    result = run(app.state.store, inv)
+    assert [line["Item"] for line in result["lines"]] == ["100000001", "100000003"]
+    assert result["header"]["Order No"] == "450001"
+    assert result["status"] != "Approved"
+    assert any(e["Rule ID"] == "O3.3" and "1 of 2" in e["Description"] for e in result["exceptions"])
+
+
+def test_found_items_on_several_orders_take_the_d2_order_and_stay_in_review(client, owner, app):
+    """D3 + D2: the order holding the most found items is the Order No; another order on the found items keeps the
+    invoice in review with both orders listed."""
+    def edit(sheet):
+        sheet.append([13, "00012345678929", 100000003, "Rose white", "VPN-3", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-3", 450003, "00012345678929", 100000003, 1])
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-3", 450003, "00012345678905", 100000001, 1])
+    activate(client, owner, master_bytes(edit))
+    inv = invoice()
+    inv.lines.append(Line(sku="VPN-3", description="Rose white", qty=1, price=50))
+    result = run(app.state.store, inv)
+    assert [line["Item"] for line in result["lines"]] == ["100000001", "100000003"]
+    assert result["header"]["Order No"] == "450003"
+    assert result["status"] != "Approved"
+    assert any(e["Rule ID"] == "O3.3" and "450001" in e["Description"] and "450003" in e["Description"]
+               for e in result["exceptions"])
+
+
+def test_tied_orders_without_a_matching_received_quantity_fill_the_nearest_and_say_so(client, owner, app):
+    """D10 (provisional): the item sits on 450001 (received 2) and 450009 (received 4); the invoice says 5. Neither
+    matches, so the nearest, 450009, is the Order No and the invoice is held with its own reason."""
+    def edit(sheet):
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-9", 450009, "00012345678905", 100000001, 4])
+    activate(client, owner, master_bytes(edit))
+    result = run(app.state.store, invoice(qty=5))
+    assert result["header"]["Order No"] == "450009"
+    assert result["status"] != "Approved"
+    held = [e for e in result["exceptions"] if e["Rule ID"] == "D10"]
+    assert len(held) == 1 and "no order matches the invoiced quantity" in held[0]["Description"]
+
+
+def test_a_tied_order_with_the_matching_received_quantity_raises_no_quantity_reason(client, owner, app):
+    def edit(sheet):
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-9", 450009, "00012345678905", 100000001, 4])
+    activate(client, owner, master_bytes(edit))
+    result = run(app.state.store, invoice(qty=4))
+    assert result["header"]["Order No"] == "450009"
+    assert not any(e["Rule ID"] == "D10" for e in result["exceptions"])

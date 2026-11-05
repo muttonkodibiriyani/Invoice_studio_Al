@@ -1,4 +1,5 @@
-"""O3.1 / O3.3: the Order No comes from the matched items' RMS_ORDER_NO, never from the printed PO."""
+"""O3.1 / O3.3 with D2 / D3: the Order No comes from the found items' RMS_ORDER_NO, never from the printed PO,
+and is never left blank while a found item carries one."""
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -47,10 +48,58 @@ def test_invoice_quantity_breaks_a_share_tie():
     assert pick["order"] == "B" and pick["tied"] == []
 
 
+def test_invoice_quantity_breaks_an_item_tie_across_several_orders():
+    """D2: the found items sit on several orders; the order holding the most of them wins, then the most invoice
+    quantity of the items it holds."""
+    invoiced = {"P1": Decimal(2), "P2": Decimal(2), "P3": Decimal(9), "P4": Decimal(1)}
+    pick = choose_order({"A": rows("P1", "P2"), "B": rows("P3", "P4"), "C": rows("P3")}, set(invoiced), invoiced, TIERS)
+    assert (pick["order"], pick["covered"], pick["tied"], pick["decided"]) == ("B", 2, [], "quantity")
+
+
+def received(**qty):
+    return [{"RMS_ITEM_ID": p, "QTY_RECEIVED": q} for p, q in qty.items()]
+
+
+def test_a_tie_goes_to_the_order_whose_received_quantity_matches_the_invoice():
+    """D10 (Tharak, 5 Nov, provisional): among tied orders, QTY_RECEIVED equal to the invoice quantity wins."""
+    invoiced = {"P1": Decimal(5), "P2": Decimal(2)}
+    pick = choose_order({"1": received(P1=3, P2=2), "2": received(P1=5, P2=2), "3": received(P1=5, P2=1)},
+                        set(invoiced), invoiced, TIERS)
+    assert (pick["order"], pick["decided"], pick["quantity_matched"]) == ("2", "received-exact", True)
+
+
+def test_without_an_exact_received_match_the_nearest_order_wins_and_says_so():
+    """D10 (provisional): the smallest total |invoice qty - QTY_RECEIVED| wins; the Order No is still filled."""
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"1": received(P1=3), "2": received(P1=9), "3": received(P1=None)}, {"P1"}, invoiced, TIERS)
+    assert (pick["order"], pick["decided"], pick["quantity_matched"]) == ("1", "received-nearest", False)
+
+
+def test_received_quantity_sums_an_orders_rows_of_one_item():
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"1": received(P1=5), "2": [*received(P1=2), *received(P1=3)]}, {"P1"}, invoiced, TIERS)
+    assert pick["tied"] == ["1", "2"] and pick["decided"] == "lowest-tie" and pick["quantity_matched"] is True
+
+
+def test_a_tie_received_quantity_cannot_break_goes_to_the_lowest_order():
+    """D10 (provisional) step 3: still tied, the lowest order, every tied order listed for review."""
+    invoiced = {"P1": Decimal(5)}
+    pick = choose_order({"20": received(P1=3), "10": received(P1=7)}, {"P1"}, invoiced, TIERS)
+    assert (pick["order"], pick["tied"], pick["decided"], pick["quantity_matched"]) == \
+        ("10", ["10", "20"], "lowest-tie", False)
+
+
 @pytest.mark.parametrize("invoiced", [{"P1": 1, "P2": 1}, {"P1": None, "P2": None}])
-def test_a_tie_quantity_cannot_break_is_left_to_the_user(invoiced):
-    pick = choose_order({"A": rows("P1"), "B": rows("P2")}, set(invoiced), invoiced, TIERS)
-    assert pick["order"] is None and pick["tied"] == ["A", "B"]
+def test_a_tie_quantity_cannot_break_goes_to_the_lowest_order_and_lists_the_tie(invoiced):
+    """D3 (provisional): never blank; the lowest tied RMS_ORDER_NO, every tied order listed for review."""
+    pick = choose_order({"1000020": rows("P1"), "999999": rows("P2"), "1000010": rows("P1")}, set(invoiced),
+                        invoiced, TIERS)
+    assert pick["order"] == "999999" and pick["tied"] == ["999999", "1000010", "1000020"]
+    assert pick["decided"] == "lowest-tie"
+
+
+def test_one_order_is_unique():
+    assert choose_order({"A": rows("P1")}, {"P1"}, {"P1": 1}, TIERS)["decided"] == "unique"
 
 
 def test_repeated_order_rows_count_an_item_once():
@@ -73,15 +122,12 @@ def place(**data):
 
 
 @pytest.mark.parametrize("data,kind", [({"LOCATION NAME": "STORE"}, STORE), ({"LOCATION NAME": "store(s)"}, STORE),
-                                       ({}, STORE), ({"LOCATION NAME": "", "LOCATION NAME 2": "W"}, WAREHOUSE),
-                                       ({"LOCATION NAME": "Warehouse (W)"}, WAREHOUSE)])
-def test_location_type_comes_from_the_rules_workbook_variants(data, kind):
+                                       ({}, STORE), ({"LOCATION NAME": "", "LOCATION NAME 2": "North warehouse"}, WAREHOUSE),
+                                       ({"LOCATION NAME": "Warehouse (W)"}, WAREHOUSE),
+                                       ({"LOCATION NAME": "Depot"}, STORE)])
+def test_location_type_comes_from_the_location_name(data, kind):
+    """D6: a name containing 'warehouse' is a warehouse, any other name a store."""
     assert place(**data)["kind"] == kind
-
-
-def test_a_location_type_not_in_the_variants_is_held_unless_the_owner_configured_it():
-    assert place(**{"LOCATION NAME": "Depot"}) is None
-    assert place(**{"LOCATION NAME": "Depot", "configured": WAREHOUSE})["kind"] == WAREHOUSE
 
 
 def test_a_configured_type_that_contradicts_the_row_is_held():

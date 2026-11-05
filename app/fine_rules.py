@@ -442,18 +442,27 @@ def barcode_candidates(line):
     return out
 
 
+TRAILING_CODE = "description end code"
+
+
 def vpn_candidates(line):
-    """M3 supersedes ITM-004: explicit VPN, labeled/bracketed code, then a leading code."""
+    """M3 supersedes ITM-004: explicit VPN, labeled/bracketed code, then a leading code. D7 (Tharak, 5 Nov): a code
+    holding a digit at the end of the description is tried after them; match_line accepts it only on an exact VPN
+    in the supplier scope."""
     if text(getattr(line, "sku", None)):
         return [{"value": text(line.sku), "origin": "VPN column", "primary": True}]
     description = text(getattr(line, "description", None))
     labeled = re.search(r"(?i)\b(?:VPN|supplier\s*(?:code|item)|part\s*(?:no|number))\s*[:#-]?\s*([A-Z0-9][A-Z0-9./_-]*)", description)
     bracketed = re.match(r"\s*\[([A-Za-z0-9][A-Za-z0-9./_-]*)\]", description)
     leading = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9./_-]*)", description)
+    trailing = re.search(r"([A-Za-z0-9][A-Za-z0-9./_-]*?)[.,;:]*\s*$", description)
     match = labeled or bracketed or leading
+    out = []
     if match and (labeled or bracketed or any(c.isdigit() for c in match.group(1))):
-        return [{"value": match.group(1), "origin": "description code", "primary": True}]
-    return []
+        out.append({"value": match.group(1), "origin": "description code", "primary": True})
+    if trailing and any(c.isdigit() for c in trailing.group(1)) and trailing.group(1) not in {c["value"] for c in out}:
+        out.append({"value": trailing.group(1), "origin": TRAILING_CODE, "primary": False})
+    return out
 
 
 _UNITS = ((r"(\d)\s*(ml|millilit(?:er|re)s?)\b", r"\1ml"), (r"(\d)\s*(g|gm|gms|grams?)\b", r"\1g"),
@@ -509,11 +518,10 @@ def location_type(location, config=None, variants=None):
     master = (config.location_master.get(location) if config else None) or {}
     master_type = text(master.get("type"))
     if location and master_type:
-        found = loc.resolve({"LOCATION NUMBER": location, "LOCATION NAME": master_type},
-                            rules().location_type_variants() if variants is None else variants)
-        conflict = found.type is not None and prefix is not None and prefix != found.type
-        return {"type": found.type, "source": "location master", "prefix_type": prefix, "conflict": conflict,
-                "held": None if found.type else master_type}
+        found = loc.normalise(master_type, rules().location_type_variants() if variants is None else variants)
+        conflict = found is not None and prefix is not None and prefix != found
+        return {"type": found, "source": "location master", "prefix_type": prefix, "conflict": conflict,
+                "held": None if found else master_type}
     return {"type": prefix, "source": "prefix fallback" if prefix else None, "prefix_type": prefix, "conflict": False}
 
 
@@ -660,6 +668,26 @@ def ocr_vpn(source, vpns, sites):
     return hits[0] if len(hits) == 1 and len(parents) == 1 else None
 
 
+CONTAINED_VPN_MIN = 5  # D9: the shortest invoice VPN searched inside master VPNs; it must also hold a digit
+
+
+def contained_vpn(source, vpns, sites):
+    """D9 (Tharak, 5 Nov): with no exact VPN, the master VPNs in the supplier sites that contain an invoice VPN (the
+    master adds a three-letter brand prefix and sometimes an 'S1' suffix). Returns (candidate, rows) only when they
+    are all one ITEM_PARENT; otherwise None."""
+    hits = []
+    for candidate in vpns:
+        value = candidate["value"].upper()
+        if len(value) < CONTAINED_VPN_MIN or not any(c.isdigit() for c in value):
+            continue
+        rows = [r for site in sorted(sites) for r in source.items_by_site(site)
+                if text(r.get("SUPPLIER")) == site and value in text(r.get("VPN")).upper()]
+        if rows:
+            hits.append((candidate, rows))
+    parents = {p for _, rows in hits for p in _unique_parents(rows)}
+    return hits[0] if len(parents) == 1 else None
+
+
 # Supplier variant code: a two-letter prefix and/or suffix around a 12-digit UPC (AA-<upc>, <upc>-AA, AA-<upc>-99/999).
 _VARIANT_CODE = re.compile(r"(?:[A-Z]{2}-(\d{12})(?:-\d{2,3})?|(\d{12})-[A-Z]{2})")
 
@@ -715,7 +743,9 @@ def variant_parents(line, rows, eligible):
 
 
 def match_line(run, n, line, source, sites=None):
-    """R-003/R-005/R-015, ALG-015..ALG-021, ALG-027, ALG-029: one invoice line to one ITEM_PARENT."""
+    """R-003/R-005/R-015, ALG-015..ALG-021, ALG-027, ALG-029: one invoice line to one ITEM_PARENT. Tharak's lookup
+    order (5 Nov): VPN (the VPN column, else a description start or end code, D7; exact, then contained, D9), then
+    barcode, then a description match (candidates only). The Order No follows from the found items (D3)."""
     barcodes = barcode_candidates(line)
     vpns = vpn_candidates(line)
     result = {"line": n, "method": None, "rows": [], "barcode": None, "vpn": None, "parent": None,
@@ -747,10 +777,14 @@ def match_line(run, n, line, source, sites=None):
             run.exception("Data Quality", MISPRINT, "D102", n, evidence=f"printed {unchecked}", owner="Item steward")
     vpn_hits = {}
     for candidate in vpns:
+        if candidate["origin"] == TRAILING_CODE and vpn_hits:
+            continue
         rows = [r for r in source.items_by_vpn(candidate["value"]) if text(r.get("VPN")) == candidate["value"]]
         rows = _constrain(rows, sites)[0]
         if rows:
             vpn_hits[candidate["value"]] = (candidate, rows)
+    # D7: a trailing code counts only as an exact VPN in the supplier scope; otherwise it is not a VPN at all.
+    vpns = [c for c in vpns if c["origin"] != TRAILING_CODE or c["value"] in vpn_hits]
     ocr = None
     if not barcode_hits and not vpn_hits and run.ocr_lines and sites:
         # Only after both exact routes found nothing, on a scan read, under a known supplier (decision 44).
@@ -759,6 +793,15 @@ def match_line(run, n, line, source, sites=None):
             printed_vpn, variant, rows = ocr
             vpns = [{**printed_vpn, "value": variant, "printed": printed_vpn["value"]}]
             vpn_hits = {variant: (vpns[0], rows)}
+    contained = None
+    if not vpn_hits and not ocr:
+        # D9: still the VPN step, so it comes before the barcode and a disagreeing exact barcode holds the line.
+        contained = contained_vpn(source, vpns, sites)
+        if contained:
+            printed_vpn, rows = contained
+            vpns = [{**printed_vpn, "value": v, "printed": printed_vpn["value"]}
+                    for v in sorted({text(r.get("VPN")) for r in rows})]
+            vpn_hits = {c["value"]: (c, [r for r in rows if text(r.get("VPN")) == c["value"]]) for c in vpns}
     supplier_code = None
     core, printed = variant_code(line)
     if not barcode_hits and not vpn_hits and not ocr and core:
@@ -887,6 +930,8 @@ def match_line(run, n, line, source, sites=None):
         run.exception("Item Review", f"Printed VPN {ocr[0]['value']} read by OCR matches Item Master VPN {ocr[1]} "
                       "(I/1, O/0 only); check the correction", "ALG-018-OCR", n,
                       evidence=f"printed {ocr[0]['value']} read as {ocr[1]}", owner="Item steward")
+    if contained:
+        result["method"], rule = "VPN contained", "D9"
     if supplier_code:
         result["method"] = "Barcode supplier variant"
         run.exception("Item Review", f"Printed supplier code {supplier_code['printed']} carries Item Master barcode "
@@ -897,7 +942,7 @@ def match_line(run, n, line, source, sites=None):
                       evidence=f"printed {unchecked} fails the GTIN check digit", owner="Item steward")
     result["status"] = "Matched"
     run.trace("Item", parent, "ALG-021", "Item Master ITEM_PARENT", reference=_refs(rows), line=n,
-              original=ocr[0]["value"] if ocr else supplier_code["printed"] if supplier_code else result["barcode"] or result["vpn"])
+              original=ocr[0]["value"] if ocr else contained[0]["value"] if contained else supplier_code["printed"] if supplier_code else result["barcode"] or result["vpn"])
     result["rule"] = rule
     return result
 
@@ -962,6 +1007,42 @@ def tolerant_supplier_names(run, source, candidates):
         return [*candidates, {**candidate, "name": name, "method": f"tolerant match of {candidate['name']!r}"}]
     if hits:
         run.exception("Supplier Exception", "Printed supplier name is close to several master supplier names; "
+                      "confirm the supplier", "SUP-001", evidence="; ".join(sorted(n for _, n in hits.values()))[:500],
+                      owner="Supplier operations")
+        return candidates
+    return keyword_supplier_names(run, candidates, names)
+
+
+# R1: words that say what kind of company a supplier is, never which one.
+GENERIC_SUPPLIER_WORDS = _COMPANY_TYPES | {"general", "trading", "trade", "traders", "the", "and", "of", "group"}
+
+
+def _key_words(value):
+    return {w for w in _tokens(value) if len(w) > 1 and w not in GENERIC_SUPPLIER_WORDS}
+
+
+def _same_word(a, b):
+    return a == b or (min(len(a), len(b)) >= 6 and _edits(a, b, 1) <= 1)
+
+
+def keyword_supplier_names(run, candidates, names):
+    """R1 / SUP-001: when neither the exact nor the D8 lookup finds the reader's supplier field, a master supplier
+    name holding every key word of it (generic words gone) is taken, but only when exactly one master name does.
+    Words match whole, never as a part of a longer word; one typo is allowed on a key word of 6 characters or more."""
+    hits = {}
+    for candidate in candidates:
+        printed = _key_words(candidate["name"]) if candidate["region"] == "extracted" else set()
+        for master_key, name in names.items() if printed else ():
+            master = _key_words(name)
+            if all(any(_same_word(p, m) for m in master) for p in printed):
+                hits.setdefault(master_key, (candidate, name))
+    if len(hits) == 1:
+        candidate, name = next(iter(hits.values()))
+        run.trace("Supplier Name", name, "SUP-001", "the only Item Master / SUPPLIER SITES supplier name holding the "
+                  "key words of the printed name (R1)", original=candidate["name"], confidence="Tolerant")
+        return [*candidates, {**candidate, "name": name, "method": f"key-word match of {candidate['name']!r}"}]
+    if hits:
+        run.exception("Supplier Exception", "Printed supplier name's key words are in several master supplier names; "
                       "confirm the supplier", "SUP-001", evidence="; ".join(sorted(n for _, n in hits.values()))[:500],
                       owner="Supplier operations")
     return candidates
@@ -1133,6 +1214,8 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     offered = name_sites if len(name_sites) > 1 and not families else set()
     if offered or owner_site:
         sites = offer_sites(run, source, offered, by_name, sites, owner_site)
+    re4 = None if run.owner_pick else re4_site(source, offered, by_name)
+    sites = {re4} if re4 else sites
     rows = [r for m in matches for r in source.items_by_parent(m["parent"] or "")] + by_name
     version = run.config.version
     if len(sites) == 1:
@@ -1141,8 +1224,9 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         name = next(iter(names)) if len(names) == 1 else None
         bridged = site in family_sites
         picked = run.owner_pick if bridged or site == run.owner_pick else None
-        run.trace("Supplier Site", site, OWNER_PICK if picked else "SUP-003",
+        run.trace("Supplier Site", site, OWNER_PICK if picked else "D1" if re4 else "SUP-003",
                   "Item Master SUPPLIER" + (" via SUPPLIER SITES" if bridged else "") +
+                  (f", the RE4 site of the {len(name_sites)} sites of the printed supplier name" if re4 else "") +
                   (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked and bridged else
                    f" picked by the owner among the {len(name_sites)} sites of the printed supplier name" if picked
                    else ""),
@@ -1178,19 +1262,16 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     return None, None, None
 
 
-def one_supplier_site(probe, source, candidates, deliver_to):
-    """v0.3 step 1 (A2): when the printed name is on several sites of one EBS supplier (one six-character code,
-    entity suffixes differ), the items are searched in all of them; the one site holding every matched item is the
-    site. Otherwise None, and the reviewer picks among the listed sites (S1.2)."""
-    offered = [c for c in probe.site_candidates if "supplier_site" in c]
-    names = [c["sites"][0]["site_name"] for c in offered]
-    if len(offered) < 2 or len({ebs_key(n) for n in names}) != 1 or not all(entity_hint(n)["entity"] for n in names):
+def re4_site(source, offered, rows):
+    """D1 (Tharak, 5 Nov; replaces A2's 'one site holding every item'): when the printed name is on several sites of
+    one EBS supplier (one six-character code, entity suffixes differ), the RE4 site is the site. Otherwise None, and
+    the reviewer picks among the listed sites (S1.2)."""
+    names = {site: _site_names(source, site, rows)[0] for site in offered}
+    if len(offered) < 2 or not all(len(n) == 1 for n in names.values()):
         return None
-    trial = Run(probe.invoice, probe.config, probe.filename)
-    sites = {c["supplier_site"] for c in offered}
-    matches = [match_line(trial, n, line, source, sites) for n, line in enumerate(probe.invoice.lines, 1)]
-    site = resolve_supplier(trial, source, matches, candidates, deliver_to)[0]
-    return {site} if site else None
+    names = {site: next(iter(n)) for site, n in names.items()}
+    re4 = [site for site, name in names.items() if entity_hint(name)["entity"] == "RE4"]
+    return re4[0] if len({ebs_key(n) for n in names.values()}) == 1 and len(re4) == 1 else None
 
 
 def choose_site(run, family, group):
@@ -1890,7 +1971,6 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
                                                   owner_supplier_code, owner_supplier_site)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
-    sites = sites or one_supplier_site(probe, source, candidates, deliver_to)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
                                                           owner_supplier_code, owner_supplier_site)
@@ -1969,11 +2049,10 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         run.exception("Location ID", "Location waits for an accepted POGRN order (never from Item Master)",
                       "ALG-011", owner="Buyer")
     if not location:
-        # L4.2 (A6): a location still unknown has an empty location name, which the rules workbook types as Store.
+        # L4.2 (A6, D4): a location still unknown has an empty location name, which D6 types as Store.
         from . import location_type as loc
-        loc_type = loc.resolve({}, rules().location_type_variants()).type
-        if loc_type:
-            run.trace("Location Type", loc_type, "L4.2", "Rules workbook Location_Type_Variants: empty location name")
+        loc_type = loc.resolve({}).type
+        run.trace("Location Type", loc_type, "L4.2", "D6: empty location name")
     if hint and hint["mapped"] and market and not same_market(hint["mapped"]["market"], market):
         run.exception("Market Mapping", f"Supplier suffix suggests {hint['mapped']['market']} but the receiving "
                       f"location is {market}", "R-027", owner="Business")

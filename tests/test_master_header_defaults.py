@@ -1,4 +1,4 @@
-"""Item master rules v0.3 for invoices with no accepted order: sites of one EBS supplier (A2), the empty location
+"""Item master rules v0.3 for invoices with no accepted order: sites of one EBS supplier (D1), the empty location
 type (L4.2, A6) and tax by the invoice's country (T5.1, A7)."""
 from decimal import Decimal
 
@@ -23,18 +23,33 @@ def run(rows, currency="AED", tax="10.00"):
     return run_invoice(inv, RowsSource(rows), CONFIG, text_value="Lux Co\nInvoice INV-1\nitem P1\nitem P2")
 
 
-def test_the_one_site_of_an_ebs_supplier_holding_every_item_is_chosen():
-    """A2 (assumed, doc 01a1a88a-0301): the name's sites share one EBS code; the site holding every matched item wins."""
+def test_the_re4_site_of_an_ebs_supplier_is_chosen():
+    """D1 (Tharak, 5 Nov): the name's sites share one EBS code; the RE4 site is the site."""
     result = run([item("P1", "S1", "LUX009RE4AED", A), item("P1", "S2", "LUX009RD3AED", A),
                   item("P2", "S1", "LUX009RE4AED", B)])
     assert result["header"]["Supplier Site"] == "S1"
     assert [line["Item"] for line in result["lines"]] == ["P1", "P2"]
 
 
-def test_items_held_by_every_site_leave_the_pick_to_the_reviewer():
-    """A2 (assumed): when every site holds the items, the reviewer picks the site (S1.2) before any item is set."""
+def test_the_re4_site_is_chosen_even_when_every_site_holds_the_items():
+    """D1 replaces A2's 'one site holding every item': both sites hold P1 and P2, the RE4 site still wins."""
     result = run([item(p, s, n, b) for p, b in (("P1", A), ("P2", B))
-                  for s, n in (("S1", "LUX009RE4AED"), ("S2", "LUX009RD3AED"))])
+                  for s, n in (("S2", "LUX009RD3AED"), ("S1", "LUX009RE4AED"))])
+    assert result["header"]["Supplier Site"] == "S1"
+    assert [line["Item"] for line in result["lines"]] == ["P1", "P2"]
+
+
+def test_the_re4_site_is_chosen_when_no_item_is_found():
+    """D1: the RE4 site does not wait for matched items."""
+    other = "0000000000000"
+    result = run([item("P9", "S1", "LUX009RE4AED", other), item("P9", "S2", "LUX009RD3AED", other)])
+    assert result["header"]["Supplier Site"] == "S1"
+
+
+def test_without_an_re4_site_the_reviewer_picks():
+    """D1: no RE4 site among several sites of one EBS supplier leaves the pick to the reviewer (S1.2)."""
+    result = run([item(p, s, n, b) for p, b in (("P1", A), ("P2", B))
+                  for s, n in (("S1", "LUX009RD4AED"), ("S2", "LUX009RD3AED"))])
     assert result["header"]["Supplier Site"] == ""
     assert [line["Item"] for line in result["lines"]] == ["", ""]
     assert [c["supplier_site"] for c in result["supplier_site_candidates"]] == ["S1", "S2"]

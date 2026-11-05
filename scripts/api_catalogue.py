@@ -111,7 +111,8 @@ ROUTES = {
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}], "acknowledge_unvalidated": True}),
     ("POST", "/api/exports/target-draft"): dict(area="exports", title="Target draft for unapproved invoices",
         text="The draft of everything: the target workbook for all selected invoices, held ones included, with the "
-             "Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export.",
+             "Checks sheet. Marked DRAFT in the file name and on every sheet (red tab and header row, a note on A1, the "
+             "printed header); sheet names and headers stay the template's. Never an export.",
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("POST", "/api/background/{kind}"): dict(area="exports", title="Start a long download",
         text="kind is target-draft, extraction-batch, export-check, export-batch, fine-rules-target or fine-rules-review; the "

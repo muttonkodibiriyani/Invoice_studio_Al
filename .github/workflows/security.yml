@@ -125,16 +125,20 @@ jobs:
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
       # The built image (about 5.6 GB) is too large for a hosted runner and is built in ACR; its Python packages
       # are covered by dependency-audit. The built-image scan moves to the in-network runner (docs/CI_SECURITY.md).
-      - name: trivy on the pinned base image (fixable HIGH/CRITICAL OS findings fail)
+      # trivy only reports here; check_trivy_exceptions.py fails the job on any finding not in the reviewed
+      # tools/security/trivy-exceptions.json (CVE + package + base digest + expiry). No .trivyignore.
+      - name: trivy on the pinned base image (fixable HIGH/CRITICAL OS findings not excepted fail)
         run: |
           mapfile -t images < <(python3 -I tools/security/check_base_image.py --print-images | sort -u)
           test "${#images[@]}" -gt 0
-          status=0
-          for image in "${images[@]}"; do
+          reports=()
+          for i in "${!images[@]}"; do
             "$RUNNER_TEMP/trivy" image --scanners vuln --pkg-types os --ignore-unfixed \
-              --severity HIGH,CRITICAL --exit-code 1 --platform linux/amd64 "$image" || status=1
+              --severity HIGH,CRITICAL --format json --output "$RUNNER_TEMP/trivy-$i.json" \
+              --platform linux/amd64 "${images[$i]}"
+            reports+=("${images[$i]}=$RUNNER_TEMP/trivy-$i.json")
           done
-          exit "$status"
+          python3 -I tools/security/check_trivy_exceptions.py "${reports[@]}"
       - name: trivy on the Dockerfiles (HIGH/CRITICAL misconfigurations fail)
         run: |
           "$RUNNER_TEMP/trivy" config --misconfig-scanners dockerfile --severity HIGH,CRITICAL --exit-code 1 .

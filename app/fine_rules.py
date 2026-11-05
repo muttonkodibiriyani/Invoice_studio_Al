@@ -1768,10 +1768,11 @@ def resolve_currency(run, supplier_site, market, hint):
 # --------------------------------------------------------------------------- tax code
 
 
-def resolve_tax_code(run, market, document_date):
+def resolve_tax_code(run, market, document_date, tolerance=Decimal(0)):
     """R-016: Unit Tax Code is the owner's C/PV code of the receiving market's VAT region (R-013).
 
-    The printed tax must agree with the region rate, either on the invoice net or line by line.
+    The printed tax must agree with the region rate, either on the invoice net or line by line, within
+    ``tolerance`` (owner decision B, Q-a: the ARITHMETIC_TOLERANCE of the invoice currency; exact without one).
     """
     invoice = run.invoice
     printed = text(invoice.taxCode)
@@ -1799,8 +1800,8 @@ def resolve_tax_code(run, market, document_date):
         return (amount * vat["rate"] / 100).quantize(invoice.tax, rounding=ROUND_HALF_UP)
 
     nets = [line.net_amount for line in invoice.lines]
-    agrees = (invoice.net is not None and at_rate(invoice.net) == invoice.tax) or (
-        nets and None not in nets and sum((at_rate(n) for n in nets), Decimal(0)) == invoice.tax)
+    agrees = (invoice.net is not None and abs(at_rate(invoice.net) - invoice.tax) <= tolerance) or (
+        nets and None not in nets and abs(sum((at_rate(n) for n in nets), Decimal(0)) - invoice.tax) <= tolerance)
     if not agrees:
         run.exception("Tax Code", f"Printed tax {invoice.tax} does not agree with the {vat['rate']}% rate of "
                       f"VAT code {vat['code']}", "R-016", owner="Tax reviewer")
@@ -2098,12 +2099,13 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     # Line outputs (ALG-021/022/026/027).
     # T5.1 (A7): without a receiving market the country is the invoice currency's; the rate check still applies.
     country = market or CURRENCY_REGION.get(text(invoice.currency).upper())
-    tax_code = resolve_tax_code(run, country, document_date)
+    # The invoice's arithmetic is in its own currency: the resolved one, else the printed code (as the target check).
+    arithmetic_currency = currency or text(invoice.currency).upper()
+    tax_code = resolve_tax_code(run, country, document_date,
+                                arithmetic_tolerance(config.arithmetic_tolerance, arithmetic_currency)[0])
     tax_source = "Owner VAT code table (C/PV), " + ("receiving market" if market else "country of the invoice currency")
     lines_out = []
     discount = invoice_discount(invoice, scan)
-    # The invoice's arithmetic is in its own currency: the resolved one, else the printed code (as the target check).
-    arithmetic_currency = currency or text(invoice.currency).upper()
     line_tolerance = config.line_arithmetic_tolerance.get(arithmetic_currency, Decimal(0))
     for line, m in zip(invoice.lines, matches):
         n = m["line"]

@@ -5,6 +5,10 @@ failure shapes come from a bulk run of real invoices (values here are synthetic)
 for a hundreds-level VAT, the gross read into the net column, quantity x unit cost that is not the line
 amount (a pre-discount price, a price read x100), and an 'Sl' document prefix (an 'SI' read with a
 lower-case L). Each keeps its value and is held as needs_checking with the failed check named."""
+from decimal import Decimal
+
+import pytest
+
 from app import target_check as tc
 
 CONFIG = {"vat_codes": [{"region": "ARE", "code": "VATA5", "rate": "5", "active_from": "2020-01-01"}]}
@@ -309,3 +313,46 @@ def test_an_owner_table_with_only_aed_makes_sar_exact_and_flagged():
     result = tc.check_view(priced("SAR", "1000.01", "0"), tc.Sources(config=config, text=text("Net 1000.01")))
     assert status_of(result, "lines_to_net") != tc.PASS
     assert flag_of(result)["detail"] == "no tolerance set for SAR"
+
+
+# Owner decision B (Q-a, 2026-11-05): R-016 picks the VAT code when the printed tax is within the before-tax
+# tolerance table of net x rate; the target check's tax vs net x rate stays rounding-only.
+VAT_CONFIG = {"vat_codes": [{"region": "ARE", "code": "VATA5", "rate": "5", "active_from": "2020-01-01"},
+                            {"region": "KWT", "code": "VATK5", "rate": "5", "active_from": "2020-01-01"}]}
+
+
+def taxed(currency, tax, config=VAT_CONFIG):
+    from app.fine_rules import CURRENCY_REGION, RulesConfig, RowsSource, run_invoice
+    from app.matching import rules_view
+    from app.models import Invoice, Line
+    places = 3 if currency == "KWD" else 2
+    net = f"{1000:.{places}f}"
+    source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
+                          "SUPPLIER SITE NAME": "Synthetic Co", "ITEM_DESC": "Rose red"}])
+    invoice = Invoice(supplier_name="Synthetic Co", currency=currency, date="2031-03-03", net=net, tax=tax, lines=[
+        Line(sku="VPN-1", description="Rose red", qty="10", price=f"{100:.{places}f}", net_amount=net)])
+    printed = f"INVOICE\nRose red 10 {100:.{places}f} {net}\nNet {net}\nVAT {tax}\nTotal {Decimal(net) + Decimal(tax)}"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(CURRENCY_REGION, "KWD", "KWT")  # a VAT region for the KWD boundary (synthetic)
+        result = run_invoice(invoice, source, RulesConfig.from_dict(config), text_value=printed)
+        view = rules_view(result, printed)
+        return result, tc.check_view(view, tc.Sources(config=config, text=printed))
+
+
+def test_r016_picks_the_vat_code_within_the_tolerance_but_the_tax_check_still_holds():
+    for currency, tax, filled in (("AED", "50.00", True), ("AED", "60.00", True), ("AED", "60.01", False),
+                                  ("AED", "40.00", True), ("KWD", "51.000", True), ("KWD", "51.001", False)):
+        result, checked = taxed(currency, tax)
+        code = result["lines"][0]["Unit Tax Code"]
+        assert bool(code) is filled, (currency, tax)
+        exact = tax in ("50.00",)
+        assert (status_of(checked, "tax_breakdown_to_header") == tc.PASS) is exact, (currency, tax)
+        if filled and not exact:
+            assert cell(checked, "Header", "Tax Amount")["status"] != tc.VERIFIED, (currency, tax)
+
+
+def test_r016_is_exact_for_a_currency_without_a_tolerance():
+    result, _ = taxed("AED", "50.01", {**VAT_CONFIG, "arithmetic_tolerance": {"SAR": "10.00"}})
+    assert result["lines"][0]["Unit Tax Code"] == ""
+    result, _ = taxed("AED", "50.00", {**VAT_CONFIG, "arithmetic_tolerance": {"SAR": "10.00"}})
+    assert result["lines"][0]["Unit Tax Code"] == "VATA5"

@@ -270,7 +270,13 @@
                       </fieldset>
                       <fieldset id="rules-fieldset" class="rules-fieldset" hidden>
                         <legend>Target fields · fine rules with evidence</legend>
+                        <div id="coverage-banner" class="coverage-banner" role="status" aria-live="polite" hidden>
+                          <p id="coverage-text"></p>
+                          <button id="update-item-master" class="button button-quiet button-small" type="button" hidden>Update item master</button>
+                        </div>
+                        <div id="refresh-result" class="refresh-result" role="status" aria-live="polite" hidden></div>
                         <p id="rules-item-rate" class="rules-item-rate"></p>
+                        <ul id="rules-problems" class="rules-problems" aria-label="Lines to confirm" hidden></ul>
                         <dl id="rules-fields" class="rules-fields"></dl>
                         <div class="table-scroll">
                           <table class="line-table rules-lines">

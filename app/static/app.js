@@ -52,13 +52,199 @@ function rulesEntry(cell, label, scope, name, line) {
   return input;
 }
 
-function rulesCell(cell, name, line) {
+// Item cells the rules could not settle get one confirm prompt per line above the table; the evidence stays behind Details.
+const ITEM_PROBLEMS = new Set(["Not in item master", "Ambiguous", "Conflict"]);
+const ITEM_MASTER_REFRESH = "/api/item-master/refresh";
+const REFRESH_POLL_MS = 1500;
+const REFRESH_POLLS = 200;
+const LOCATION_TYPES = ["Store (S)", "Warehouse (W)"];
+
+function itemProblem(line, coverage) {
+  const cell = line.cells?.Item;
+  if (enteredByReviewer(cell)) return null;
+  if (cell?.lookup_trace || ITEM_PROBLEMS.has(cell?.reason)) return cell;
+  return (coverage?.missing || []).some((gap) => gap.line === line.line && !gap.filled) ? cell || {} : null;
+}
+
+// lookup_trace.rows are candidate ITEM_PARENT ids, at most five of rows_total.
+function traceCandidates(trace) {
+  return [...new Set((trace?.rows || []).filter(Boolean).map(String))];
+}
+
+function tracePrinted(trace) {
+  const printed = trace?.printed || {};
+  return printed.vpn?.[0] || printed.barcode?.[0] || printed.description || "";
+}
+
+// The not-in-item-master trace (lookup_trace): what was printed, where it was searched and the rows returned.
+function lookupDetails(trace) {
+  const details = make("details", "lookup-trace");
+  details.append(make("summary", "", "Details"));
+  const list = make("dl");
+  const add = (label, value) => {
+    if (value !== undefined && value !== null && value !== "") list.append(make("dt", "", label), make("dd", "", String(value)));
+  };
+  const printed = trace.printed || {};
+  const searched = trace.searched || {};
+  const rows = traceCandidates(trace);
+  add("Rule", [trace.rule, trace.reason].filter(Boolean).join(" · "));
+  add("Printed barcode", (printed.barcode || []).join(", "));
+  add("Printed VPN", (printed.vpn || []).join(", "));
+  add("Printed description", printed.description);
+  add("Columns searched", (searched.columns || []).join(", "));
+  add("Supplier sites", (searched.supplier_sites || []).join(", "));
+  add("Item master version", trace.item_master_version);
+  add("Rows returned", trace.rows_total > rows.length ? `${rows.join(", ")} (${rows.length} of ${trace.rows_total})`
+    : rows.join(", ") || "none");
+  if (trace.manual_fix) add("Manual fix", `${trace.manual_fix.kind}: ${trace.manual_fix.value}`);
+  details.append(list);
+  return details;
+}
+
+function answerButton(label, onClick, locked) {
+  const button = make("button", "button button-quiet button-small", label);
+  button.type = "button";
+  button.disabled = locked;
+  button.setAttribute("aria-pressed", "false");
+  button.addEventListener("click", () => {
+    for (const other of button.parentNode?.children || []) other.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-pressed", "true");
+    onClick();
+  });
+  return button;
+}
+
+// Yes takes the suggested item, Pick another offers the other rows or a typed item, Not in master sends the reviewer
+// to the item master. The answer is saved as the line's Item entry, like any reviewer entry.
+function itemPrompt(line, cell, locked) {
+  const li = make("li", "rules-problem");
+  const trace = cell.lookup_trace || {};
+  const candidates = traceCandidates(trace);
+  const suggestion = cell.value ?? candidates[0] ?? null;
+  const printed = tracePrinted(trace);
+  li.append(make("span", "", `Line ${line.line}${printed ? ` “${printed}”` : ""} · ${trace.state || cell.reason || "Not matched"}`
+    + (suggestion ? ` · is it ${suggestion}?` : "")));
+  const entry = rulesEntry(cell, "Item", "line", "Item", line.line);
+  entry.hidden = true;
+  const others = make("select", "rules-pick");
+  others.setAttribute("aria-label", `Other item master rows for line ${line.line}`);
+  others.append(new Option("Choose a row…", ""), ...candidates.map((item) => new Option(item, item)));
+  others.hidden = true;
+  others.addEventListener("change", () => { entry.value = others.value; });
+  const note = make("small", "rules-flagged", "Add it to the item master, then Update item master.");
+  note.hidden = true;
+  const answers = make("span", "rules-answers");
+  if (suggestion) answers.append(answerButton("Yes", () => {
+    entry.value = suggestion; entry.hidden = false; others.hidden = true; note.hidden = true;
+  }, locked));
+  answers.append(answerButton("Pick another", () => {
+    entry.value = ""; entry.hidden = false; others.hidden = candidates.length < 2; note.hidden = true;
+    (others.hidden ? entry : others).focus();
+  }, locked), answerButton("Not in master", () => {
+    entry.value = ""; entry.hidden = true; others.hidden = true; note.hidden = false;
+    $("#update-item-master").hidden = false;
+  }, locked));
+  li.append(answers, others, entry, note);
+  if (cell.lookup_trace) li.append(lookupDetails(trace));
+  return li;
+}
+
+// A held location type is picked here; a location number the item master row left blank is typed in its field.
+function locationPrompts(rules, entries, locked) {
+  const prompts = [];
+  const type = rules.fields?.location_type;
+  if (type && (type.value === null || type.value === undefined) && entries.location_type) {
+    const li = make("li", "rules-problem");
+    li.append(make("span", "", "Location type · Store or Warehouse?"));
+    const answers = make("span", "rules-answers");
+    LOCATION_TYPES.forEach((value) => answers.append(answerButton(value, () => { entries.location_type.value = value; }, locked)));
+    li.append(answers);
+    prompts.push(li);
+  }
+  const location = rules.fields?.location;
+  if (location && (location.value === null || location.value === undefined) && entries.location) {
+    const li = make("li", "rules-problem");
+    li.append(make("span", "", `${location.reason && location.reason !== "Not found" ? location.reason : "Location number is blank in the item master"} · add it`));
+    const add = make("button", "button button-quiet button-small", "Add location");
+    add.type = "button";
+    add.disabled = locked;
+    add.addEventListener("click", () => entries.location.focus());
+    li.append(add);
+    prompts.push(li);
+  }
+  return prompts;
+}
+
+// V7.1 coverage (rules.coverage): the share of lines the rules matched, its tier, and what export waits on.
+function renderCoverage(job) {
+  const coverage = job.rules?.coverage;
+  $("#coverage-banner").hidden = !coverage;
+  $("#rules-item-rate").hidden = Boolean(coverage);
+  if (!coverage) return;
+  const share = `${coverage.matched} of ${coverage.total} lines (${Number(coverage.pct)}%)`;
+  const gaps = (coverage.missing || []).filter((gap) => !gap.filled).length;
+  const next = coverage.export === "no" ? "add the missing items to the item master, then Update item master"
+    : coverage.export === "after_fill" && gaps ? "fill or confirm the lines below before export" : "ready to export";
+  $("#coverage-text").textContent = `${coverage.low ? "Low coverage" : "Coverage"} ${share} · ${coverage.tier} · ${next}`;
+  $("#coverage-banner").className = `coverage-banner coverage-${coverage.export}`;
+  const update = $("#update-item-master");
+  // POST /api/item-master/refresh is admin only.
+  update.hidden = !(coverage.missing || []).length || (app.authMode === "cloud" && app.sessionUser?.role !== "admin");
+  update.disabled = job.status === "exported";
+}
+
+function refreshLines(lines) {
+  const parts = [
+    ...(lines.newly_matched || []).map((l) => `line ${l.line} now ${l.item}`),
+    ...(lines.lost || []).map((l) => `line ${l.line} lost ${l.item}`),
+    ...(lines.changed || []).map((l) => `line ${l.line} ${l.from} → ${l.to}`),
+  ];
+  return parts.join("; ");
+}
+
+// The refresh result (GET /api/item-master/refresh): counts, then per invoice the lines newly matched, lost or changed.
+function renderRefresh(state) {
+  const box = $("#refresh-result");
+  const counts = state.counts || {};
+  const head = state.status === "failed" ? `Item master update failed${state.error ? ` (${state.error})` : ""}.`
+    : `Item master updated: ${counts.rematched || 0} re-matched · ${counts.exported_skipped || 0} exported skipped`
+      + ` · ${counts.not_ready_skipped || 0} not ready · ${counts.failed || 0} failed.`;
+  const list = make("ul");
+  (state.invoices || []).forEach((invoice) => list.append(make("li", "",
+    `${invoice.number || invoice.filename || invoice.job_id}: ${refreshLines(invoice.lines || {})}`)));
+  box.replaceChildren(make("p", "", head), ...(list.children.length ? [list] : []));
+  box.hidden = false;
+}
+
+async function updateItemMaster() {
+  const button = $("#update-item-master");
+  button.disabled = true;
+  try {
+    const started = await api(ITEM_MASTER_REFRESH, { method: "POST" });
+    notify("Updating the item master: open invoices are being matched again.", "success");
+    let state = started;
+    for (let poll = 0; poll < REFRESH_POLLS; poll += 1) {
+      state = await api(ITEM_MASTER_REFRESH);
+      if (state?.id !== started.id || ["done", "failed"].includes(state?.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, REFRESH_POLL_MS));
+    }
+    if (!["done", "failed"].includes(state?.status)) throw new Error("The item master update is still running. Check again shortly.");
+    renderRefresh(state);
+    if (app.currentJob) await selectJob(app.currentJob.id);
+  } catch (error) {
+    notify(error.message, "error", 7000);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function rulesCell(cell, name, line, prompted = false) {
   const td = make("td");
   const empty = !cell || cell.value === null || cell.value === undefined;
   if (empty) td.append(make("span", "rules-flagged", cell?.reason === "No evidence" ? "Empty · no evidence" : cell?.reason || "Not found"));
   else td.append(make("span", "", cell.value), make("small", "", evidenceText(cell.evidence)));
   td.append(...readerNotes(app.currentJob, "line", name, line));
-  if ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell)) td.append(rulesEntry(cell, name, "line", name, line));
+  if (!prompted && ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell))) td.append(rulesEntry(cell, name, "line", name, line));
   return td;
 }
 
@@ -332,6 +518,9 @@ function renderRulesResult(job) {
     + (rate.owner_review ? " — below 95%: this invoice goes to owner review." : "");
   itemRate.title = rate.definition || "";
   itemRate.classList.toggle("owner-review", Boolean(rate.owner_review));
+  renderCoverage(job);
+  const locked = job.status === "exported";
+  const entries = {};
   const list = $("#rules-fields");
   list.replaceChildren();
   Object.entries(rules.fields || {}).forEach(([key, field]) => {
@@ -343,13 +532,23 @@ function renderRulesResult(job) {
         : (field.reason !== "Not found" && field.reason) || headerException(job, field.target) || "Not found in owner sheets or on the invoice"));
     } else dd.append(make("span", "", field.value), make("small", "", evidenceText(field.evidence)));
     dd.append(...readerNotes(job, "header", key));
-    if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(rulesEntry(field, field.label, "header", key));
+    if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(entries[key] = rulesEntry(field, field.label, "header", key));
     if (key === "site") renderSupplierPick(dd, job);
     if (field.target === "Order No" && Number(rules.po_candidates) > 1) {
       dd.append(make("small", "rules-flagged", `Ambiguous: ${rules.po_candidates} candidate orders — owner review`));
     }
     list.append(make("dt", "", field.label), dd);
   });
+  const problems = locationPrompts(rules, entries, locked);
+  const prompted = new Set();
+  (rules.lines || []).forEach((line) => {
+    const cell = itemProblem(line, rules.coverage);
+    if (!cell) return;
+    prompted.add(line.line);
+    problems.push(itemPrompt(line, cell, locked));
+  });
+  $("#rules-problems").replaceChildren(...problems);
+  $("#rules-problems").hidden = !problems.length;
   const body = $("#rules-lines");
   body.replaceChildren();
   (rules.lines || []).forEach((line) => {
@@ -362,7 +561,8 @@ function renderRulesResult(job) {
       if (note) number.append(note);
     });
     tr.append(number);
-    ["Item", "UPC", "Unit Cost", "Quantity", "Unit Tax Code"].forEach((name) => tr.append(rulesCell(line.cells?.[name], name, line.line)));
+    ["Item", "UPC", "Unit Cost", "Quantity", "Unit Tax Code"].forEach((name) => tr.append(
+      rulesCell(line.cells?.[name], name, line.line, name === "Item" && prompted.has(line.line))));
     body.append(tr);
   });
 }
@@ -3585,6 +3785,7 @@ function bindEvents() {
   $("#invoice-form").addEventListener("input", markReviewDirty);
   $("#confirm-review").addEventListener("change", markReviewDirty);
   $("#save-review").addEventListener("click", () => submitReview());
+  $("#update-item-master").addEventListener("click", updateItemMaster);
   $("#export-job").addEventListener("click", exportCurrentJob);
   $("#batch-review").addEventListener("click", openBatchReview);
   $("#confirm-batch-review").addEventListener("click", downloadBatchReview);

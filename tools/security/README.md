@@ -92,5 +92,7 @@ Engine-specific:
 
 ## Used by CI
 
-`check_base_image.py` (refuses a `FROM` not pinned by digest) and `audit_requirements.py` (the package list
-the dependency audit reads) are run by `.github/workflows/security.yml`; see `docs/CI_SECURITY.md`.
+`check_base_image.py` (refuses a `FROM` not pinned by digest), `check_trivy_exceptions.py` (fails the base image
+trivy scan on any finding not in `trivy-exceptions.json`, a stale digest or a past expiry) and
+`audit_requirements.py` (the package list the dependency audit reads) are run by
+`.github/workflows/security.yml`; see `docs/CI_SECURITY.md`.

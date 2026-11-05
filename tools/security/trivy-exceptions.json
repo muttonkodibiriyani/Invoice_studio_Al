@@ -1,0 +1,12 @@
+{
+  "_comment": "Fixable HIGH/CRITICAL base image findings container-scan tolerates, enforced by check_trivy_exceptions.py. Each entry is one CVE on named packages in one base image digest, until its expiry date (inclusive). Any other finding, another digest or a past expiry fails the job. Add an entry only with a security-review decision on the task; remove it when the base is re-pinned.",
+  "exceptions": [
+    {
+      "cve": "CVE-2026-109518",
+      "packages": ["apt", "libapt-pkg6.0"],
+      "image_digest": "sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337",
+      "expires": "2026-11-19",
+      "reason": "Upstream python:3.12.16-slim-bookworm has not been rebuilt with apt 2.6.2 (DLA-4880-1). The Dockerfile upgrades apt and libapt-pkg6.0 to 2.6.2 in its first apt-get layer, so the shipped image is fixed; only the base scanned here still has 2.6.1. Approved by the Reality Checker on task 01a1aa38-c385, 2026-11-05."
+    }
+  ]
+}

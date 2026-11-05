@@ -96,6 +96,26 @@ def test_the_gross_read_into_the_net_column_is_not_verified():
     assert result["holds"]
 
 
+def test_lines_within_unit_cost_rounding_only_do_not_prove_the_net():
+    # Whole-unit costs give a rounding bound of half a unit per item: 100 x 50 is 5000.00, a net 40.00 lower is
+    # inside it (a warning), but nothing printed shows the lines make that net.
+    v = view(net="4960.00", tax="248.00", lines=[line(1, "100", "50")])
+    result = check(v, "Widget 100 x 50 4960.00", "Net 4960.00", "VAT 5% 248.00", "Total 5208.00")
+    assert status_of(result, "lines_to_net") == tc.WARNING
+    for sheet, column in AMOUNTS:
+        got = cell(result, sheet, column)
+        assert got["status"] == tc.CHECK_FAILED and "lines_to_net warning" in got["reason"], (sheet, column)
+
+
+def test_lines_that_make_the_net_after_the_printed_discount_keep_it_verified():
+    v = view(net="90.00", tax="4.50", lines=[line(1, "2", "50.00")])
+    result = check(v, "Widget 2 x 50.00 100.00", "Subtotal 100.00", "Discount 10.00", "Net 90.00", "VAT 5% 4.50",
+                   "Total 94.50")
+    assert status_of(result, "lines_to_net") == tc.WARNING
+    for sheet, column in AMOUNTS:
+        assert cell(result, sheet, column)["status"] == tc.VERIFIED, (sheet, column)
+
+
 def test_a_line_whose_quantity_times_cost_is_not_its_amount_is_not_verified():
     # Line 2 carries a pre-discount price, line 3 a price read x100; the rules raised a Line Parsing exception
     # (02A) on each. Line 1 adds up and stays verified.

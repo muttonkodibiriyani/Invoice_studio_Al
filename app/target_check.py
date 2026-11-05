@@ -17,7 +17,8 @@ printed text, the owner mapping config, or an attributed owner entry):
 - missing_line: a Details cell of an item line the invoice prints but the read lacks (or merged away); estimated
   when lines_to_net fails, never matched (MEASURE, T2(b));
 - check_failed: the evidence holds the value, but a row check the cell takes part in fails or cannot run, so the
-  value is not proven: the Header amounts need net + tax = the printed gross and the lines to sum to the net, the
+  value is not proven: the Header amounts need net + tax = the printed gross and the lines to sum to the net (or
+  to it after the printed invoice discount; the unit-cost rounding warning is not enough), the
   Tax Amount also net x the owner's VAT rate, a line's Unit Cost and Quantity a line without a Line Parsing
   exception, and the Document a prefix without an l/I lookalike. An owner entry is the owner's say and stays.
 
@@ -572,7 +573,8 @@ def arithmetic(view, sources):
                                     "rounding") if rounded else
                           (WARNING, "Lines equal the Header net after the printed invoice discount") if discounted else
                           (FAIL, "Sum of quantity x unit cost differs from the Header net"))
-        check = {"check": "lines_to_net", "status": status, "decimals": places, "detail": detail}
+        check = {"check": "lines_to_net", "status": status, "decimals": places, "detail": detail,
+                 **({"after_discount": True} if discounted else {})}
         if status == FAIL and sources.text.unavailable:
             check.update(unavailable=True, detail=detail + "; the printed discount and line count could not be checked")
         if status == FAIL:
@@ -665,8 +667,10 @@ def held_cells(checks):
             for key in keys:
                 held.setdefault(key, []).append(by[name])
     hold("net_plus_tax_gross", [(s, c, None) for s, c in AMOUNT_CELLS])
-    # Within unit-cost rounding or after the printed invoice discount the lines do sum to the net (warnings).
-    hold("lines_to_net", [(s, c, None) for s, c in AMOUNT_CELLS], (PASS, WARNING))
+    # After the printed invoice discount the lines sum to the net exactly (both amounts printed). The unit-cost
+    # rounding warning does not prove it: its bound grows with the quantities and the coarsest unit-cost step.
+    lines_ok = (PASS, WARNING) if by.get("lines_to_net", {}).get("after_discount") else (PASS,)
+    hold("lines_to_net", [(s, c, None) for s, c in AMOUNT_CELLS], lines_ok)
     hold("tax_breakdown_to_header", [("Header", "Tax Amount", None)])
     hold("line_arithmetic", [("Details", c, n) for n in by.get("line_arithmetic", {}).get("lines", ())
                              for c in ("Unit Cost", "Quantity")])

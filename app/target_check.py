@@ -866,7 +866,7 @@ def issues(result):
     out = []
     for kind, code, message in ((MISMATCH, "Target Mismatch", "cell(s) do not equal the source their evidence points to"),
                                 (None, "Target Unverified", "filled cell(s) could not be proven from their evidence"),
-                                (CHECK_FAILED, "Target Check Failed", "cell(s) are printed but fail a row check")):
+                                (CHECK_FAILED, "Target Check Failed", "cell(s) hold their evidence but fail a row check")):
         # Missing-line cells are reported by the failed lines_to_net check below, not as unproven filled cells.
         cells = [x for x in result["cells"] if x["group"] == NEEDS_CHECKING and x["status"] != MISSING_LINE
                  and (x["status"] == kind if kind else x["status"] not in (MISMATCH, CHECK_FAILED))]

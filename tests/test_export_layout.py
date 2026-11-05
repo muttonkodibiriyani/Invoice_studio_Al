@@ -1,8 +1,10 @@
 """R4 (Tharak, 5 Nov): the exported workbook's sheet names, column names and column order never change.
-No owner template file is shipped, so the expected layout is the owner's target template written out here
-(owner form 01a10c4d), independent of app.excel.HEADERS and app.target_check.TEMPLATE.
+The expected layout is tests/fixtures/target_template_headers.json: the sheet names and row-1 headers of Tharak's
+headers-only target template (tm8 file 01a1aab0-9dd8), independent of app.excel.HEADERS and app.target_check.TEMPLATE.
 R2: the Header 'Supplier Site' cell holds the Item Master SUPPLIER SITE id, not the site name."""
 import io
+import json
+from pathlib import Path
 
 import openpyxl
 import pytest
@@ -12,12 +14,7 @@ from app.excel import rules_workbook
 from app.matching import rules_view
 from tests.test_latest_master import activate, run
 
-OWNER_TEMPLATE = {
-    "Header": ["Transaction Number", "Document", "Supplier Site", "Order No", "Location", "Location Type",
-               "Document Date", "Total Cost Ex Tax", "Tax Amount", "Ref No. 1", "Ref No. 2", "Ref No. 3", "Comment"],
-    "Tax_Breakdown": ["Transaction Number", "Tax Code", "Tax Basis"],
-    "Details": ["Transaction Number", "Item", "UPC", "Unit Cost", "Quantity", "Unit Tax Code"],
-}
+OWNER_TEMPLATE = json.loads((Path(__file__).parent / "fixtures" / "target_template_headers.json").read_text())
 
 
 @pytest.fixture

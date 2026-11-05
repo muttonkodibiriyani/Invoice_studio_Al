@@ -74,7 +74,7 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     if not supplier_site or not parents:
         run.exception("Missing PO", "Supplier site and matched items are required for the master order bridge", "M4")
         return outcome
-    rows = source.master_orders(parents, {supplier_site})
+    rows = source.item_orders(parents, {supplier_site})
     groups = defaultdict(list)
     for row in rows:
         groups[text(row.get("RMS_ORDER_NO"))].append(row)
@@ -82,18 +82,18 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     pick = choose_order(groups, parents, invoiced or {}, item_rules.rules().coverage_tiers())
     order, share = pick["order"], f"{pick['covered']} of {pick['total']} matched items"
     outcome["candidates"] = len(pick["tied"]) or int(order is not None)
-    if pick["tied"]:
-        run.exception("Ambiguous PO", f"Orders {', '.join(pick['tied'])} each cover {share}; pick one (P-PO)", "O3.3",
-                      owner="Buyer")
-        return outcome
     if order is None:
         run.exception("Missing PO", "No RMS order holds the matched items (P-PO-NF)", "O3.3", owner="Buyer")
         return outcome
+    if pick["tied"]:
+        run.exception("Ambiguous PO", f"Orders {', '.join(pick['tied'])} each cover {share} with the same invoice "
+                      f"quantity; {order} is the lowest, confirm or pick another (P-PO)", "O3.3", owner="Buyer")
     if pick["tier"].export_mode == "no":
         run.exception("Missing PO", f"Order {order} covers only {share} ({pick['tier'].name}); add the missing "
                       "items to the item master, then Update item master", "O3.3", owner="Buyer")
-        return outcome
-    if pick["tier"].export_mode != "yes":
+        if not ORDER_NO_BELOW_TIER:
+            return outcome
+    elif pick["tier"].export_mode != "yes":
         run.exception("Ambiguous PO", f"Order {order} covers {share} ({pick['tier'].name}); confirm it (P-PO)",
                       "O3.3", owner="Buyer")
     selected = groups[order]
@@ -103,7 +103,8 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     # Every order row has an exact barcode/parent bridge to this supplier's item rows.
     order_refs = _refs(selected)
     run.trace("Order No", order, "O3.1" if pick["covered"] == pick["total"] else "O3.3",
-              "Master PO block RMS_ORDER_NO" + ("" if printed_match or not printed else f"; invoice PO {printed} differs"),
+              f"RMS_ORDER_NO on the found items' master rows (D3, {pick['decided']})" +
+              ("" if printed_match or not printed else f"; invoice PO {printed} differs"),
               reference=order_refs, original=printed if printed_match else None)
     outcome.update(order=order, source="Master order bridge", cited=selected)
     scan = scan_pages(getattr(run, "master_text", ""), getattr(run, "master_boxes", ()))
@@ -188,21 +189,42 @@ def receipt_capacities(rows, supplier_site, order, location, invoiced):
             "demand": {p: str(q) if q is not None else None for p, q in invoiced.items()}}
 
 
+# D3 (provisional, awaiting Tharak): Order No is never blank while a found item carries an order, so an order
+# holding fewer found items than the workbook's lowest Coverage_Tiers row still fills it; the invoice stays in review.
+ORDER_NO_BELOW_TIER = True
+
+
+def order_rank(held, invoiced):
+    """D2 (A4, confirmed 5 Nov): the most found items, then the most invoice quantity of those items."""
+    return len(held), sum(to_decimal(invoiced.get(p)) or 0 for p in held)
+
+
+def lowest_order(tied):
+    """D3 (provisional, awaiting Tharak): a tie D2 cannot break goes to the lowest RMS_ORDER_NO."""
+    return min(tied, key=lambda order: (len(order), order))
+
+
 def choose_order(groups, parents, invoiced, tiers):
-    """O3.1 / O3.3: the RMS order holding the most matched items (ITEM_PARENT), then the most invoice quantity.
+    """O3.1 / O3.3 with D2 / D3: the RMS order the found items (ITEM_PARENT) carry, ranked by order_rank; a tie
+    still standing goes to lowest_order.
 
     ``groups`` is RMS_ORDER_NO -> order rows, ``invoiced`` ITEM_PARENT -> invoice quantity (None when unknown) and
-    ``tiers`` RuleSet.coverage_tiers(). Returns ``{order, covered, total, tier, tied}``: a tie quantity cannot break
-    leaves ``order`` None and lists the tied orders for the user (P-PO)."""
-    ranked = []
+    ``tiers`` RuleSet.coverage_tiers(). Returns ``{order, covered, total, tier, tied, decided}``: ``tied`` lists every
+    tied order for the reviewer (P-PO) and ``decided`` says how the order was chosen: unique, items, quantity or
+    lowest-tie. ``order`` is None only when no order holds a found item."""
+    ranked = {}
     for order, group in groups.items():
         held = parents & {text(r.get("RMS_ITEM_ID")) for r in group}
         if held:
-            ranked.append((len(held), sum(to_decimal(invoiced.get(p)) or 0 for p in held), order))
-    ranked.sort(key=lambda r: r[:2], reverse=True)
-    best = ranked[0] if ranked else (0, 0, None)
-    tied = sorted(r[2] for r in ranked if r[:2] == best[:2]) if len(ranked) > 1 and ranked[1][:2] == best[:2] else []
-    pct = Decimal(100) * best[0] / len(parents) if parents else Decimal(0)
+            ranked[order] = order_rank(held, invoiced)
+    best = max(ranked.values(), default=None)
+    tied = sorted((o for o, rank in ranked.items() if rank == best), key=lambda o: (len(o), o))
+    order = lowest_order(tied) if tied else None
+    runner_up = max((rank for rank in ranked.values() if rank != best), default=None)
+    decided = ("lowest-tie" if len(tied) > 1 else "unique" if runner_up is None else
+               "items" if runner_up[0] < best[0] else "quantity") if order else None
+    covered = best[0] if best else 0
+    pct = Decimal(100) * covered / len(parents) if parents else Decimal(0)
     tier = next((t for t in tiers if t.low <= pct and (t.high is None or pct < t.high)), None)
-    return {"order": None if tied else best[2], "covered": best[0], "total": len(parents), "tier": tier,
-            "tied": tied}
+    return {"order": order, "covered": covered, "total": len(parents), "tier": tier,
+            "tied": tied if len(tied) > 1 else [], "decided": decided}

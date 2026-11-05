@@ -1,4 +1,5 @@
-"""O3.1 / O3.3: the Order No comes from the matched items' RMS_ORDER_NO, never from the printed PO."""
+"""O3.1 / O3.3 with D2 / D3: the Order No comes from the found items' RMS_ORDER_NO, never from the printed PO,
+and is never left blank while a found item carries one."""
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -47,10 +48,25 @@ def test_invoice_quantity_breaks_a_share_tie():
     assert pick["order"] == "B" and pick["tied"] == []
 
 
+def test_invoice_quantity_breaks_an_item_tie_across_several_orders():
+    """D2: the found items sit on several orders; the order holding the most of them wins, then the most invoice
+    quantity of the items it holds."""
+    invoiced = {"P1": Decimal(2), "P2": Decimal(2), "P3": Decimal(9), "P4": Decimal(1)}
+    pick = choose_order({"A": rows("P1", "P2"), "B": rows("P3", "P4"), "C": rows("P3")}, set(invoiced), invoiced, TIERS)
+    assert (pick["order"], pick["covered"], pick["tied"], pick["decided"]) == ("B", 2, [], "quantity")
+
+
 @pytest.mark.parametrize("invoiced", [{"P1": 1, "P2": 1}, {"P1": None, "P2": None}])
-def test_a_tie_quantity_cannot_break_is_left_to_the_user(invoiced):
-    pick = choose_order({"A": rows("P1"), "B": rows("P2")}, set(invoiced), invoiced, TIERS)
-    assert pick["order"] is None and pick["tied"] == ["A", "B"]
+def test_a_tie_quantity_cannot_break_goes_to_the_lowest_order_and_lists_the_tie(invoiced):
+    """D3 (provisional): never blank; the lowest tied RMS_ORDER_NO, every tied order listed for review."""
+    pick = choose_order({"1000020": rows("P1"), "999999": rows("P2"), "1000010": rows("P1")}, set(invoiced),
+                        invoiced, TIERS)
+    assert pick["order"] == "999999" and pick["tied"] == ["999999", "1000010", "1000020"]
+    assert pick["decided"] == "lowest-tie"
+
+
+def test_one_order_is_unique():
+    assert choose_order({"A": rows("P1")}, {"P1"}, {"P1": 1}, TIERS)["decided"] == "unique"
 
 
 def test_repeated_order_rows_count_an_item_once():

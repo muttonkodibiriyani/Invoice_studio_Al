@@ -15,9 +15,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:ca701be1b7fe995472582a6738c3a3f6915d389e4951adfef879b1ac0ac395df",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, items (provisional)"
     },
     "Location": {
      "value": "",
@@ -206,9 +206,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:4f7f20ce8d27290fcb4fcc12b8621d9ff1175de6848abc65264ff392c83f4bf7",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, items (provisional)"
     },
     "Location": {
      "value": "",
@@ -345,9 +345,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:015bbd8b6ed775ea5a10b78bcc2c60bcb78f2d97821cd1ae6685bb60349538c9",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
     },
     "Location": {
      "value": "",
@@ -445,9 +445,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:ce3bb4ee11ce3b61c94e60c4f119c2ea3a56cb81ed1737bc6e69bdb2d576a522",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
     },
     "Location": {
      "value": "",
@@ -506,9 +506,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:ce8e8a1bd629c31782eb3de2eaec7448646dce25708a9a4e7073dede546e7d98",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, unique (provisional)"
     },
     "Location": {
      "value": "",
@@ -554,9 +554,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:95195c8f140f2150113ff0511893d8cadc4170018b9c2288c021f43ee8c1c566",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, unique (provisional)"
     },
     "Location": {
      "value": "",
@@ -602,9 +602,9 @@
      "rule": "S1.1/S1.2"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:4f7f20ce8d27290fcb4fcc12b8621d9ff1175de6848abc65264ff392c83f4bf7",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, unique (provisional)"
     },
     "Location": {
      "value": "",
@@ -650,9 +650,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:1fa76976a3dd43a9799b39f518a634522e43bb688d49db3484367917c69a647d",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, items (provisional)"
     },
     "Location": {
      "value": "",
@@ -1075,9 +1075,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:28d6583f8735223da89eb46e9d418d90672870a9e51b3097e4ef1474c5292605",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, items (provisional)"
     },
     "Location": {
      "value": "",
@@ -1319,8 +1319,8 @@
     },
     "Order No": {
      "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "confirm": false,
+     "rule": "D3: no found item, no order"
     },
     "Location": {
      "value": "",
@@ -1471,8 +1471,8 @@
     },
     "Order No": {
      "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "confirm": false,
+     "rule": "D3: no found item, no order"
     },
     "Location": {
      "value": "",
@@ -1791,9 +1791,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:c36a5b2b3ffb1ff7704704a0776d58be5d7e10ee4e241df2b545b77cc65f58d2",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, quantity (provisional)"
     },
     "Location": {
      "value": "",
@@ -1891,9 +1891,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:61fa3c5e01474700883bb4a60412e0faeab87acf6249595e001c5217b0260abc",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, lowest-tie (provisional)"
     },
     "Location": {
      "value": "",
@@ -1991,9 +1991,9 @@
      "rule": "D1 RE4 site"
     },
     "Order No": {
-     "value": "",
-     "confirm": true,
-     "rule": "O3.1-O3.3"
+     "value": "hmac:a3eeab9762932563c709a718c767654a53dafab77d9f911237884d71143493e5",
+     "confirm": false,
+     "rule": "D3 found items' RMS_ORDER_NO, unique (provisional)"
     },
     "Location": {
      "value": "",

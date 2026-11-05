@@ -108,9 +108,9 @@ def test_lines_within_unit_cost_rounding_only_do_not_prove_the_net():
 
 
 def test_lines_that_make_the_net_after_the_printed_discount_keep_it_verified():
-    v = view(net="90.00", tax="4.50", lines=[line(1, "2", "50.00")])
-    result = check(v, "Widget 2 x 50.00 100.00", "Subtotal 100.00", "Discount 10.00", "Net 90.00", "VAT 5% 4.50",
-                   "Total 94.50")
+    v = view(net="900.00", tax="45.00", lines=[line(1, "2", "500.00")])
+    result = check(v, "Widget 2 x 500.00 1000.00", "Subtotal 1000.00", "Discount 100.00", "Net 900.00",
+                   "VAT 5% 45.00", "Total 945.00")
     assert status_of(result, "lines_to_net") == tc.WARNING
     for sheet, column in AMOUNTS:
         assert cell(result, sheet, column)["status"] == tc.VERIFIED, (sheet, column)
@@ -181,3 +181,100 @@ def test_the_issue_names_the_held_cells_and_no_values():
     held = [i for i in tc.issues(result) if i["code"] == "Target Check Failed"]
     assert len(held) == 1 and "Header.Total Cost Ex Tax" in held[0]["message"] and held[0]["blocking"]
     assert "1050" not in held[0]["message"]
+
+
+# Owner decision (Tharak, relayed 2026-11-05): exact, but up to AED 10.00, SAR 10.00 or KWD 1.000 may differ. The
+# table is the owner config's arithmetic_tolerance; another currency has none: exact, and flagged.
+BOUNDARY = (("AED", "10.00", True), ("AED", "10.01", False), ("SAR", "10.00", True), ("SAR", "10.01", False),
+            ("KWD", "1.000", True), ("KWD", "1.001", False), ("USD", "0.01", False))
+
+
+def priced(currency, net, tax, cost="100.00"):
+    v = view(net=net, tax=tax, lines=[line(1, "10", cost)])
+    v["fields"]["currency"] = {"value": currency}
+    return v
+
+
+def flag_of(result):
+    return next(c for c in result["checks"] if c["check"] == "arithmetic_tolerance")
+
+
+def test_the_lines_may_miss_the_net_by_the_currency_tolerance_only():
+    for currency, diff, ok in BOUNDARY:
+        places = 3 if currency == "KWD" else 2
+        net = f"{1000 + float(diff):.{places}f}"
+        result = check(priced(currency, net, "0", f"{100:.{places}f}"), f"Net {net}")
+        assert (status_of(result, "lines_to_net") == tc.PASS) is ok, (currency, diff)
+        if not ok:
+            assert cell(result, "Header", "Total Cost Ex Tax")["status"] == tc.CHECK_FAILED, (currency, diff)
+
+
+def test_net_plus_tax_may_miss_the_printed_gross_by_the_currency_tolerance_only():
+    for currency, diff, ok in BOUNDARY:
+        places = 3 if currency == "KWD" else 2
+        gross = f"{1050 + float(diff):.{places}f}"
+        result = check(priced(currency, f"{1000:.{places}f}", f"{50:.{places}f}"), f"Total {gross}")
+        assert (status_of(result, "net_plus_tax_gross") == tc.PASS) is ok, (currency, diff)
+
+
+def test_the_net_and_tax_themselves_never_stand_in_for_the_gross():
+    # Net 2000.00 is within AED 10 of net + a stray 7.00; it is the net, not a printed gross.
+    result = check(priced("AED", "2000.00", "7.00", "200.00"), "Net 2000.00", "7.00")
+    assert status_of(result, "net_plus_tax_gross") == tc.WARNING
+
+
+def test_the_tax_may_miss_net_times_rate_by_the_currency_tolerance_only():
+    for currency, diff, ok in BOUNDARY:
+        places = 3 if currency == "KWD" else 2
+        tax = f"{50 + float(diff):.{places}f}"
+        result = check(priced(currency, f"{1000:.{places}f}", tax, f"{100:.{places}f}"))
+        assert (status_of(result, "tax_breakdown_to_header") == tc.PASS) is ok, (currency, diff)
+
+
+def test_a_currency_without_a_tolerance_is_exact_and_flagged():
+    result = check(priced("USD", "1000.01", "0"))
+    assert status_of(result, "lines_to_net") != tc.PASS
+    assert flag_of(result)["status"] == tc.WARNING and flag_of(result)["detail"] == "no tolerance set for USD"
+    assert flag_of(check(priced("AED", "1000.00", "50.00")))["status"] == tc.PASS
+
+
+def test_the_owner_config_replaces_the_tolerance_table():
+    config = {**CONFIG, "arithmetic_tolerance": {"USD": "0.05"}}
+    result = tc.check_view(priced("USD", "1000.05", "0"), tc.Sources(config=config, text=text()))
+    assert status_of(result, "lines_to_net") == tc.PASS and flag_of(result)["status"] == tc.PASS
+    result = tc.check_view(priced("AED", "1000.01", "0"), tc.Sources(config=config, text=text()))
+    assert status_of(result, "lines_to_net") != tc.PASS and flag_of(result)["detail"] == "no tolerance set for AED"
+
+
+def line_exceptions(currency, net_amount, config=None):
+    from app.fine_rules import RowsSource, RulesConfig, run_invoice
+    from app.models import Invoice, Line
+    source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
+                          "SUPPLIER SITE NAME": "Synthetic Co", "ITEM_DESC": "Rose red"}])
+    invoice = Invoice(supplier_name="Synthetic Co", currency=currency, lines=[
+        Line(sku="VPN-1", description="Rose red", qty="1", price="100.000" if currency == "KWD" else "100.00",
+             net_amount=net_amount)])
+    result = run_invoice(invoice, source, config or RulesConfig(), text_value="INVOICE\nRose red")
+    return [e for e in result["exceptions"] if e["Rule ID"] == "02A-Unit Cost"], result
+
+
+def test_a_line_amount_may_miss_quantity_times_cost_by_the_currency_tolerance_only():
+    # Until the owner says otherwise, the per-line check uses the same per-currency value as the Header.
+    for currency, diff, ok in BOUNDARY:
+        places = 3 if currency == "KWD" else 2
+        held, result = line_exceptions(currency, f"{100 + float(diff):.{places}f}")
+        assert (not held) is ok, (currency, diff)
+        assert result["arithmetic_currency"] == currency
+
+
+def test_the_line_tolerance_table_comes_from_the_owner_config():
+    from app.fine_rules import RulesConfig
+    config = RulesConfig.from_dict({"arithmetic_tolerance": {"USD": "0.05"}})
+    assert not line_exceptions("USD", "100.05", config)[0]
+    assert line_exceptions("AED", "100.01", config)[0], "a currency left out of the owner's table is exact"
+    for bad in ({"AED": "-1"}, {"aed": "1"}, ["AED"]):
+        try:
+            RulesConfig.from_dict({"arithmetic_tolerance": bad})
+        except ValueError:
+            continue
+        raise AssertionError(bad)

@@ -21,6 +21,8 @@ printed text, the owner mapping config, or an attributed owner entry):
   to it after the printed invoice discount; the unit-cost rounding warning is not enough), the
   Tax Amount also net x the owner's VAT rate, a line's Unit Cost and Quantity a line without a Line Parsing
   exception, and the Document a prefix without an l/I lookalike. An owner entry is the owner's say and stays.
+  The amounts may differ by the currency's tolerance (fine_rules.ARITHMETIC_TOLERANCE, replaced by the owner config's
+  arithmetic_tolerance); a currency without one is exact and flagged by the arithmetic_tolerance check.
 
 A filled owner-rule cell is a template failure (mismatch). The owner-facing line collapses the buckets:
 verified · empty by owner rule · empty (flagged) · needs checking (every other bucket).
@@ -37,7 +39,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from .fine_rules import CURRENCY_REGION
+from .fine_rules import CURRENCY_REGION, arithmetic_tolerance, tolerance_table
 from .location_type import STORE, TYPES, WAREHOUSE, written
 
 VERIFIED, EMPTY, MISMATCH = "verified", "empty_flagged", "mismatch"
@@ -550,7 +552,12 @@ def arithmetic(view, sources):
     currency = ((view.get("fields") or {}).get("currency") or {}).get("value")
     places = decimals(currency)
     net, tax = _value(view, "net"), _value(view, "tax")
-    out = []
+    # Owner decision: exact, but up to the currency's tolerance (owner config table); none set means exact.
+    # The rules' arithmetic currency (resolved, else printed) when the view carries it, else the Header Currency.
+    arithmetic_currency = view.get("arithmetic_currency") or currency
+    tolerance, flag = arithmetic_tolerance(tolerance_table(sources.config), arithmetic_currency)
+    out = [{"check": "arithmetic_tolerance", "status": WARNING if flag else PASS,
+            "detail": flag or f"Allowed difference {tolerance} {str(arithmetic_currency).strip().upper()} (owner table)"}]
 
     lines = view.get("lines") or []
     pairs = [(_line_value(l, "Quantity"), _line_value(l, "Unit Cost")) for l in lines]
@@ -560,15 +567,15 @@ def arithmetic(view, sources):
     else:
         exact = _q(sum((q * c for q, c in pairs), Decimal(0)), places)
         per_line = sum((_q(q * c, places) for q, c in pairs), Decimal(0))
-        ok = _q(net, places) in (exact, per_line)
+        ok = min(abs(_q(net, places) - exact), abs(_q(net, places) - per_line)) <= tolerance
         # Unit costs printed rounded (line totals from the unrounded price): each line may be off by up to
-        # quantity x half a unit-cost step. Within that bound it is a warning, never a pass.
+        # quantity x half a unit-cost step. Within that bound (beyond the tolerance) it is a warning, never a pass.
         step = max(Decimal(1).scaleb(c.as_tuple().exponent) for _, c in pairs)
         bound = sum((abs(q) for q, _ in pairs), Decimal(0)) * step / 2 + Decimal(1).scaleb(-places)
         rounded = not ok and abs(exact - _q(net, places)) <= bound
         # An invoice-level discount printed in the totals: the lines carry the pre-discount prices (RF-3).
         discounted = not ok and not rounded and after_discount(sources.text, pairs, net)
-        status, detail = ((PASS, "Sum of quantity x unit cost equals the Header net") if ok else
+        status, detail = ((PASS, "Sum of quantity x unit cost equals the Header net within the tolerance") if ok else
                           (WARNING, "Sum of quantity x unit cost differs from the Header net within unit-cost "
                                     "rounding") if rounded else
                           (WARNING, "Lines equal the Header net after the printed invoice discount") if discounted else
@@ -587,11 +594,16 @@ def arithmetic(view, sources):
     else:
         gross = _q(net + tax, places)
         found = printed(sources.text, f"{gross:f}")
+        if found is False and tolerance:
+            # A printed amount at the currency's decimals within the tolerance; the net and tax themselves never
+            # stand in for the gross.
+            found = any(abs(a - gross) <= tolerance for a in sources.text.amounts
+                        if a not in (net, tax) and a.as_tuple().exponent == -places)
         if found is None:
             status, detail = SKIPPED, (UNAVAILABLE_DETAIL if sources.text.unavailable else
                                        "No text layer to find the printed gross")
         elif found:
-            status, detail = PASS, "Net + tax is printed on the invoice as the gross"
+            status, detail = PASS, "Net + tax is printed on the invoice as the gross, within the tolerance"
         else:
             # No gross column in the target sheet: an unprinted gross is a warning, not a failure.
             status, detail = WARNING, "Net + tax is not printed on the invoice"
@@ -615,9 +627,9 @@ def arithmetic(view, sources):
             allowed = {_q(net * rate / 100, places)}
             if lines and all(q is not None and c is not None for q, c in pairs):
                 allowed.add(sum((_q(_q(q * c, places) * rate / 100, places) for q, c in pairs), Decimal(0)))
-            ok = _q(tax, places) in allowed
+            ok = min(abs(_q(tax, places) - a) for a in allowed) <= tolerance
             out.append({"check": "tax_breakdown_to_header", "status": PASS if ok else FAIL, "decimals": places,
-                        "detail": "Tax basis x code rate (total or per line) equals the Header tax" if ok else
+                        "detail": "Tax basis x code rate (total or per line) equals the Header tax within the tolerance" if ok else
                         "Tax basis x code rate differs from the Header tax"})
 
     # 02A: the rules hold a line whose quantity x unit cost is not its printed amount (or lacks one of them).

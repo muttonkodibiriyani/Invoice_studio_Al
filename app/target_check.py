@@ -17,12 +17,13 @@ printed text, the owner mapping config, or an attributed owner entry):
 - missing_line: a Details cell of an item line the invoice prints but the read lacks (or merged away); estimated
   when lines_to_net fails, never matched (MEASURE, T2(b));
 - check_failed: the evidence holds the value, but a row check the cell takes part in fails or cannot run, so the
-  value is not proven: the Header amounts need net + tax = the printed gross and the lines to sum to the net (or
+  value is not proven: the Header amounts need net + tax = the labelled printed gross and the lines to sum to the net (or
   to it after the printed invoice discount; the unit-cost rounding warning is not enough), the
   Tax Amount also net x the owner's VAT rate, a line's Unit Cost and Quantity a line without a Line Parsing
   exception, and the Document a prefix without an l/I lookalike. An owner entry is the owner's say and stays.
-  The amounts may differ by the currency's tolerance (fine_rules.ARITHMETIC_TOLERANCE, replaced by the owner config's
-  arithmetic_tolerance); a currency without one is exact and flagged by the arithmetic_tolerance check.
+  The total before tax (lines vs net, net + tax vs gross) may differ by the currency's tolerance
+  (fine_rules.ARITHMETIC_TOLERANCE, replaced by the owner config's arithmetic_tolerance); a currency without one is
+  exact and flagged by the arithmetic_tolerance check. The tax vs net x rate is exact plus one minor unit per line.
 
 A filled owner-rule cell is a template failure (mismatch). The owner-facing line collapses the buckets:
 verified · empty by owner rule · empty (flagged) · needs checking (every other bucket).
@@ -445,6 +446,10 @@ def printed_line_count(text):
 AMOUNT = re.compile(r"-?\d[\d,]*\.?\d*")
 NUMBER = re.compile(r"\d[\d,]*\.?\d*")
 DISCOUNT_LABEL = re.compile(r"(?i)\bdiscount\b")
+# A printed gross: an amount on a text line labelled as the invoice total; a sub-total, a total before / excluding
+# tax and the 'Total lines' count are not one.
+GROSS_LABEL = re.compile(r"(?i)\b(?:total|gross|amount\s+(?:due|payable)|balance\s+due)\b")
+NOT_GROSS = re.compile(r"(?i)\b(?:sub[\s-]*total|subtotal|excl\w*|exclusive|before|without|w/o|lines?)\b")
 
 
 def _amounts(pattern, text):
@@ -462,6 +467,8 @@ def text_checks(text):
             "numbers": sorted(map(str, _amounts(NUMBER, text))),
             "discounts": sorted(map(str, set().union(*(_amounts(NUMBER, row) for row in text.splitlines()
                                                        if DISCOUNT_LABEL.search(row))))),
+            "totals": sorted(map(str, set().union(*(_amounts(NUMBER, row) for row in text.splitlines()
+                                                    if GROSS_LABEL.search(row) and not NOT_GROSS.search(row))))),
             "line_count": printed_line_count(text)}
 
 
@@ -477,8 +484,9 @@ class TextChecks:
         self.unavailable = data.get("unavailable")
         self.has_text = bool(data.get("has_text")) and not self.unavailable
         self.norm = str(data.get("norm") or "")
-        self.amounts, self.numbers, self.discounts = ({Decimal(a) for a in data.get(key) or ()}
-                                                      for key in ("amounts", "numbers", "discounts"))
+        # Text checks stored before 'totals' existed have no labelled gross: the gross check then holds.
+        self.amounts, self.numbers, self.discounts, self.totals = ({Decimal(a) for a in data.get(key) or ()}
+                                                                   for key in ("amounts", "numbers", "discounts", "totals"))
         self.line_count = data.get("line_count")
 
     @classmethod
@@ -491,13 +499,13 @@ class TextChecks:
             if set(data) != {"has_text"}:
                 raise ValueError("text checks: unexpected keys")
             return {"has_text": False}
-        if set(data) != {"has_text", "norm", "amounts", "numbers", "discounts", "line_count"}:
+        if set(data) != {"has_text", "norm", "amounts", "numbers", "discounts", "totals", "line_count"}:
             raise ValueError("text checks: unexpected keys")
         count = data["line_count"]
         if not isinstance(data["norm"], str) or not (count is None or (type(count) is int and 0 < count <= 1000)):
             raise ValueError("text checks: unexpected types")
         out = {"has_text": True, "norm": data["norm"], "line_count": count}
-        for key in ("amounts", "numbers", "discounts"):
+        for key in ("amounts", "numbers", "discounts", "totals"):
             values = data[key]
             if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
                 raise ValueError("text checks: unexpected types")
@@ -593,20 +601,18 @@ def arithmetic(view, sources):
         out.append({"check": "net_plus_tax_gross", "status": SKIPPED, "detail": "Header net or tax is empty"})
     else:
         gross = _q(net + tax, places)
-        found = printed(sources.text, f"{gross:f}")
-        if found is False and tolerance:
-            # A printed amount at the currency's decimals within the tolerance; the net and tax themselves never
-            # stand in for the gross.
-            found = any(abs(a - gross) <= tolerance for a in sources.text.amounts
-                        if a not in (net, tax) and a.as_tuple().exponent == -places)
+        # Only an amount on a line labelled as the total is the printed gross, never any amount on the page; within
+        # the tolerance, the net and the tax themselves never stand in for it.
+        found = None if not sources.text.has_text else any(
+            a == gross or (abs(a - gross) <= tolerance and a not in (net, tax)) for a in sources.text.totals)
         if found is None:
             status, detail = SKIPPED, (UNAVAILABLE_DETAIL if sources.text.unavailable else
                                        "No text layer to find the printed gross")
         elif found:
-            status, detail = PASS, "Net + tax is printed on the invoice as the gross, within the tolerance"
+            status, detail = PASS, "Net + tax is the labelled printed gross, within the tolerance"
         else:
             # No gross column in the target sheet: an unprinted gross is a warning, not a failure.
-            status, detail = WARNING, "Net + tax is not printed on the invoice"
+            status, detail = WARNING, "Net + tax is not the labelled printed gross (no labelled total holds it)"
         out.append({"check": "net_plus_tax_gross", "status": status, "decimals": places, "detail": detail,
                     **({"unavailable": True} if sources.text.unavailable else {})})
 
@@ -627,9 +633,10 @@ def arithmetic(view, sources):
             allowed = {_q(net * rate / 100, places)}
             if lines and all(q is not None and c is not None for q, c in pairs):
                 allowed.add(sum((_q(_q(q * c, places) * rate / 100, places) for q, c in pairs), Decimal(0)))
-            ok = min(abs(_q(tax, places) - a) for a in allowed) <= tolerance
+            # Exact plus rounding (one minor unit per line): the before-tax tolerance does not apply to the tax.
+            ok = min(abs(_q(tax, places) - a) for a in allowed) <= Decimal(1).scaleb(-places) * len(lines)
             out.append({"check": "tax_breakdown_to_header", "status": PASS if ok else FAIL, "decimals": places,
-                        "detail": "Tax basis x code rate (total or per line) equals the Header tax within the tolerance" if ok else
+                        "detail": "Tax basis x code rate (total or per line) equals the Header tax" if ok else
                         "Tax basis x code rate differs from the Header tax"})
 
     # 02A: the rules hold a line whose quantity x unit cost is not its printed amount (or lacks one of them).

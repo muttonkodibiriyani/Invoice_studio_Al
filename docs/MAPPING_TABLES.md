@@ -72,3 +72,16 @@ All five endpoints under `/api/mapping-tables` use the existing ADMIN authorizat
 registry, request protection and rate limiting. Members receive HTTP 403.
 Release integration must synchronize `app/static` into the Hosting copies as usual;
 this feature branch changes only source UI assets.
+
+## Arithmetic tolerances (owner decision, 2026-11-05)
+
+Two more keys of the fine-rules configuration (`POST /api/fine-rules/config`), not part of the workbook:
+
+- `arithmetic_tolerance`: the allowed difference for the invoice total before tax (sum of the lines vs the net, and
+  net + tax vs the labelled printed gross), per currency. Absent, it is `{"AED": "10.00", "SAR": "10.00",
+  "KWD": "1.000"}`. A table you save replaces the whole default: currencies you leave out are checked exactly, and
+  the Checks sheet flags them 'no tolerance set for <currency>'.
+- `line_arithmetic_tolerance`: the allowed difference per invoice line (quantity x unit cost vs the line amount),
+  same shape, empty by default: a line is exact plus one minor unit per unit of quantity.
+
+The tax vs net x VAT rate is always exact plus one minor unit per line. A malformed table is refused on save.

@@ -223,12 +223,33 @@ def test_the_net_and_tax_themselves_never_stand_in_for_the_gross():
     assert status_of(result, "net_plus_tax_gross") == tc.WARNING
 
 
-def test_the_tax_may_miss_net_times_rate_by_the_currency_tolerance_only():
-    for currency, diff, ok in BOUNDARY:
+def test_the_tax_is_exact_plus_rounding_not_the_before_tax_tolerance():
+    # The owner's tolerance is for the total before tax; the tax may miss net x rate by one minor unit per line.
+    for currency, tax, ok in (("AED", "50.01", True), ("AED", "50.02", False), ("AED", "55.00", False),
+                              ("KWD", "50.001", True), ("KWD", "50.002", False)):
         places = 3 if currency == "KWD" else 2
-        tax = f"{50 + float(diff):.{places}f}"
-        result = check(priced(currency, f"{1000:.{places}f}", tax, f"{100:.{places}f}"))
-        assert (status_of(result, "tax_breakdown_to_header") == tc.PASS) is ok, (currency, diff)
+        result = check(priced(currency, f"{1000:.{places}f}", tax, f"{100:.{places}f}"), f"Tax {tax}")
+        assert (status_of(result, "tax_breakdown_to_header") == tc.PASS) is ok, (currency, tax)
+        if not ok:
+            assert cell(result, "Header", "Tax Amount")["status"] == tc.CHECK_FAILED, (currency, tax)
+
+
+def test_a_header_net_off_by_five_aed_passes():
+    result = check(priced("AED", "1005.00", "50.25"), "Net 1005.00", "VAT 50.25", "Total 1055.25")
+    assert status_of(result, "lines_to_net") == tc.PASS and status_of(result, "net_plus_tax_gross") == tc.PASS
+    assert cell(result, "Header", "Total Cost Ex Tax")["status"] == tc.VERIFIED
+
+
+def test_without_a_labelled_gross_a_line_amount_near_net_plus_tax_does_not_verify():
+    # No line is labelled as the total; a line amount happens to be within AED 10 of net + tax.
+    v = priced("AED", "1000.00", "50.00")
+    result = check(v, "Widget 10 x 100.00 1000.00", "Fees 1 x 1052.00 1052.00", "Net 1000.00", "VAT 50.00")
+    assert status_of(result, "net_plus_tax_gross") == tc.WARNING
+    assert cell(result, "Header", "Total Cost Ex Tax")["status"] == tc.CHECK_FAILED
+    labelled = check(v, "Widget 10 x 100.00 1000.00", "Net 1000.00", "VAT 50.00", "Grand Total 1052.00")
+    assert status_of(labelled, "net_plus_tax_gross") == tc.PASS
+    for not_gross in ("Sub Total 1052.00", "Total excl. VAT 1052.00", "Total lines: 1052"):
+        assert status_of(check(v, not_gross), "net_plus_tax_gross") == tc.WARNING, not_gross
 
 
 def test_a_currency_without_a_tolerance_is_exact_and_flagged():
@@ -246,35 +267,45 @@ def test_the_owner_config_replaces_the_tolerance_table():
     assert status_of(result, "lines_to_net") != tc.PASS and flag_of(result)["detail"] == "no tolerance set for AED"
 
 
-def line_exceptions(currency, net_amount, config=None):
+def line_exceptions(currency, net_amount, config=None, qty="1", price=None):
     from app.fine_rules import RowsSource, RulesConfig, run_invoice
     from app.models import Invoice, Line
     source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
                           "SUPPLIER SITE NAME": "Synthetic Co", "ITEM_DESC": "Rose red"}])
     invoice = Invoice(supplier_name="Synthetic Co", currency=currency, lines=[
-        Line(sku="VPN-1", description="Rose red", qty="1", price="100.000" if currency == "KWD" else "100.00",
-             net_amount=net_amount)])
+        Line(sku="VPN-1", description="Rose red", qty=qty,
+             price=price or ("100.000" if currency == "KWD" else "100.00"), net_amount=net_amount)])
     result = run_invoice(invoice, source, config or RulesConfig(), text_value="INVOICE\nRose red")
     return [e for e in result["exceptions"] if e["Rule ID"] == "02A-Unit Cost"], result
 
 
-def test_a_line_amount_may_miss_quantity_times_cost_by_the_currency_tolerance_only():
-    # Until the owner says otherwise, the per-line check uses the same per-currency value as the Header.
-    for currency, diff, ok in BOUNDARY:
-        places = 3 if currency == "KWD" else 2
-        held, result = line_exceptions(currency, f"{100 + float(diff):.{places}f}")
-        assert (not held) is ok, (currency, diff)
-        assert result["arithmetic_currency"] == currency
+def test_a_line_is_exact_plus_rounding_not_the_before_tax_tolerance():
+    # Owner answer: the tolerance is for the total before tax; per line one minor unit per unit of quantity.
+    for currency, qty, price, amount, held in (("AED", "3", "5.00", "10.00", True),    # qty 2 read as 3: off by 5
+                                               ("AED", "1", "100.00", "105.00", True),  # a line off by AED 5
+                                               ("AED", "3", "3.33", "10.00", False),    # 9.99: a rounded unit cost
+                                               ("AED", "3", "3.33", "10.03", True),
+                                               ("KWD", "2", "1.000", "2.002", False), ("KWD", "2", "1.000", "2.003", True)):
+        assert bool(line_exceptions(currency, amount, qty=qty, price=price)[0]) is held, (currency, qty, price, amount)
 
 
-def test_the_line_tolerance_table_comes_from_the_owner_config():
+def test_the_line_tolerance_is_its_own_owner_config_key():
     from app.fine_rules import RulesConfig
-    config = RulesConfig.from_dict({"arithmetic_tolerance": {"USD": "0.05"}})
-    assert not line_exceptions("USD", "100.05", config)[0]
-    assert line_exceptions("AED", "100.01", config)[0], "a currency left out of the owner's table is exact"
-    for bad in ({"AED": "-1"}, {"aed": "1"}, ["AED"]):
-        try:
-            RulesConfig.from_dict({"arithmetic_tolerance": bad})
-        except ValueError:
-            continue
-        raise AssertionError(bad)
+    config = RulesConfig.from_dict({"line_arithmetic_tolerance": {"AED": "5.00"}})
+    assert not line_exceptions("AED", "105.00", config)[0]
+    assert line_exceptions("AED", "105.01", config)[0]
+    assert line_exceptions("SAR", "100.02", config)[0], "a currency left out stays exact plus rounding"
+    for key in ("arithmetic_tolerance", "line_arithmetic_tolerance"):
+        for bad in ({"AED": "-1"}, {"aed": "1"}, ["AED"]):
+            try:
+                RulesConfig.from_dict({key: bad})
+            except ValueError:
+                continue
+            raise AssertionError((key, bad))
+
+
+def test_an_owner_table_with_only_aed_makes_sar_exact_and_flagged():
+    config = {**CONFIG, "arithmetic_tolerance": {"AED": "10.00"}}
+    result = tc.check_view(priced("SAR", "1000.01", "0"), tc.Sources(config=config, text=text("Net 1000.01")))
+    assert status_of(result, "lines_to_net") != tc.PASS
+    assert flag_of(result)["detail"] == "no tolerance set for SAR"

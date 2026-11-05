@@ -1085,6 +1085,8 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     offered = name_sites if len(name_sites) > 1 and not families else set()
     if offered or owner_site:
         sites = offer_sites(run, source, offered, by_name, sites, owner_site)
+    re4 = None if run.owner_pick else re4_site(source, offered, by_name)
+    sites = {re4} if re4 else sites
     rows = [r for m in matches for r in source.items_by_parent(m["parent"] or "")] + by_name
     version = run.config.version
     if len(sites) == 1:
@@ -1093,8 +1095,9 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
         name = next(iter(names)) if len(names) == 1 else None
         bridged = site in family_sites
         picked = run.owner_pick if bridged or site == run.owner_pick else None
-        run.trace("Supplier Site", site, OWNER_PICK if picked else "SUP-003",
+        run.trace("Supplier Site", site, OWNER_PICK if picked else "D1" if re4 else "SUP-003",
                   "Item Master SUPPLIER" + (" via SUPPLIER SITES" if bridged else "") +
+                  (f", the RE4 site of the {len(name_sites)} sites of the printed supplier name" if re4 else "") +
                   (f" of the owner-picked Supplier CODE {run.owner_pick}" if picked and bridged else
                    f" picked by the owner among the {len(name_sites)} sites of the printed supplier name" if picked
                    else ""),
@@ -1130,19 +1133,16 @@ def resolve_supplier(run, source, matches, candidates, deliver_to=None, owner_co
     return None, None, None
 
 
-def one_supplier_site(probe, source, candidates, deliver_to):
-    """v0.3 step 1 (A2): when the printed name is on several sites of one EBS supplier (one six-character code,
-    entity suffixes differ), the items are searched in all of them; the one site holding every matched item is the
-    site. Otherwise None, and the reviewer picks among the listed sites (S1.2)."""
-    offered = [c for c in probe.site_candidates if "supplier_site" in c]
-    names = [c["sites"][0]["site_name"] for c in offered]
-    if len(offered) < 2 or len({ebs_key(n) for n in names}) != 1 or not all(entity_hint(n)["entity"] for n in names):
+def re4_site(source, offered, rows):
+    """D1 (Tharak, 5 Nov; replaces A2's 'one site holding every item'): when the printed name is on several sites of
+    one EBS supplier (one six-character code, entity suffixes differ), the RE4 site is the site. Otherwise None, and
+    the reviewer picks among the listed sites (S1.2)."""
+    names = {site: _site_names(source, site, rows)[0] for site in offered}
+    if len(offered) < 2 or not all(len(n) == 1 for n in names.values()):
         return None
-    trial = Run(probe.invoice, probe.config, probe.filename)
-    sites = {c["supplier_site"] for c in offered}
-    matches = [match_line(trial, n, line, source, sites) for n, line in enumerate(probe.invoice.lines, 1)]
-    site = resolve_supplier(trial, source, matches, candidates, deliver_to)[0]
-    return {site} if site else None
+    names = {site: next(iter(n)) for site, n in names.items()}
+    re4 = [site for site, name in names.items() if entity_hint(name)["entity"] == "RE4"]
+    return re4[0] if len({ebs_key(n) for n in names.values()}) == 1 and len(re4) == 1 else None
 
 
 def choose_site(run, family, group):
@@ -1841,7 +1841,6 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     probe_site, _, probe_family = resolve_supplier(probe, source, [], candidates, deliver_to,
                                                   owner_supplier_code, owner_supplier_site)
     sites = {probe_site} if probe_site else (set(probe_family) if probe_family else None)
-    sites = sites or one_supplier_site(probe, source, candidates, deliver_to)
     matches = [match_line(run, n, line, source, sites) for n, line in enumerate(invoice.lines, 1)]
     supplier_site, master_name, family = resolve_supplier(run, source, matches, candidates, deliver_to,
                                                           owner_supplier_code, owner_supplier_site)

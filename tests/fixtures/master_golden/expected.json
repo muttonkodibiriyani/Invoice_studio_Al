@@ -646,8 +646,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1071,8 +1071,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1314,8 +1314,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1466,8 +1466,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1787,8 +1787,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1887,8 +1887,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",
@@ -1987,8 +1987,8 @@
    "header": {
     "Supplier Site": {
      "value": "hmac:4af2b004e51b1e9a6ff91a1c0a7a25d111ef9e16b32a8ddd1e7e3f1873e5da4d",
-     "confirm": true,
-     "rule": "S1.1/S1.2"
+     "confirm": false,
+     "rule": "D1 RE4 site"
     },
     "Order No": {
      "value": "",

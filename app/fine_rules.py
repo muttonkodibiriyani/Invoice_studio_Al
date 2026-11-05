@@ -667,6 +667,26 @@ def ocr_vpn(source, vpns, sites):
     return hits[0] if len(hits) == 1 and len(parents) == 1 else None
 
 
+CONTAINED_VPN_MIN = 5  # D9: the shortest invoice VPN searched inside master VPNs; it must also hold a digit
+
+
+def contained_vpn(source, vpns, sites):
+    """D9 (Tharak, 5 Nov): with no exact VPN, the master VPNs in the supplier sites that contain an invoice VPN (the
+    master adds a three-letter brand prefix and sometimes an 'S1' suffix). Returns (candidate, rows) only when they
+    are all one ITEM_PARENT; otherwise None."""
+    hits = []
+    for candidate in vpns:
+        value = candidate["value"].upper()
+        if len(value) < CONTAINED_VPN_MIN or not any(c.isdigit() for c in value):
+            continue
+        rows = [r for site in sorted(sites) for r in source.items_by_site(site)
+                if text(r.get("SUPPLIER")) == site and value in text(r.get("VPN")).upper()]
+        if rows:
+            hits.append((candidate, rows))
+    parents = {p for _, rows in hits for p in _unique_parents(rows)}
+    return hits[0] if len(parents) == 1 else None
+
+
 # Supplier variant code: a two-letter prefix and/or suffix around a 12-digit UPC (AA-<upc>, <upc>-AA, AA-<upc>-99/999).
 _VARIANT_CODE = re.compile(r"(?:[A-Z]{2}-(\d{12})(?:-\d{2,3})?|(\d{12})-[A-Z]{2})")
 
@@ -722,7 +742,9 @@ def variant_parents(line, rows, eligible):
 
 
 def match_line(run, n, line, source, sites=None):
-    """R-003/R-005/R-015, ALG-015..ALG-021, ALG-027, ALG-029: one invoice line to one ITEM_PARENT."""
+    """R-003/R-005/R-015, ALG-015..ALG-021, ALG-027, ALG-029: one invoice line to one ITEM_PARENT. Tharak's lookup
+    order (5 Nov): VPN (the VPN column, else a description start or end code, D7; exact, then contained, D9), then
+    barcode, then a description match (candidates only). The Order No follows from the found items (D3)."""
     barcodes = barcode_candidates(line)
     vpns = vpn_candidates(line)
     result = {"line": n, "method": None, "rows": [], "barcode": None, "vpn": None, "parent": None,
@@ -770,6 +792,15 @@ def match_line(run, n, line, source, sites=None):
             printed_vpn, variant, rows = ocr
             vpns = [{**printed_vpn, "value": variant, "printed": printed_vpn["value"]}]
             vpn_hits = {variant: (vpns[0], rows)}
+    contained = None
+    if not vpn_hits and not ocr:
+        # D9: still the VPN step, so it comes before the barcode and a disagreeing exact barcode holds the line.
+        contained = contained_vpn(source, vpns, sites)
+        if contained:
+            printed_vpn, rows = contained
+            vpns = [{**printed_vpn, "value": v, "printed": printed_vpn["value"]}
+                    for v in sorted({text(r.get("VPN")) for r in rows})]
+            vpn_hits = {c["value"]: (c, [r for r in rows if text(r.get("VPN")) == c["value"]]) for c in vpns}
     supplier_code = None
     core, printed = variant_code(line)
     if not barcode_hits and not vpn_hits and not ocr and core:
@@ -898,6 +929,8 @@ def match_line(run, n, line, source, sites=None):
         run.exception("Item Review", f"Printed VPN {ocr[0]['value']} read by OCR matches Item Master VPN {ocr[1]} "
                       "(I/1, O/0 only); check the correction", "ALG-018-OCR", n,
                       evidence=f"printed {ocr[0]['value']} read as {ocr[1]}", owner="Item steward")
+    if contained:
+        result["method"], rule = "VPN contained", "D9"
     if supplier_code:
         result["method"] = "Barcode supplier variant"
         run.exception("Item Review", f"Printed supplier code {supplier_code['printed']} carries Item Master barcode "
@@ -908,7 +941,7 @@ def match_line(run, n, line, source, sites=None):
                       evidence=f"printed {unchecked} fails the GTIN check digit", owner="Item steward")
     result["status"] = "Matched"
     run.trace("Item", parent, "ALG-021", "Item Master ITEM_PARENT", reference=_refs(rows), line=n,
-              original=ocr[0]["value"] if ocr else supplier_code["printed"] if supplier_code else result["barcode"] or result["vpn"])
+              original=ocr[0]["value"] if ocr else contained[0]["value"] if contained else supplier_code["printed"] if supplier_code else result["barcode"] or result["vpn"])
     result["rule"] = rule
     return result
 

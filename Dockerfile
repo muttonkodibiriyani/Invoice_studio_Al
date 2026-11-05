@@ -20,7 +20,11 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1
     HOME=/home/studio XDG_CACHE_HOME=/home/studio/.cache HF_HOME=/home/studio/.cache/huggingface \
     HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 INV_STUDIO_DATA=/tmp/inv-studio-data PORT=8080
 
-RUN apt-get update \
+# apt/libapt-pkg6.0 2.6.1 in the base has CVE-2026-109518 (fixed in bookworm-security 2.6.2, DLA-4880-1);
+# upstream had not rebuilt the tag on 2026-11-05. The CVE needs Acquire::Retries > 0, so the old apt upgrades
+# itself with retries off. Drop the upgrade once the pinned base ships apt >= 2.6.2.
+RUN apt-get -o Acquire::Retries=0 update \
+    && apt-get -o Acquire::Retries=0 install -y --no-install-recommends --only-upgrade apt libapt-pkg6.0 \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         fonts-dejavu-core \

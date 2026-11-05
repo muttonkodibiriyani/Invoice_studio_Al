@@ -1,0 +1,17 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {"Version": "0.76.1"},
+  "ArtifactName": "python:3.12.16-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": {"Family": "debian", "Name": "12.12"},
+    "RepoDigests": ["python@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337"]
+  },
+  "Results": [
+    {
+      "Target": "python:3.12.16-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 (debian 12.12)",
+      "Class": "os-pkgs",
+      "Type": "debian"
+    }
+  ]
+}

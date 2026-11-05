@@ -353,7 +353,7 @@ const TARGET_GROUPS = [
 const TARGET_STATUS_LABELS = {
   verified: "Verified", empty_owner_rule: "Empty by owner rule", empty_flagged: "Empty (flagged)", mismatch: "Mismatch",
   over_cited: "Over-cited", no_evidence: "No evidence", unverifiable: "Unverifiable", data_gap: "Data gap",
-  owner_entry_unattributed: "Owner entry not attributed",
+  owner_entry_unattributed: "Owner entry not attributed", check_failed: "Row check failed",
 };
 
 function targetCellName(cell) {

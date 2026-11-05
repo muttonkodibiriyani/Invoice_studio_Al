@@ -97,15 +97,24 @@ ROUTES = {
     ("GET", "/api/exports/{eid}/evidence"): dict(area="exports", title="Evidence of an export",
         text="The evidence record behind an export: sources, hashes, approvals."),
     ("POST", "/api/exports/batch"): dict(area="exports", title="Export a batch",
-        text="One workbook for several approved invoices; each item names the invoice and its revision.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
+        text="One workbook for several ready invoices; each item names the invoice and its revision. All or nothing: a "
+             "held, changed or already exported invoice refuses the batch with 409. The workbook holds only the Header, "
+             "Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet since 5 Nov, decision A).",
+        body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
+    ("POST", "/api/exports/batch/check"): dict(area="exports", title="Check a batch before export",
+        text="Read-only. Splits the selected invoices into ready (in transaction order) and held, each held one with "
+             "its reasons as code and message (Exported is the lock on an invoice already exported). Send the ready "
+             "ones to /api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("GET", "/api/batches/{bid}"): dict(area="exports", title="Download a batch export", text="The batch workbook."),
     ("POST", "/api/exports/extraction-batch"): dict(area="exports", title="Unvalidated batch workbook",
         text="What was read for several invoices, before validation.",
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}], "acknowledge_unvalidated": True}),
     ("POST", "/api/exports/target-draft"): dict(area="exports", title="Target draft for unapproved invoices",
-        text="The target workbook for selected invoices nobody approved yet.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
+        text="The draft of everything: the target workbook for all selected invoices, held ones included, with the "
+             "Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export.",
+        body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("POST", "/api/background/{kind}"): dict(area="exports", title="Start a long download",
-        text="kind is target-draft, extraction-batch, export-batch, fine-rules-target or fine-rules-review; the "
+        text="kind is target-draft, extraction-batch, export-check, export-batch, fine-rules-target or fine-rules-review; the "
              "body is that download's body. Returns a task id to poll.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("GET", "/api/background/tasks/{tid}"): dict(area="exports", title="Poll a long download",
         text="Running, or the finished file. Only the account that started it can read it."),

@@ -2252,7 +2252,45 @@
                     "batch"
                   ]
                 },
-                "description": "**Member.** One workbook for several approved invoices; each item names the invoice and its revision.",
+                "description": "**Member.** One workbook for several ready invoices; each item names the invoice and its revision. All or nothing: a held, changed or already exported invoice refuses the batch with 409. The workbook holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet since 5 Nov, decision A).",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Check a batch before export",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/exports/batch/check",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "exports",
+                    "batch",
+                    "check"
+                  ]
+                },
+                "description": "**Member.** Read-only. Splits the selected invoices into ready (in transaction order) and held, each held one with its reasons as code and message (Exported is the lock on an invoice already exported). Send the ready ones to /api/exports/batch.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",
@@ -2345,7 +2383,7 @@
                     "target-draft"
                   ]
                 },
-                "description": "**Member.** The target workbook for selected invoices nobody approved yet.",
+                "description": "**Member.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every tab (DRAFT Header ...); never an export.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",
@@ -2382,7 +2420,7 @@
                     "export-batch"
                   ]
                 },
-                "description": "**Member.** kind is target-draft, extraction-batch, export-batch, fine-rules-target or fine-rules-review; the body is that download's body. Returns a task id to poll.",
+                "description": "**Member.** kind is target-draft, extraction-batch, export-check, export-batch, fine-rules-target or fine-rules-review; the body is that download's body. Returns a task id to poll.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",

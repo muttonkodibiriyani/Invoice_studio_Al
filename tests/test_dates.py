@@ -1,5 +1,8 @@
-"""Invoice date as printed and as ISO: column headings, and null whenever day and month could swap."""
-from app.layout_extract import extract_invoice
+"""Invoice date as printed and as ISO: column headings, and null whenever a slashed day and month could swap."""
+import pytest
+
+from app.fine_rules import parse_printed_date
+from app.layout_extract import _parse_date, extract_invoice
 
 
 def _row(y, *cells):
@@ -54,3 +57,27 @@ def test_compact_header_keeps_number_and_po_when_its_date_is_ambiguous():
     assert (invoice["number"], invoice["po"]) == ("T-200", "4501")
     assert invoice["date_printed"] == "03/04/2026"
     assert invoice["date"] is None
+
+
+@pytest.mark.parametrize("printed,expected", [
+    ("04.11.2026", "2026-11-04"),     # UAE/KSA dotted dates are day first
+    ("04-11-2026", "2026-11-04"),
+    ("4.3.2026", "2026-03-04"),
+    ("04 . 11 . 2026", "2026-11-04"),
+    ("25.10.2026", "2026-10-25"),
+    ("31.02.2026", None),
+    ("03/04/2026", None),             # slashes stay ambiguous: US suppliers print 03/04 as March
+])
+def test_dotted_and_dashed_numeric_dates_are_day_first(printed, expected):
+    assert _parse_date(printed) == expected
+
+
+def test_labelled_dotted_date_is_the_invoice_date():
+    invoice = extract_invoice("TAX INVOICE\nInvoice No: T-100\nInvoice Date: 04.11.2026\n", None)
+    assert (invoice["date_printed"], invoice["date"]) == ("04.11.2026", "2026-11-04")
+
+
+@pytest.mark.parametrize("printed,ambiguous", [
+    ("04.11.2026", False), ("04-11-2026", False), ("04/11/2026", True), ("11/11/2026", False)])
+def test_only_slashed_dates_are_ambiguous_day_month(printed, ambiguous):
+    assert parse_printed_date(printed, None)["ambiguous"] is ambiguous

@@ -1238,12 +1238,14 @@ def _parse_date(value: str) -> str | None:
             return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3))).isoformat()
         except ValueError:
             return None
-    numeric = re.fullmatch(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", cleaned)
+    numeric = re.fullmatch(r"(\d{1,2})([-/.])(\d{1,2})\2(\d{4})", cleaned)
     if numeric:
-        day, month, year = map(int, numeric.groups())
-        if day <= 12 < month:
+        day, separator, month, year = numeric.groups()
+        day, month, year = int(day), int(month), int(year)
+        # Dots and hyphens are the day-first (UAE/KSA) forms; only a slash may be a US month-first date.
+        if separator == "/" and day <= 12 < month:
             day, month = month, day
-        elif day <= 12 and day != month:
+        elif separator == "/" and day <= 12 and day != month:
             return None
         try:
             return date(year, month, day).isoformat()

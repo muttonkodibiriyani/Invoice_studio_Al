@@ -1,6 +1,5 @@
-"""Location Type is written Store (S) / Warehouse (W), normalised from the item master (rule L4.2).
-
-The variants are the shipped rules workbook's Location_Type_Variants sheet. The workbook writes
+"""Location Type is written Store (S) / Warehouse (W) (rule L4.2): from the item master location name by D6, from an
+owner-configured type through the shipped rules workbook's Location_Type_Variants sheet. The workbook writes
 'Store(S)'; the output keeps the target template's 'Store (S)' (coordinator decision, 4 Nov).
 Location is the matched row's LOCATION NUMBER (rule L4.1); blank means the user adds it (P-LOC)."""
 import io
@@ -50,27 +49,33 @@ def test_written_form_accepts_only_the_two_types_with_or_without_a_space(value, 
 
 def test_resolve_takes_location_and_type_from_the_matched_row():
     row = {"LOCATION NUMBER": "1200", "LOCATION NAME": "Warehouse", "LOCATION NAME 2": ""}
-    assert lt.resolve(row, VARIANTS) == lt.Location("1200", W, ())
+    assert lt.resolve(row) == lt.Location("1200", W, ())
 
 
-def test_resolve_writes_store_when_the_type_is_blank():
-    assert lt.resolve({"LOCATION NUMBER": 1200}, VARIANTS) == lt.Location("1200", S, ())
+def test_resolve_writes_store_when_the_name_is_blank():
+    assert lt.resolve({"LOCATION NUMBER": 1200}) == lt.Location("1200", S, ())
 
 
-def test_resolve_falls_back_to_location_name_2():
-    row = {"LOCATION NUMBER": "1200", "LOCATION NAME": "", "LOCATION NAME 2": "W"}
-    assert lt.resolve(row, VARIANTS).type == W
+@pytest.mark.parametrize("name, written", [
+    ("Warehouse", W), ("WAREHOUSE", W), ("North Warehouse", W), ("Central warehouse 2", W), ("Warehouse (W)", W),
+    # Literal D6: only the word 'warehouse' counts; these spellings are open questions for Tharak.
+    ("Warehouse Road Store", W), ("North W/H", S), ("W", S), ("WH", S),
+    ("Synthetic City Mall", S), ("Store (S)", S), ("Depot", S),
+])
+def test_a_name_containing_warehouse_is_a_warehouse_else_a_store(name, written):
+    """D6 (Tharak, 5 Nov): 'warehouse' anywhere in the location name, in any case, is Warehouse (W); else Store (S)."""
+    assert lt.resolve({"LOCATION NUMBER": "1200", "LOCATION NAME": name}) == lt.Location("1200", written, ())
+
+
+def test_resolve_reads_location_name_2_too():
+    row = {"LOCATION NUMBER": "1200", "LOCATION NAME": "Shop SC", "LOCATION NAME 2": "Synthetic City warehouse"}
+    assert lt.resolve(row).type == W
 
 
 @pytest.mark.parametrize("number", [None, "", "  "])
 def test_blank_location_number_asks_the_user_to_add_it(number):
-    result = lt.resolve({"LOCATION NUMBER": number, "LOCATION NAME": "Store"}, VARIANTS)
+    result = lt.resolve({"LOCATION NUMBER": number, "LOCATION NAME": "Store"})
     assert result == lt.Location(None, S, (lt.ASK_LOCATION,))
-
-
-def test_unknown_type_is_held_for_the_user_to_pick():
-    result = lt.resolve({"LOCATION NUMBER": "1200", "LOCATION NAME": "Depot"}, VARIANTS)
-    assert result == lt.Location("1200", None, (lt.ASK_LOCATION_TYPE,))
 
 
 def test_export_writes_the_template_text_for_a_no_space_value():

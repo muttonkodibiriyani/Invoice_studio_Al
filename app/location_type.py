@@ -1,10 +1,11 @@
 """Header Location and Location Type from the matched item master row (rules L4.1 and L4.2).
 
 Location Type is written 'Store (S)' or 'Warehouse (W)', the target template's text (fine_rules.STORE);
-the workbook's 'Store(S)' / 'Warehouse(W)' are the same values. The item master's spellings are rows
-in the rules workbook's Location_Type_Variants sheet, compared in any case and with or without spaces;
-a value that is not a row is held for the user to pick (P-LOCTYPE). Location is the row's LOCATION
-NUMBER; when it is blank the user adds it (P-LOC)."""
+the workbook's 'Store(S)' / 'Warehouse(W)' are the same values. From the item master location name it follows D6
+(Tharak, 5 Nov): a name containing 'warehouse', in any case, is a warehouse, any other name (or none) a store. An
+owner-configured type is read through the rules workbook's Location_Type_Variants sheet, compared in any case and
+with or without spaces; a value that is not a row is held for the user to pick (P-LOCTYPE). Location is the row's
+LOCATION NUMBER; when it is blank the user adds it (P-LOC)."""
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -41,13 +42,17 @@ class Location:
     prompts: tuple[str, ...]
 
 
-def resolve(row: Mapping, variants: Mapping[str, str]) -> Location:
-    """Location and Location Type from the matched item master row, with the prompts the user must answer."""
+def name_type(name) -> str:
+    """D6: Warehouse (W) when the location name contains 'warehouse' in any case, else Store (S)."""
+    return WAREHOUSE if "warehouse" in str(name or "").casefold() else STORE
+
+
+def resolve(row: Mapping) -> Location:
+    """Location and Location Type (D6) from the matched item master row, with the prompts the user must answer."""
     number = str(row.get("LOCATION NUMBER") or "").strip() or None
-    names = [row.get(c) for c in ("LOCATION NAME", "LOCATION NAME 2") if _key(row.get(c))]
-    kind = next(filter(None, (normalise(n, variants) for n in names or [None])), None)
-    prompts = (ASK_LOCATION,) * (number is None) + (ASK_LOCATION_TYPE,) * (kind is None)
-    return Location(number, kind, prompts)
+    names = [row.get(c) for c in ("LOCATION NAME", "LOCATION NAME 2")]
+    kind = WAREHOUSE if WAREHOUSE in map(name_type, names) else STORE
+    return Location(number, kind, (ASK_LOCATION,) * (number is None))
 
 
 def prompts(ids, rule_prompts: Mapping, value=None) -> list[dict]:

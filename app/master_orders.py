@@ -45,22 +45,16 @@ def destination(invoice, scan, directory, config):
     if len(by_id) != 1:
         return None
     number, rows = next(iter(by_id.items()))
-    # L4.1 / L4.2: the row's location name, read through the rules workbook's Location_Type_Variants.
-    variants = item_rules.rules().location_type_variants()
-    found = {location.resolve(row["data"], variants) for row in rows}
+    # L4.1 / L4.2: the row's location name, typed by D6.
+    found = {location.resolve(row["data"]) for row in rows}
     kinds = {f.type for f in found}
     configured = location_type(number, config)
     if any(location.ASK_LOCATION in f.prompts for f in found) or configured["conflict"] or len(kinds) != 1:
         return None
     kind = kinds.pop()
-    if configured["type"] and kind not in (None, configured["type"]):
+    if configured["type"] and kind != configured["type"]:
         return None
-    # A name the variants do not list is held for the user (P-LOCTYPE) unless the owner configured the type.
-    kind_source = "Rules workbook Location_Type_Variants (L4.2)" if kind else configured["source"]
-    kind = kind or configured["type"]
-    if not kind:
-        return None
-    return {"number": number, "rows": rows, "kind": kind, "kind_source": kind_source,
+    return {"number": number, "rows": rows, "kind": kind, "kind_source": "Master location name (L4.2, D6)",
             "refs": ", ".join(f"{r['source_hash']}:location:{r['source_sheet']}!{r['source_row']}" for r in rows)}
 
 

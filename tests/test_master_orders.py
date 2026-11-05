@@ -89,15 +89,12 @@ def place(**data):
 
 
 @pytest.mark.parametrize("data,kind", [({"LOCATION NAME": "STORE"}, STORE), ({"LOCATION NAME": "store(s)"}, STORE),
-                                       ({}, STORE), ({"LOCATION NAME": "", "LOCATION NAME 2": "W"}, WAREHOUSE),
-                                       ({"LOCATION NAME": "Warehouse (W)"}, WAREHOUSE)])
-def test_location_type_comes_from_the_rules_workbook_variants(data, kind):
+                                       ({}, STORE), ({"LOCATION NAME": "", "LOCATION NAME 2": "North warehouse"}, WAREHOUSE),
+                                       ({"LOCATION NAME": "Warehouse (W)"}, WAREHOUSE),
+                                       ({"LOCATION NAME": "Depot"}, STORE)])
+def test_location_type_comes_from_the_location_name(data, kind):
+    """D6: a name containing 'warehouse' is a warehouse, any other name a store."""
     assert place(**data)["kind"] == kind
-
-
-def test_a_location_type_not_in_the_variants_is_held_unless_the_owner_configured_it():
-    assert place(**{"LOCATION NAME": "Depot"}) is None
-    assert place(**{"LOCATION NAME": "Depot", "configured": WAREHOUSE})["kind"] == WAREHOUSE
 
 
 def test_a_configured_type_that_contradicts_the_row_is_held():

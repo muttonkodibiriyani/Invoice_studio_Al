@@ -509,11 +509,10 @@ def location_type(location, config=None, variants=None):
     master = (config.location_master.get(location) if config else None) or {}
     master_type = text(master.get("type"))
     if location and master_type:
-        found = loc.resolve({"LOCATION NUMBER": location, "LOCATION NAME": master_type},
-                            rules().location_type_variants() if variants is None else variants)
-        conflict = found.type is not None and prefix is not None and prefix != found.type
-        return {"type": found.type, "source": "location master", "prefix_type": prefix, "conflict": conflict,
-                "held": None if found.type else master_type}
+        found = loc.normalise(master_type, rules().location_type_variants() if variants is None else variants)
+        conflict = found is not None and prefix is not None and prefix != found
+        return {"type": found, "source": "location master", "prefix_type": prefix, "conflict": conflict,
+                "held": None if found else master_type}
     return {"type": prefix, "source": "prefix fallback" if prefix else None, "prefix_type": prefix, "conflict": False}
 
 
@@ -1919,11 +1918,10 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         run.exception("Location ID", "Location waits for an accepted POGRN order (never from Item Master)",
                       "ALG-011", owner="Buyer")
     if not location:
-        # L4.2 (A6): a location still unknown has an empty location name, which the rules workbook types as Store.
+        # L4.2 (A6, D4): a location still unknown has an empty location name, which D6 types as Store.
         from . import location_type as loc
-        loc_type = loc.resolve({}, rules().location_type_variants()).type
-        if loc_type:
-            run.trace("Location Type", loc_type, "L4.2", "Rules workbook Location_Type_Variants: empty location name")
+        loc_type = loc.resolve({}).type
+        run.trace("Location Type", loc_type, "L4.2", "D6: empty location name")
     if hint and hint["mapped"] and market and not same_market(hint["mapped"]["market"], market):
         run.exception("Market Mapping", f"Supplier suffix suggests {hint['mapped']['market']} but the receiving "
                       f"location is {market}", "R-027", owner="Business")

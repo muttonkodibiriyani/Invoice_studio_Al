@@ -82,6 +82,11 @@ def resolve(run, source, supplier_site, master_name, parents, invoiced):
     if pick["tied"]:
         run.exception("Ambiguous PO", f"Orders {', '.join(pick['tied'])} each cover {share} with the same invoice "
                       f"quantity; {order} is the lowest, confirm or pick another (P-PO)", "O3.3", owner="Buyer")
+    elif len(groups) > 1:
+        # D3 + D2: the found items carry several orders; the chosen one is confirmed in review.
+        run.exception("Ambiguous PO", f"The found items carry orders {', '.join(sorted(groups, key=lambda o: (len(o), o)))};"
+                      f" {order} holds the most ({pick['decided']}), confirm or pick another (P-PO)", "O3.3",
+                      owner="Buyer")
     if pick["tier"].export_mode == "no":
         run.exception("Missing PO", f"Order {order} covers only {share} ({pick['tier'].name}); add the missing "
                       "items to the item master, then Update item master", "O3.3", owner="Buyer")

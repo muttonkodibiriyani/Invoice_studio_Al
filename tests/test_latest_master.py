@@ -420,3 +420,22 @@ def test_order_no_is_filled_below_the_coverage_tier_and_the_invoice_stays_in_rev
     assert result["header"]["Order No"] == "450001"
     assert result["status"] != "Approved"
     assert any(e["Rule ID"] == "O3.3" and "1 of 2" in e["Description"] for e in result["exceptions"])
+
+
+def test_found_items_on_several_orders_take_the_d2_order_and_stay_in_review(client, owner, app):
+    """D3 + D2: the order holding the most found items is the Order No; another order on the found items keeps the
+    invoice in review with both orders listed."""
+    def edit(sheet):
+        sheet.append([13, "00012345678929", 100000003, "Rose white", "VPN-3", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-3", 450003, "00012345678929", 100000003, 1])
+        sheet.append([11, "00012345678905", 100000001, "Rose red", "VPN-1", "Rose", "ABC001RA4AED", "Synthetic Co",
+                      101, 1200, "Synthetic shop", "Shop", "MAN-3", 450003, "00012345678905", 100000001, 1])
+    activate(client, owner, master_bytes(edit))
+    inv = invoice()
+    inv.lines.append(Line(sku="VPN-3", description="Rose white", qty=1, price=50))
+    result = run(app.state.store, inv)
+    assert [line["Item"] for line in result["lines"]] == ["100000001", "100000003"]
+    assert result["header"]["Order No"] == "450003"
+    assert result["status"] != "Approved"
+    assert any(e["Rule ID"] == "O3.3" and "450001" in e["Description"] and "450003" in e["Description"]
+               for e in result["exceptions"])

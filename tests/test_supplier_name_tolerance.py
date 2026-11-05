@@ -67,3 +67,42 @@ def test_the_catalog_lists_its_supplier_names(client, owner, app):
     names = LookupRulesSource(app.state.store).supplier_names()
     assert {"synthetic co", "other co"} <= set(names)
     assert LookupRulesSource(app.state.store).items_by_supplier_name(next(n for n in names if n == "synthetic co"))
+
+
+def keyword(result):
+    return [t for t in tolerant(result) if "key words" in t["source"]]
+
+
+@pytest.mark.parametrize("printed", ["ALMALUXE", "Almaluxe Trading", "ALMALUXE L.L.C.", "Almaluxx General Trading"])
+def test_r1_the_key_word_finds_the_one_master_that_has_it(printed):
+    result = run(printed, master("Almaluxe General Trading LLC", "Almadar Flowers Co", "Bushbalm Est"))
+    assert result["header"]["Supplier Site"] == "101" and not not_found(result)
+    [trace] = keyword(result)
+    assert (trace["original"], trace["value"], trace["rule"]) == (printed, "Almaluxe General Trading LLC", "SUP-001")
+
+
+@pytest.mark.parametrize("printed", ["ALM", "Alm Trading LLC", "Almadar", "Bushbalm", "Balm Trading", "Almaluxe Flowers",
+                                     "Zafran Trading"])
+def test_r1_a_key_word_is_whole_never_part_of_another(printed):
+    result = run(printed, master("Almaluxe General Trading LLC", "Palm Trading Co", "Kalma Est"))
+    assert result["header"]["Supplier Site"] == "" and not_found(result) and not tolerant(result)
+
+
+def test_r1_two_masters_with_the_key_word_stay_in_review_with_both_listed():
+    result = run("Almaluxe", master("Almaluxe General Trading LLC", "Almaluxe Flowers FZE"))
+    assert result["header"]["Supplier Site"] == "" and not_found(result) and not tolerant(result)
+    [review] = [e for e in result["exceptions"] if e["Rule ID"] == "SUP-001" and "key words" in e["Description"]]
+    assert review["Candidates / Evidence"] == "Almaluxe Flowers FZE; Almaluxe General Trading LLC"
+
+
+@pytest.mark.parametrize("printed, site", [("Synthetik Trading", "101"), ("Abd Trading", "")])
+def test_r1_one_typo_only_on_a_key_word_of_six_or_more(printed, site):
+    result = run(printed, master("Synthetic General Trading LLC", "Abc Flowers Co"))
+    assert result["header"]["Supplier Site"] == site
+    assert bool(keyword(result)) == bool(site)
+
+
+def test_r1_a_name_unlike_the_master_is_not_guessed():
+    # An issuer name that shares no key word with its master needs an owner alias, never a guess.
+    result = run("Northwind Floral Supplies", master("Almaluxe General Trading LLC", "Synthetic Flowers Co"))
+    assert result["header"]["Supplier Site"] == "" and not_found(result) and not tolerant(result)

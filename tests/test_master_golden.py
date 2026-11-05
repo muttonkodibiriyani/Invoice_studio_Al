@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from app.fine_rules import RulesConfig, run_invoice
 from app.fine_rules_source import LookupRulesSource
+from app.location_type import ASK_LOCATION
 from app.main import create_app
 from app.models import Invoice
 from app.store import Store
@@ -143,6 +144,10 @@ def test_master_golden(case, source, invoices, key, confirmations):
                         f"{coverage['lines']} ({coverage['percent']}%, tier {coverage['tier']})")
     if result["status"] == "Approved" and any(c["confirm"] for c in case["header"].values()):
         problems.append("status: Approved although cells still need a reviewer's confirmation")
+    # D4: an unknown location is left blank for the reviewer, so it asks for it and is never approved.
+    if not result["header"].get("Location") and (result["status"] == "Approved" or
+                                                 ASK_LOCATION not in [p["id"] for p in result["prompts"]]):
+        problems.append("Location: blank without the location prompt and review")
     assert not problems, f"{case['case']} differs from the golden output:\n  " + "\n  ".join(problems)
 
 

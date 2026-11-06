@@ -457,14 +457,21 @@
             </article>
 
             <article class="card settings-card connection-card" data-provider-card="azure">
-              <div class="connection-title"><span class="provider-logo azure">Az</span><div><h2>Azure AI Foundry</h2><p>Use your own Azure resource endpoint and API key, billed through your Azure subscription.</p></div><span class="connection-state" data-connection-state="azure">Not connected</span></div>
+              <div class="connection-title"><span class="provider-logo azure">Az</span><div><h2>Azure AI Foundry</h2><p>Use your own Foundry agent or model deployment, billed through your Azure subscription.</p></div><span class="connection-state" data-connection-state="azure">Not connected</span></div>
               <form id="azure-connection-form" class="api-key-form" data-provider="azure">
-                <label>Resource endpoint<input type="url" name="endpoint" autocomplete="off" maxlength="300" placeholder="https://your-resource.openai.azure.com" required></label>
-                <label>API key<input type="password" name="api_key" autocomplete="off" placeholder="Azure resource key" required></label>
-                <div><button class="button button-secondary" type="submit">Save connection</button><button class="button button-quiet remove-connection" type="button">Remove</button></div>
+                <label>Endpoint<input type="url" name="endpoint" autocomplete="off" maxlength="300" placeholder="https://your-resource.services.ai.azure.com/api/projects/your-project" required></label>
+                <label>Agent or deployment name<input type="text" name="name" autocomplete="off" maxlength="150" required></label>
+                <label>Sign in with<select name="auth"><option value="key">API key</option><option value="managed_identity">The app's managed identity</option></select></label>
+                <label data-azure-key>API key<input type="password" name="api_key" autocomplete="off" placeholder="Azure resource key" required></label>
+                <div><button class="button button-secondary" type="submit">Test and save</button><button class="button button-quiet remove-connection" type="button">Remove</button></div>
               </form>
-              <p class="disclosure small">Model is the <strong>deployment name</strong> from your Foundry resource, not the base model name. Load available models, or enter the deployment name. The endpoint must be an Azure resource host (<code>&lt;resource&gt;.openai.azure.com</code> or <code>&lt;resource&gt;.services.ai.azure.com</code>); the key is encrypted on the server and never returned to the browser.</p>
+              <p class="disclosure small">A project endpoint (<code>&lt;resource&gt;.services.ai.azure.com/api/projects/&lt;project&gt;</code>) takes the <strong>agent name</strong>; Microsoft lists agents as managed identity only. A resource endpoint (<code>&lt;resource&gt;.openai.azure.com</code>) takes the <strong>deployment name</strong>, not the base model name. Saving makes one real call to it: if that fails, nothing is saved and the previous connection stays. A key is encrypted on the server and never returned to the browser.</p>
               <p class="connection-endpoint small" data-azure-endpoint hidden></p>
+              <p class="connection-endpoint small" data-azure-refused role="alert" hidden></p>
+            </article>
+            <article class="card settings-card wide" id="ai-rules-card">
+              <div class="settings-card-header"><div><h2>Rules the AI added</h2><p>The AI adds these as it reads, with no approval step. Each one fills only an item cell the rules left empty, from the item master, and shows as AI on the line and the receipt. Remove one and it stops at once.</p></div></div>
+              <div id="ai-rules-list"></div>
             </article>
 
             <article class="card settings-card connection-card" data-provider-card="openai">
@@ -706,8 +713,16 @@
       <form method="dialog" class="dialog-shell small-dialog">
         <div class="dialog-header"><div><p class="eyebrow">Target workbook · export</p><h2 id="batch-export-title">Export the selected invoices?</h2><p id="batch-export-count"></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
         <div id="batch-export-held" class="validation-summary" hidden><strong>Blocked, not exported</strong><p>These stay as they are and can go in a later batch.</p><ul id="batch-export-held-list"></ul></div>
+        <div id="batch-export-warning" class="validation-summary error" hidden><strong>Export anyway?</strong><ul id="batch-export-warning-list"></ul></div>
         <div id="batch-export-attention" class="validation-summary" hidden><strong>Needs attention</strong><p>Exported with what was found; blanks stay blank. The export team validates these by hand (owner decision D11).</p><ul id="batch-export-attention-list"></ul></div>
         <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Cancel</button><button id="confirm-batch-export" class="button button-primary" type="button">Export</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="export-confirm-dialog" aria-labelledby="export-confirm-title">
+      <form method="dialog" class="dialog-shell small-dialog">
+        <div class="dialog-header"><div><p class="eyebrow">Target workbook · export</p><h2 id="export-confirm-title">Export this invoice?</h2><p id="export-confirm-text"></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
+        <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel" autofocus>Cancel</button><button id="confirm-export-anyway" class="button button-primary" type="button">Export anyway</button></div>
       </form>
     </dialog>
 

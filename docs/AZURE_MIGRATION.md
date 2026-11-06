@@ -12,7 +12,7 @@ The live work plan is the `invoice_studio` craft, blueprint `01a18177-9fd4-75ff-
 
 1. Verify this import and its CI, then implement workforce Entra ID sign-in in the backend and UI. Remove Firebase, password and invite flows from the Azure build. Bind admin and member app roles to Entra groups.
 2. Prepare the access request, parameter template, deployment preflight and Cloud Shell runbook. Check the complete app locally with Entra test tokens, PostgreSQL and a Blob emulator, including read, review and Excel export.
-3. Implement the reviewed target: assigned landing zone and IPAM ranges, internal ingress, private endpoints and DNS, hub firewall routing, and Citadel as the only AI route. Keep AI off until Citadel is configured; remove direct Foundry credentials and calls.
+3. Implement the reviewed target: assigned landing zone and IPAM ranges, internal ingress, private endpoints and DNS, hub firewall routing, and Citadel as the only AI route. AI stays off until the deploy kit names the endpoint and `scripts/azure_deploy.py` accepts it (AZURE.md §7).
 4. Add the organization's required SAST, dependency, image, secret and IaC scans, approved base image and required PR checks. Review each change before merging.
 5. Record the tested commit, image digest, parameter checks, test results, accepted POC limits and rollback steps. Tarkesh performs the cloud deployments from the runbook after access and the release gates are satisfied.
 

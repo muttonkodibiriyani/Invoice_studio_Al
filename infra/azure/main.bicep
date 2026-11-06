@@ -30,11 +30,17 @@ param vaultKey string
 @secure()
 param foundryApiKey string = ''
 
-@description('Azure AI Foundry endpoint, e.g. https://my-resource.openai.azure.com. Empty leaves the provider unconfigured.')
+@description('Azure AI Foundry endpoint, e.g. https://my-resource.openai.azure.com, or the gateway host named in foundryGatewayHost (deploy kit CITADEL_ENDPOINT). Empty leaves the provider unconfigured: AI off.')
 param foundryEndpoint string = ''
 
 @description('Azure AI Foundry deployment name, e.g. gpt-4.1.')
 param foundryDeployment string = ''
+
+@description('Exact host of the AI gateway in front of Foundry (Citadel, deploy kit CITADEL_GATEWAY_HOST). The app accepts this one host beside the Foundry resource hosts. Empty: no gateway.')
+param foundryGatewayHost string = ''
+
+@description('Token scope when the gateway names its own audience, e.g. api://<gateway app id>/.default (deploy kit CITADEL_TOKEN_SCOPE). Empty: the Foundry scope.')
+param foundryTokenScope string = ''
 
 @description('Image to run. Empty on the first deployment: the app starts on the Microsoft hello-world image and the deploy workflow replaces it with the real one.')
 param containerImage string = ''
@@ -76,7 +82,7 @@ param restrictEgress bool = true
 @description('Private IP of the hub firewall (access request H3, deploy kit HUB_FIREWALL_IP). Set: all outbound traffic of the app goes through it. Empty: no route table.')
 param egressFirewallIp string = ''
 
-@description('Where AI calls may go when AI is switched on: a service tag such as CognitiveServicesFrontend, or the CIDR of the Foundry or Citadel private endpoint. Empty: no AI egress, as release 1 (AI off) wants.')
+@description('Where AI calls may go when AI is switched on: a service tag such as CognitiveServicesFrontend, or the CIDR of the Foundry or Citadel private endpoint. Empty: no AI egress, so AI off (deploy kit AI_EGRESS_DESTINATION).')
 param aiEgressDestination string = ''
 
 @description('Existing private DNS zones in the hub by zone name (deploy kit PDNS_ZONE_IDS), e.g. {"privatelink.vaultcore.azure.net": "<zone id>", "privatelink.blob.core.windows.net": "<zone id>"}. A zone left out is created in this resource group and linked to the spoke.')
@@ -297,6 +303,8 @@ module containerapp 'containerapp.bicep' = {
     extraAllowedOrigins: extraAllowedOrigins
     foundryEndpoint: foundryEndpoint
     foundryDeployment: foundryDeployment
+    foundryGatewayHost: foundryGatewayHost
+    foundryTokenScope: foundryTokenScope
     entraTenantId: entraTenantId
     entraClientId: entraClientId
     entraAdminGroupName: entraAdminGroupName

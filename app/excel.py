@@ -7,6 +7,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from .matching import strip_ult
 from .location_type import STORE, WAREHOUSE, written
+from .models import UNWRITABLE_TEXT
 
 HEADERS={
 "Header":["Transaction Number","Document","Supplier Site","Order No","Location","Location Type","Document Date","Total Cost Ex Tax","Tax Amount","Ref No. 1","Ref No. 2","Ref No. 3","Comment"],
@@ -16,7 +17,7 @@ HEADERS={
 
 def text_cell(cell,value):
     # Explicit string typing prevents user-controlled formula injection.
-    cell.value=str(value) if value is not None else ""
+    cell.value=UNWRITABLE_TEXT.sub("",str(value)) if value is not None else ""
     cell.data_type="s"
 
 
@@ -68,6 +69,20 @@ def _id_cell(cell,value):
 
 
 def rules_workbook(views,upc="empty",blanks=False):
+    w,cells=_rules_sheets(views,upc,blanks)
+    b=io.BytesIO();w.save(b);return b.getvalue(),cells
+
+
+def blank_fields(view,upc="empty"):
+    """The cells the real export leaves empty for one invoice, counted on the sheets the writer fills. Ref No./Comment
+    and, in the default mode, UPC are empty on every invoice by owner rule, so they are not gaps."""
+    w,_=_rules_sheets([view],upc,True)
+    by_rule={"Ref No. 1","Ref No. 2","Ref No. 3","Comment"}|({"UPC"} if upc=="empty" else set())
+    return sum(not str("" if cell.value is None else cell.value).strip() for s in w.worksheets
+               for name,*cells in s.iter_cols() if name.value not in by_rule for cell in cells)
+
+
+def _rules_sheets(views,upc,blanks):
     """Target template (Header / Tax_Breakdown / Details) from fine-rules views only.
 
     UPC stays empty by default (owner answer: Details.Item = Item Master ITEM_PARENT is what populates);
@@ -121,4 +136,4 @@ def rules_workbook(views,upc="empty",blanks=False):
             for col,k in ((4,"Unit Cost"),(5,"Quantity")):
                 x=need(c[k],f"Line {line['line']} {k}");d.cell(n,col,None if x is None else Decimal(x)).number_format="0.0000";put("Details",n,col,c[k])
             text_cell(d.cell(n,6),need(c["Unit Tax Code"],f"Line {line['line']} Unit Tax Code"));put("Details",n,6,c["Unit Tax Code"])
-    b=io.BytesIO();w.save(b);return b.getvalue(),cells
+    return w,cells

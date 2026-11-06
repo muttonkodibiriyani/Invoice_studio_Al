@@ -12,6 +12,9 @@ from app.models import Invoice, ProcessingOptions
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INVOICE = json.loads((ROOT / "samples" / "invoice.json").read_text())
 TEXT = "Lumena Beauty Trading LLC\nInvoice DEMO-2026-001\n" + "ITEMS BEGIN Lumena serum 30 ml 10 60.00\n" * 8
+# Every value the sample invoice prints: the AI's values are checked against the document (ai_context.absent_values).
+TEXT += " ".join(str(v) for v in (*INVOICE.values(), *(v for line in INVOICE["lines"] for v in line.values()))
+                 if isinstance(v, (str, int, float))) + "\n"
 # The local read printed no supplier code or barcode on either line: an item identity gap per line.
 NO_IDS = {**INVOICE, "market": "UAE", "lines": [{**line, "sku": None, "gtin": None} for line in INVOICE["lines"]]}
 PARENT = {"Lumena serum 30 ml": "1001", "Lumena cream 50 ml": "1002"}
@@ -86,6 +89,24 @@ def test_when_local_and_rules_resolve_every_field_the_ai_is_not_called(run):
     assert ai["calls"] == 0 and ai["need"] == "cross_check" and ai["fields"] == []
     assert [x["item_id"] for x in result["invoice"]["lines"]] == ["1001", "1002"]
     assert result["invoice"]["taxCode"] == "VAT5"
+
+
+def test_a_line_the_rules_could_not_identify_asks_the_ai_and_a_conflict_does_not(run):
+    with_codes = {**NO_IDS, "lines": [{**line, "sku": "PRINTED"} for line in NO_IDS["lines"]]}
+    result, calls = run(with_codes, matcher(set()), RULES, provider="openai")
+    assert calls == [], "only Azure AI Foundry is given the item master search, so no other provider is called for it"
+    result, calls = run(with_codes, matcher(set()), RULES, provider="azure")
+    assert "ai" in calls and result["readers"]["ai"]["need"] == "gap_fill"
+    assert result["readers"]["ai"]["fields"] == ["line 1 item_id", "line 2 item_id"]
+    held = {t["engine"]: t for t in result["trace"]}["item_rules"]["held"]
+    assert {h["status"] for h in held} == {"Not in item master"}
+
+    def conflicting(line):
+        return lambda column, match: {"VPN": ["1001"], "BARCODE": ["1002"]}.get(column, [])
+    result, calls = run(with_codes, conflicting, RULES, provider="azure")
+    held = {t["engine"]: t for t in result["trace"]}["item_rules"]["held"]
+    assert {h["status"] for h in held} == {"Conflict"}
+    assert calls == [] and result["readers"]["ai"]["need"] == "cross_check"
 
 
 def test_the_ai_is_asked_only_for_the_fields_the_rules_left_open_and_never_overwrites_them(run):

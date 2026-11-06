@@ -27,12 +27,14 @@ from pydantic import Field, SecretStr, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
 from .authentication import EntraIdentity, actor
+from . import ai_rules
+from .azure_foundry import env_refusal
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
 from .users import UserDirectory
 from .engines import AI_CONCURRENCY, ChecksBusy, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
 from .learned import LearnedStore
-from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook
+from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook, blank_fields
 from . import costs
 from . import target_check as tc
 from .extraction_draft import extraction_workbook, extraction_batch_workbook
@@ -48,8 +50,8 @@ from .mapping_tables import register_mapping_tables
 from .product_candidates import ProductCandidates
 from .coverage import coverage, refusal
 from .item_rules import rules as item_rules
-from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
-from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
+from .matching import accepted_ids, copy_signal, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
+from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel, has_unwritable_text, storable
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
 from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
@@ -149,7 +151,9 @@ class Connection(StrictModel):
 
 class AzureConnection(StrictModel):
     endpoint: str = Field(min_length=3,max_length=300)
-    api_key: SecretStr = Field(min_length=10,max_length=500)
+    name: str = Field(default="",max_length=150)  # the deployment, or the agent on a project endpoint
+    auth: str = Field(default="key",pattern="^(key|managed_identity)$")
+    api_key: SecretStr|None = Field(default=None,min_length=10,max_length=500)
 
 
 class SubscriptionToken(StrictModel):
@@ -451,7 +455,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         else:refs,rules,led=validation_context
         if j.get("export_id"):led=[x for x in led if x.get("job_id")!=j["id"]]
         if demo_references:j["validation"]=validate(inv,refs,rules,led,j.get("reviewed",False))
-        else:j["validation"]=rules_validation(fresh_rules(j),led,j.get("reviewed",False))
+        else:j["validation"]=rules_validation(fresh_rules(j),led,j.get("reviewed",False),j)
         if not j.get("export_id") and j["status"] not in ("queued","processing","error"):
             j["status"]="ready" if j["validation"]["ready"] else "review"
         return j
@@ -595,8 +599,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                         j["progress"]["characters"]=details.get("characters",0)
                     store.job(jid,j,c)
             if identity.cloud:store.ensure_blob(Path(job["path"]))
-            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
-                             supplier_site=job.get("owner_supplier_site"))
+            result=storable(process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
+                                        supplier_site=job.get("owner_supplier_site")))
             annotated=result.pop("annotated_evidence")
             lines=Invoice.model_validate(result["invoice"]).model_dump(mode="json")["lines"]
             view=None
@@ -746,6 +750,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         # The confirm-time snapshot and records are served by the target-check endpoints, not with every job.
         # text_checks hold a normalised copy of the document text for the target check: never served.
         j={k:v for k,v in j.items() if k not in ("path","target_system","target_accuracy","text_checks")}
+        # Read before the save refused these: served clean, so sending the invoice back is not refused for a character nobody can see.
+        if has_unwritable_text(j.get("invoice")):j["invoice"]=Invoice.model_validate(j["invoice"]).model_dump(mode="json")
         if not full:
             j.pop("text",None);j.pop("boxes",None);j.pop("evidence",None)
             check=(j.get("rules") or {}).get("target_check")
@@ -786,7 +792,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             refs=references(c);rules=policy(c);ledger=store.ledger(c)
             exports=[{"id":r["id"],"job_id":r["job_id"],**{k:v for k,v in json.loads(r["payload"]).items() if k in ("number","created_at")}} for r in c.execute("SELECT id,job_id,payload FROM exports ORDER BY rowid DESC")]
         return {"engines":capabilities(),"connections":connections,
-                "azure_endpoint":azure_endpoint,"azure_deployment":azure_deployment,
+                "azure_endpoint":azure_endpoint,"azure_deployment":azure_deployment,"azure_refused":env_refusal(),
                 "accounts":accounts,"active_account":active_account,"settings":settings,
                 "policy":rules.model_dump(mode="json"),"references":{"version":refs.get("version"),"imported_at":refs.get("imported_at"),"counts":{k:len(refs.get(k,[])) for k in ("sites","routes","items","orders","receipts","taxRules")}} if refs else None,
                 "jobs":[public(evaluate(j,validation_context=(refs,rules,ledger)),False) for j in jobs],"exports":exports,
@@ -945,6 +951,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/review")
     @access(MEMBER)
     def review(jid:str,body:Review):
+        if has_unwritable_text(body.model_dump()):
+            raise HTTPException(400,"This value cannot be saved: remove control characters and others a workbook cannot hold.")
         view=entries=pick=site=None;cleared=0
         if not demo_references:
             j=job_or_404(jid);assert_editable(j)
@@ -1041,11 +1049,12 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 accepted=j["validation"].get("accepted",[])
                 content,evidence=rules_workbook([{**j["rules"],"owner_accepted":accepted}],target_upc(c),blanks=True)
                 content,target=target_checks(content,[j["rules"]],sheet=False)
-                receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
+                receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"],jid),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
                          "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1],
-                         "open_holds":open_holds(j["validation"],why),"validation":D11}
+                         "open_holds":open_holds(j["validation"],why),"validation":D11,**copy_signal(j["rules"],j)}
+            receipt.update(ai_on_receipt(j))
             c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
         learn_later(j)
@@ -1128,6 +1137,13 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 else:cell.value=str(value);cell.data_type="s"  # text only, never a formula
         buffer=io.BytesIO();book.save(buffer);return buffer.getvalue()
     def target_upc(c=None):return store.get("target_export",{},c).get("upc","empty")
+    def ai_on_receipt(j):
+        """What the AI did on this invoice, for its receipt: the cells it filled, what it reads differently, what it only
+        suggests and which added rules ran. Absent when it did nothing."""
+        ai=(j.get("readers") or {}).get("ai") or {}
+        told={k:ai[k] for k in ("filled","flagged","rules_added","rules_applied") if ai.get(k)}
+        if ai.get("suggestions"):told["suggestions"]=len(ai["suggestions"])
+        return {"ai":{"status":ai.get("status"),"calls":ai.get("calls",0),**told}} if told or ai.get("calls") else {}
     def audit_receipt(receipt):
         # Cell evidence holds owner rows; the audit keeps its size, the receipt keeps the rows.
         return {**{k:v for k,v in receipt.items() if k!="evidence"},**({"evidence_cells":len(receipt["evidence"])} if "evidence" in receipt else {})}
@@ -1254,20 +1270,21 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             return j,None,[("Not Read",f"Invoice {j['filename']} has no current read yet. Refresh before exporting.")],[]
         inv=Invoice.model_validate(j["invoice"])
         if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
-        else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
+        else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False),j)
         reasons=[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True) and (demo_references or i["code"] in INTEGRITY)]
         if reasons:return j,result,reasons,[]
         holds=[] if demo_references else open_holds(result,refusal(coverage(j["rules"],item_rules().coverage_tiers())))
-        result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"])
+        result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"],j["id"])
         result["allocations"]=[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])
-        ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"]})
+        ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"],**({} if demo_references else copy_signal(j["rules"],j))})
         return j,result,[],holds
 
     @app.post("/api/exports/batch/check")
     @access(MEMBER)
     def check_batch(body:Batch):
         """Before 'Export selected' (owner decision A): the selected invoices a real export would take now, in
-        transaction order, each with the holds still open on it (information only, D11), and the blocked ones with every
+        transaction order, each with the holds still open on it (information only, D11), its rules status, the blank
+        fields its row in the workbook would hold and its line count, and the blocked ones with every
         reason. Exports nothing; blocked invoices stay as they are."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:
@@ -1279,7 +1296,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 j,_,reasons,holds=batch_readiness(request,c,ledger)
                 item={"id":request.id,"filename":(j or {}).get("filename",""),"revision":(j or {}).get("revision")}
                 if reasons:blocked.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
-                else:ready.append({**item,"transaction_number":len(ready)+1,"attention":holds})
+                else:
+                    # What Export Excel asks about first (D11: it asks, it never refuses); read from the writer's own sheets.
+                    counted={} if demo_references else {"status":j["rules"]["status"],"blank_fields":blank_fields(j["rules"],target_upc(c)),"line_count":len(j["rules"]["lines"])}
+                    ready.append({**item,"transaction_number":len(ready)+1,"attention":holds,**counted})
         return {"ready":ready,"blocked":blocked}
 
     @app.post("/api/exports/batch")
@@ -1305,7 +1325,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                          "allocations":result["allocations"]}
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {},
-                                   open_holds=holds,validation=D11)
+                                   open_holds=holds,validation=D11,**copy_signal(j["rules"],j))
+                receipt.update(ai_on_receipt(j))
                 entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
                 selected.append((j,receipt))
             if demo_references:content=batch_workbook(entries)
@@ -1458,9 +1479,18 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def connect_azure(body:AzureConnection):
         refuse_provider("azure")
-        result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
+        connection=providers.azure.prepare(body.endpoint,body.api_key.get_secret_value() if body.api_key else None,body.name,body.auth)
+        providers.test_azure(connection)  # raises on anything but a real answer: nothing saved, the previous connection stays
+        result=providers.azure.save(connection)
+        # Reads name the chosen model: the tested name replaces one from the connection before, which this endpoint may not have.
+        with store.connection(True) as c:
+            before=store.get("settings",None,c)
+            if before and before.get("provider")=="azure" and result["name"] and before.get("model")!=result["name"]:
+                after={**before,"model":result["name"]}
+                store.set("settings",after,c)
+                store.audit("settings_changed",{"before":{k:before.get(k) for k in Settings.model_fields},"after":{k:after.get(k) for k in Settings.model_fields}},c)
         store.set(RULES_ASSISTANT_TESTED,None)  # a new key or auth mode needs the assistant's connection test again
-        store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
+        store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"],"name":result["name"],"route":result["route"],"auth":body.auth})
         return result
 
     @app.delete("/api/connections/azure")
@@ -1709,6 +1739,15 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         learn_from_job(j)
         return learned.summary()
 
+    @app.get("/api/ai-rules")
+    @access(MEMBER)
+    def added_rules():
+        return {"rules":ai_rules.all_rules(store)}
+    @app.delete("/api/ai-rules/{rule_id}")
+    @access(ADMIN)
+    def remove_added_rule(rule_id:str):
+        if not ai_rules.remove(store,rule_id):raise HTTPException(404,"That AI-added rule is not there")
+        return {"removed":rule_id}
     @app.delete("/api/learned/{key}")
     @access(ADMIN)
     def forget_learned(key:str):

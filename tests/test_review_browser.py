@@ -15,7 +15,7 @@ NODE = shutil.which("node")
 
 @pytest.mark.skipif(NODE is None, reason="Node is needed for the offline browser script checks")
 @pytest.mark.parametrize("scenario", [
-    "sign-in", "redirect-error", "no-role", "users", "batch-upload", "target-chip", "reader-marks", "review-prompts", "bundle",
+    "sign-in", "redirect-error", "no-role", "users", "batch-upload", "target-chip", "reader-marks", "review-prompts", "possible-copy", "export-confirm", "bundle",
 ])
 def test_browser_scripts(scenario):
     script = "entra-auth.bundle.js" if scenario == "bundle" else "app.js"

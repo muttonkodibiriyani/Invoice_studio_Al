@@ -95,8 +95,10 @@ and on later invoices from that supplier, with no approval step. It holds to the
   Suggestion result lets through only an item it already lists.
 - A row at a site other than the supplier's is not a rule. A printed name the master does not carry resolves to no
   site (owner, 6 Nov): then only a row whose supplier name is close to the printed one makes a rule, and any other pick
-  stays a suggestion. Close counts only the words that tell suppliers apart (`ai_context.GENERIC_NAME_WORDS` lists the
-  rest), so Star Trading LLC is not close to Gulf Trading LLC, and a name of only such words is close to nothing. Item
+  stays a suggestion. Close means the same words once legal forms, articles and single letters are dropped
+  (`ai_context.LEGAL_NAME_WORDS`), and a name of only those is close to nothing. So Gulf Trading LLC is close to Gulf
+  Trading Co, but not to Gulf Foods LLC, Gulf Services LLC or Gulf LLC: a true variant with one more word stays a
+  suggestion a person can accept, because a wrong suggestion writes nothing and a wrong rule keeps filling. Item
   master `SUPPLIER_NAME` holds coded site names, so most such picks stay suggestions.
 - A rule is added only after the read passed its checks: a read that ends `not_read` adds none.
 - A spoofed name is not caught: an invoice printing a real supplier's name can plant a rule from that supplier's own

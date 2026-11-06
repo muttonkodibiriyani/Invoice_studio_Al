@@ -77,12 +77,11 @@ SUPPLIER = {"supplier_name": "SUPPLIER_NAME", "site": "SUPPLIER SITE"}
 ORDER = {"po": "RMS_ORDER_NO", "item_id": "RMS_ITEM_ID", "qty": "QTY_RECEIVED"}
 
 
-# Words any supplier's name may carry: sharing them says nothing about being the same supplier.
-GENERIC_NAME_WORDS = frozenset({
-    "al", "el", "and", "of", "for", "the", "co", "company", "corp", "corporation", "dmcc", "enterprises", "est",
-    "establishment", "fz", "fzc", "fzco", "fze", "general", "gmbh", "group", "inc", "international", "intl", "limited",
-    "llc", "ltd", "plc", "private", "pvt", "services", "trade", "traders", "trading",
-    "شركة", "مؤسسة", "تجارة", "التجارة", "للتجارة", "العامة", "ذات", "مسؤولية", "المحدودة",
+# Legal forms and articles: the same supplier may print them or not. Business words such as Trading stay in the name.
+LEGAL_NAME_WORDS = frozenset({
+    "al", "el", "the", "co", "company", "corp", "corporation", "dmcc", "est", "establishment", "fz", "fzc", "fzco", "fze",
+    "gmbh", "inc", "limited", "llc", "ltd", "plc", "private", "pvt",
+    "شركة", "مؤسسة", "ذات", "مسؤولية", "محدودة", "المحدودة",
 })
 
 
@@ -90,23 +89,21 @@ def _name_words(name):
     return set(re.findall(r"[^\W_]+", str(name or "").casefold()))
 
 
-def _overlap(words, others):
+def _name_score(one, other):
+    words, others = _name_words(one), _name_words(other)
     return len(words & others) / len(words | others) if words and others else 0
 
 
-def _name_score(one, other):
-    """How many of two supplier names' words they share, 0 to 1."""
-    return _overlap(_name_words(one), _name_words(other))
-
-
-def _distinctive(name):
-    return {word for word in _name_words(name) if len(word) > 1 and word not in GENERIC_NAME_WORDS}
+def _company_words(name):
+    """The name without legal forms, articles or single letters, the pieces L.L.C prints as. Digits stay: Store 1 is not Store 2."""
+    return {word for word in _name_words(name) if word not in LEGAL_NAME_WORDS and (len(word) > 1 or not word.isalpha())}
 
 
 def close_names(one, other):
-    """The same supplier, by the words that tell suppliers apart: Star Trading LLC is not Gulf Trading LLC. A name with no
-    such word is close to nothing, so its pick stays a suggestion."""
-    return _overlap(_distinctive(one), _distinctive(other)) >= MIN_SIMILAR
+    """The same supplier, written with or without its legal form: every other word must match. A true variant with one more
+    word stays a suggestion a person can accept, because a wrong suggestion writes nothing and a wrong rule keeps filling."""
+    words = _company_words(one)
+    return bool(words) and words == _company_words(other)
 
 
 def _similar_names(source, name):

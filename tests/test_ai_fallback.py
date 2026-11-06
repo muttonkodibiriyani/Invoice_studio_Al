@@ -389,35 +389,63 @@ def test_a_name_with_no_latin_letter_or_digit_keys_a_rule(store):
     assert ai_rules.all_rules(store)[0]["supplier_name"]
 
 
+# Different companies sharing a first word, a business word or a sector (Reality Checker, narrow re-review).
+BOUNDARY_PAIRS = [
+    ("Gulf Foods", "Gulf Trading", False),
+    ("Gulf Foods LLC", "Gulf Trading LLC", False),
+    ("Al Ain Foods", "Al Ain Trading", False),
+    ("Gulf LLC", "Gulf Foods LLC", False),
+    ("Gulf Trading LLC", "Gulf Services LLC", False),
+    ("Al Ain Trading", "Al Ain Services", False),
+    ("Noor Trading", "Noor International Group", False),
+    ("Al Noor Medical Supplies", "Al Fajr Medical Supplies", False),
+    ("Star Building Materials", "Moon Building Materials", False),
+    ("Star Food Industries LLC", "Moon Food Industries LLC", False),
+    ("شركة النور للمواد الغذائية", "شركة الفجر للمواد الغذائية", False),
+]
+
+
 @pytest.mark.parametrize(("one", "other", "close"), [
     # Only generic words shared: different suppliers.
     ("Star Trading LLC", "Gulf Trading LLC", False),
     ("Al Noor LLC", "Al Fajr LLC", False),
     ("Star General Trading LLC", "Moon General Trading LLC", False),
     ("شركة النور للتجارة", "شركة الفجر للتجارة", False),
-    # Nothing distinctive left: close to nothing, itself included.
-    ("Trading LLC", "Trading LLC", False),
+    # One name holds a word the other lacks, or a different one: not the same supplier by name alone.
+    *BOUNDARY_PAIRS,
+    ("Northwind", "Northwind Foods", False),
+    ("Star Beauty Home", "Star Beauty Foods", False),
+    ("Al Noor Trading", "Noor General Trading LLC", False),
+    ("شركة النور للتجارة", "مؤسسة النور", False),
     ("General Trading Co", "Trading Company", False),
-    ("Star Trading", "", False),
-    # The same supplier written differently.
-    ("Northwind Trading LLC", "Northwind Trading", True),
+    # Digits tell branches apart; a single letter is what L.L.C prints as.
+    ("Store 1", "Store 2", False),
+    ("Store 1 LLC", "Store 1", True),
     ("Northwind L.L.C", "Northwind LLC", True),
-    ("Al Noor Trading", "Noor General Trading LLC", True),
-    ("شركة النور للتجارة", "مؤسسة النور", True),
-    # Either side of the threshold, on distinctive words: 1/2 and 2/4 close, 2/5 and 1/3 not.
-    ("Northwind", "Northwind Foods", True),
-    ("Star Beauty Home", "Star Beauty Foods", True),
-    ("Star Beauty Supply", "Star Beauty Foods Home", False),
-    ("Star Beauty", "Star Foods", False),
+    # Only legal forms and articles, or nothing: close to nothing, itself included.
+    ("LLC", "LLC", False),
+    ("The Co", "Al Company", False),
+    ("Star Trading", "", False),
+    ("", "", False),
+    # The same words with a different legal form or article.
+    ("Trading LLC", "Trading LLC", True),
+    ("Northwind Trading LLC", "Northwind Trading", True),
+    ("Gulf Trading LLC", "Gulf Trading Co", True),
+    ("Al Noor Trading", "Noor Trading LLC", True),
+    ("شركة النور للتجارة", "مؤسسة النور للتجارة", True),
 ])
-def test_close_supplier_names_share_the_words_that_tell_suppliers_apart(one, other, close):
+def test_close_supplier_names_differ_only_by_legal_form_or_article(one, other, close):
     assert ai_context.close_names(one, other) is close
     assert ai_context.close_names(other, one) is close
 
 
 @pytest.mark.parametrize(("printed", "row_supplier", "rule"), [
     ("Star Trading LLC", "Gulf Trading LLC", False),
+    *BOUNDARY_PAIRS,
+    ("Store 1", "Store 2", False),
     ("Northwind Trading", "Northwind Trading LLC", True),
+    ("Northwind L.L.C", "Northwind LLC", True),
+    ("Gulf Trading LLC", "Gulf Trading Co", True),
 ])
 def test_a_pick_from_accept_through_add_and_fill_follows_the_name_boundary(store, printed, row_supplier, rule):
     rows = [{**ROWS[0], "SUPPLIER_NAME": row_supplier}]

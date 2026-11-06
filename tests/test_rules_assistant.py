@@ -210,6 +210,9 @@ def test_an_explanation_that_mentions_saving_is_only_text(studio_app, foundry):
     httpx.Response(200, content=b"{" + b" " * 300_000 + b"}"),
     httpx.Response(200, json={"status": "incomplete", "output": []}),
     httpx.Response(200, content=b"<html>proxy page</html>"),
+    # A well-formed answer anywhere but a message item is not the answer.
+    httpx.Response(200, json={"status": "completed", "output": [{"type": "reasoning", "content": [
+        {"type": "output_text", "text": json.dumps({"explanation": "from reasoning", "steps": []})}]}]}),
 ])
 def test_malformed_model_output_is_refused_cleanly(studio_app, foundry, reply):
     """c) Non-JSON, wrong types, oversized: a 502 with a fixed message, no model text and no trace."""

@@ -25,7 +25,7 @@ from .azure_foundry import env_deployment
 from .fine_rules import barcode_candidates, feedback_entry, vpn_candidates
 from .logging_setup import request_id
 from .models import StrictModel
-from .providers import allowed_ai_providers, safe_error
+from .providers import _responses_text, allowed_ai_providers, safe_error
 
 TESTED = "rules_assistant_tested"  # the endpoint whose connection test last passed
 TRANSPORT = None  # test seam: an httpx transport standing in for Foundry
@@ -184,9 +184,7 @@ def register_rules_assistant(app, store, providers, lookup):
             result = r.json()
             if result.get("status") != "completed":
                 raise ValueError
-            text = "".join(c.get("text", "") for item in result.get("output", []) for c in item.get("content", [])
-                           if c.get("type") == "output_text")
-            answer = out.model_validate_json(text)
+            answer = out.model_validate_json(_responses_text(result))
         except (ValueError, ValidationError, AttributeError, TypeError):
             raise upstream("The assistant returned an answer outside the allowed shape; nothing was accepted") from None
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}

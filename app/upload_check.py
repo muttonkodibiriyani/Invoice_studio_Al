@@ -14,7 +14,9 @@ CPU_SECONDS=10
 # a parser that needs more is not reading an invoice.
 MAX_AS_MB=512
 TIMEOUT_SECONDS=20
-MESSAGES={"pdf":"PDF is damaged or encrypted","pages":"Use invoices with 1 to 20 pages",
+MESSAGES={"pdf":"This PDF is damaged and cannot be opened. Ask the sender for a new copy, then upload it again.",
+          "password":"This PDF is protected by a password. Save a copy without the password, then upload that copy.",
+          "pages":"Use invoices with 1 to 20 pages",
           "image":"Image is invalid or exceeds 25 megapixels / 20 frames"}
 
 
@@ -35,7 +37,7 @@ def inspect(content,suffix):
         import pypdfium2 as pdfium
         try:
             pdf=pdfium.PdfDocument(content);count=len(pdf);pdf.close()
-        except Exception:return "pdf"
+        except Exception as error:return "password" if "password" in str(error).lower() else "pdf"
         return "ok" if 1<=count<=20 else "pages"
     from PIL import Image
     from .models import IMAGE_FORMATS

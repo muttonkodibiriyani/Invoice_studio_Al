@@ -33,6 +33,11 @@ PADDLE_RECOVERY_BASELINE_LIMIT_SECONDS = 150
 PADDLE_WORKER_BUDGET_SECONDS = 360
 
 
+# Measured on stored reads: pages read at the wrong turn score below 0.41, every other page above 0.72.
+TURNED_PAGE_CONFIDENCE=0.6
+TURNED_PAGE_MIN_LINES=8
+
+
 def paddle_model_config(language):
     try:
         recognition = PADDLE_RECOGNITION_MODELS[language]
@@ -357,9 +362,44 @@ def _trim_split_lines(lines):
     return lines
 
 
+def _read_page(reader,image,n):
+    import numpy as np
+    size=list(image.size);page_lines=[]
+    for result in reader.predict(np.array(image),return_word_box=True):
+        res=result.json
+        if isinstance(res,str):res=json.loads(res)
+        res=res.get("res",res)
+        texts=res.get("rec_texts",[]);scores=res.get("rec_scores",[]);polys=res.get("rec_polys",[])
+        for idx,value in enumerate(texts):
+            poly=polys[idx] if idx<len(polys) else []
+            box=[min(p[0] for p in poly),min(p[1] for p in poly),max(p[0] for p in poly),max(p[1] for p in poly)] if len(poly) else None
+            line_box={"text":value,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,"box":box,"size":size}
+            word_texts=res.get("text_word",[])
+            word_regions=res.get("text_word_boxes",[])
+            words=[]
+            if idx<len(word_texts) and idx<len(word_regions) and len(word_texts[idx])==len(word_regions[idx]) and word_texts[idx]:
+                words=[{"text":word,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,
+                        "box":[float(v) for v in region],"size":size,"geometry":"word","parent_text":value}
+                       for word,region in zip(word_texts[idx],word_regions[idx]) if len(region)==4]
+            page_lines.append((line_box,words))
+    return page_lines
+
+
+def _page_confidence(page_lines):
+    scores=[line_box["confidence"] for line_box,_ in page_lines if line_box["confidence"] is not None]
+    return sum(scores)/len(scores) if scores else 0.0
+
+
+def _turns_to_try(page_lines):
+    """A page the reader can barely make out may only be turned. No page with a real read pays for this."""
+    if len(page_lines)<TURNED_PAGE_MIN_LINES or _page_confidence(page_lines)>=TURNED_PAGE_CONFIDENCE:return ()
+    boxes=[line_box["box"] for line_box,_ in page_lines if line_box["box"]]
+    tall=sum(box[3]-box[1]>box[2]-box[0] for box in boxes)
+    return (1,3) if 2*tall>=len(boxes) else (2,)
+
+
 def paddle(path,language,*,render_scale=2,max_side=None):
     import pypdfium2 as pdfium
-    import numpy as np
     from PIL import Image, ImageOps, ImageSequence
     from .models import IMAGE_FORMATS
     reader=paddle_reader(language,max_side=max_side)
@@ -382,25 +422,11 @@ def paddle(path,language,*,render_scale=2,max_side=None):
             with Image.open(file,formats=["PNG"]) as original:
                 image=ImageOps.exif_transpose(original).convert("RGB")
                 image_limit=3600 if render_scale>2 else 2600
-                image.thumbnail((image_limit,image_limit)); size=list(image.size)
-                page_lines=[]
-                for result in reader.predict(np.array(image),return_word_box=True):
-                    res=result.json
-                    if isinstance(res,str):res=json.loads(res)
-                    res=res.get("res",res)
-                    texts=res.get("rec_texts",[]);scores=res.get("rec_scores",[]);polys=res.get("rec_polys",[])
-                    for idx,value in enumerate(texts):
-                        poly=polys[idx] if idx<len(polys) else []
-                        box=[min(p[0] for p in poly),min(p[1] for p in poly),max(p[0] for p in poly),max(p[1] for p in poly)] if len(poly) else None
-                        line_box={"text":value,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,"box":box,"size":size}
-                        word_texts=res.get("text_word",[])
-                        word_regions=res.get("text_word_boxes",[])
-                        words=[]
-                        if idx<len(word_texts) and idx<len(word_regions) and len(word_texts[idx])==len(word_regions[idx]) and word_texts[idx]:
-                            words=[{"text":word,"page":n,"confidence":float(scores[idx]) if idx<len(scores) else None,
-                                    "box":[float(v) for v in region],"size":size,"geometry":"word","parent_text":value}
-                                   for word,region in zip(word_texts[idx],word_regions[idx]) if len(region)==4]
-                        page_lines.append((line_box,words))
+                image.thumbnail((image_limit,image_limit))
+                page_lines=_read_page(reader,image,n)
+                for quarter_turns in _turns_to_try(page_lines):
+                    turned=_read_page(reader,image.rotate(90*quarter_turns,expand=True),n)
+                    if _page_confidence(turned)>_page_confidence(page_lines):page_lines=turned
                 for line_box,words in _trim_split_lines(page_lines):
                     line_boxes.append(line_box)
                     boxes.extend(words or [line_box])

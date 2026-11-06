@@ -7,6 +7,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from .matching import strip_ult
 from .location_type import STORE, WAREHOUSE, written
+from .models import UNWRITABLE_TEXT
 
 HEADERS={
 "Header":["Transaction Number","Document","Supplier Site","Order No","Location","Location Type","Document Date","Total Cost Ex Tax","Tax Amount","Ref No. 1","Ref No. 2","Ref No. 3","Comment"],
@@ -16,7 +17,7 @@ HEADERS={
 
 def text_cell(cell,value):
     # Explicit string typing prevents user-controlled formula injection.
-    cell.value=str(value) if value is not None else ""
+    cell.value=UNWRITABLE_TEXT.sub("",str(value)) if value is not None else ""
     cell.data_type="s"
 
 

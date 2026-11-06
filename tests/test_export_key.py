@@ -2,26 +2,33 @@
 
 A duplicate is the same number from the same supplier site. Without either one there is nothing to call a duplicate, so
 the key is unique to the job: a blank number cannot collide on exports.invoice_key, and a number with no site cannot
-refuse another supplier's invoice. Every test runs on SQLite. Set INV_STUDIO_TEST_DATABASE_URL to an admin connection of
+refuse another supplier's invoice. Such an invoice can still be a copy, so the same file or number gives it a Possible
+Duplicate hold: it exports (D11) and the receipt says so. Every test runs on SQLite. Set INV_STUDIO_TEST_DATABASE_URL to an admin connection of
 a throwaway PostgreSQL to run them there too; CI has no PostgreSQL, so they skip there.
 """
+import io
 import json
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+import openpyxl
 import pytest
 from cryptography.fernet import Fernet
 
+import app.main as main_module
 from app.main import create_app
+from app.models import has_unwritable_text
 from app.matching import rules_key
-from app.store import Store
 from tests.conftest import bearer
+from tests.test_batch import OPTIONS, BlobStore
 from tests.test_bulk_export import check, export, job, selection
 from tests.test_cloud_storage_backends import FakeBlobServiceClient
 
 ADMIN_URL = os.getenv("INV_STUDIO_TEST_DATABASE_URL")
 DUPLICATE = "Invoice already exported for this supplier site"
+POSSIBLE = "Possible Duplicate"
 INCOMPLETE = [(None, None), ("S1", None), (None, "INV-1"), ("S1", "   "), ("  ", "INV-1")]
 
 
@@ -46,7 +53,7 @@ def postgres_url(monkeypatch):
 @pytest.fixture(params=["sqlite", "postgres"])
 def app(request, tmp_path, identity):
     if request.param == "sqlite":
-        return create_app(tmp_path / "data", identity=identity, store_type=Store)
+        return create_app(tmp_path / "data", identity=identity, store_type=BlobStore)
     request.getfixturevalue("postgres_url")
     from app.cloud_store import PostgresStore
     return create_app(tmp_path / "data", identity=identity,
@@ -56,13 +63,15 @@ def app(request, tmp_path, identity):
 @pytest.fixture
 def invoice(client, owner, app):
     """A reviewed invoice whose rules read this site and number; ``capacity`` adds receipt evidence to allocate from."""
-    def make(jid, site, number, capacity=None):
+    def make(jid, site, number, capacity=None, sha256=None):
         uploads = app.state.store.root / "uploads"
         job(client, owner, app, uploads, jid, number)
         j = app.state.store.job(jid)
         fields = j["rules"]["fields"]
         fields["site"] = {**fields["site"], "value": site}
         fields["number"] = {**fields["number"], "value": number}
+        if sha256:
+            j["sha256"] = sha256
         if capacity:
             j["rules"]["receipt_controls"] = {"known": True, "scope": {}, "capacities": [
                 {"key": "receipt-1", "item": "1001", "qty": capacity, "reference": "synthetic"}]}
@@ -91,6 +100,19 @@ def delete(client, owner, app, *ids):
                            json={**selection(app, *ids), "confirm_permanent": True})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def receipt_of(app, jid):
+    with app.state.store.connection() as c:
+        return json.loads(c.execute("SELECT payload FROM exports WHERE job_id=?", (jid,)).fetchone()[0])
+
+
+def codes(holds):
+    return [h["code"] for h in holds]
+
+
+def attention(client, owner, app, jid):
+    return codes(check(client, owner, app, jid)["ready"][0]["attention"])
 
 
 def field(value):
@@ -202,24 +224,46 @@ def test_a_deleted_real_invoice_still_refuses_its_duplicate(client, owner, app, 
     assert (response.status_code, response.json()["detail"]) == (409, DUPLICATE)
 
 
+def make_old(app, jid, key):
+    """Rewrite an export as main wrote it: the old key in the column and the receipt, no copy signal in the receipt."""
+    with app.state.store.connection(True) as c:
+        receipt = json.loads(c.execute("SELECT payload FROM exports WHERE job_id=?", (jid,)).fetchone()[0])
+        receipt["invoice_key"] = key
+        del receipt["sha256"], receipt["document"]
+        c.execute("UPDATE exports SET invoice_key=?,payload=? WHERE job_id=?", (key, json.dumps(receipt), jid))
+
+
 def test_keys_stored_before_this_change_block_nothing_and_still_merge_on_delete(client, owner, app, invoice):
     """Production holds rows under the old shared keys. They need no migration: new jobs never produce those keys, and
     deleting one still folds it into the tombstone of the same old key, so its allocations stay counted."""
     invoice("old-1", None, None), invoice("old-2", None, None)
     assert export_one(client, owner, app, "old-1").status_code == 200
-    with app.state.store.connection(True) as c:
-        c.execute("UPDATE exports SET invoice_key=? WHERE job_id=?", ("rules||", "old-1"))
+    make_old(app, "old-1", "rules||")
     invoice("new", None, None)
     assert export_one(client, owner, app, "new").status_code == 200
 
     delete(client, owner, app, "old-1")
     assert export_one(client, owner, app, "old-2").status_code == 200
-    with app.state.store.connection(True) as c:
-        c.execute("UPDATE exports SET invoice_key=? WHERE job_id=?", ("rules||", "old-2"))
+    make_old(app, "old-2", "rules||")
     delete(client, owner, app, "old-2")
     kept = tombstones(app)
     assert kept["old-1"][0] == "rules||"
     assert kept["old-2"][0] is None and kept["old-2"][1]["invoice_key_kept_by"] == "old-1"
+
+
+def test_receipts_read_from_the_ledger_under_old_keys(client, owner, app, invoice):
+    """The ledger reads the receipt, not the column. An old complete key still refuses. An old key without a site or a
+    number no longer protects its number: it stored no copy signal, so that is neither refused nor held."""
+    invoice("old-full", "S1", "INV-2"), invoice("old-site", None, "INV-1")
+    assert export_one(client, owner, app, "old-full").status_code == 200
+    assert export_one(client, owner, app, "old-site").status_code == 200
+    make_old(app, "old-full", "rules|S1|INV-2"), make_old(app, "old-site", "rules||INV-1")
+
+    invoice("real-copy", "S1", "INV-2"), invoice("no-signal", None, "INV-1")
+    response = export_one(client, owner, app, "real-copy")
+    assert (response.status_code, response.json()["detail"]) == (409, DUPLICATE)
+    assert export_one(client, owner, app, "no-signal").status_code == 200
+    assert codes(receipt_of(app, "no-signal")["open_holds"]) == []
 
 
 def test_a_real_duplicate_exported_at_the_same_moment_is_refused_not_a_crash(client, owner, app, invoice):
@@ -227,3 +271,184 @@ def test_a_real_duplicate_exported_at_the_same_moment_is_refused_not_a_crash(cli
     with ThreadPoolExecutor(2) as pool:
         codes = sorted(pool.map(lambda jid: export_one(client, owner, app, jid).status_code, ("first", "again")))
     assert codes == [200, 409]
+
+
+# Review finding 2, routes a to d: each second copy exports (D11) with the hold on its check and its receipt.
+def test_route_a_blank_first_then_the_same_file_typed_in_full(client, owner, app, invoice):
+    invoice("blank", None, None, sha256="same-file"), invoice("typed", "S1", "INV-5", sha256="same-file")
+    assert export_one(client, owner, app, "blank").status_code == 200
+    assert POSSIBLE in attention(client, owner, app, "typed")
+    assert export_one(client, owner, app, "typed").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "typed")["open_holds"])
+    assert stored_keys(app)["typed"] == "rules|S1|INV-5"
+
+
+def test_route_a_a_number_without_a_site_first_then_the_full_key(client, owner, app, invoice):
+    invoice("no-site", None, "INV-5"), invoice("typed", "S1", "inv-5")
+    assert export_one(client, owner, app, "no-site").status_code == 200
+    assert export_one(client, owner, app, "typed").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "typed")["open_holds"])
+
+
+def test_route_b_full_first_then_a_blank_copy_of_the_same_file(client, owner, app, invoice):
+    invoice("full", "S1", "INV-5", sha256="same-file"), invoice("blank", None, None, sha256="same-file")
+    assert export_one(client, owner, app, "full").status_code == 200
+    assert export_one(client, owner, app, "blank").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "blank")["open_holds"])
+
+
+def test_route_c_clearing_the_number_of_a_refused_copy_keeps_a_hold(client, owner, app, invoice):
+    invoice("first", "S1", "INV-5", sha256="same-file"), invoice("copy", "S1", "INV-5", sha256="same-file")
+    assert export_one(client, owner, app, "first").status_code == 200
+    assert export_one(client, owner, app, "copy").status_code == 409
+    j = app.state.store.job("copy")
+    j["rules"]["fields"]["number"]["value"] = None
+    app.state.store.job("copy", j)
+    assert export_one(client, owner, app, "copy").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "copy")["open_holds"])
+
+
+def test_route_d_the_same_number_without_a_site_holds_and_never_refuses(client, owner, app, invoice):
+    invoice("one", None, "INV-5"), invoice("two", None, " inv-5 "), invoice("sited", "S1", "INV-5")
+    for jid in ("one", "two", "sited"):
+        assert export_one(client, owner, app, jid).status_code == 200
+    assert codes(receipt_of(app, "one")["open_holds"]) == []
+    assert POSSIBLE in codes(receipt_of(app, "two")["open_holds"])
+    assert POSSIBLE in codes(receipt_of(app, "sited")["open_holds"])
+
+
+def test_the_same_number_under_two_known_sites_is_two_suppliers_not_a_hold(client, owner, app, invoice):
+    invoice("one", "S1", "INV-5"), invoice("two", "S2", "INV-5")
+    assert export_one(client, owner, app, "one").status_code == 200
+    assert export_one(client, owner, app, "two").status_code == 200
+    assert codes(receipt_of(app, "two")["open_holds"]) == []
+
+
+def test_what_the_hold_cannot_catch_a_re_scan_with_no_number(client, owner, app, invoice):
+    invoice("first", "S1", "INV-5", sha256="scan-1"), invoice("re-scan", "S1", None, sha256="scan-2")
+    assert export_one(client, owner, app, "first").status_code == 200
+    assert export_one(client, owner, app, "re-scan").status_code == 200
+    assert codes(receipt_of(app, "re-scan")["open_holds"]) == []
+
+
+def test_a_review_confirm_does_not_clear_the_hold_or_mark_the_copy_ready(client, owner, app, invoice):
+    invoice("first", None, "INV-5"), invoice("copy", None, "INV-5")
+    assert export_one(client, owner, app, "first").status_code == 200
+    shown = client.get("/api/jobs/copy", headers=bearer(owner)).json()
+    assert shown["reviewed"] is True and shown["status"] == "review" and shown["validation"]["ready"] is False
+    assert POSSIBLE in codes(shown["validation"]["issues"])
+    assert client.get("/api/jobs/first", headers=bearer(owner)).json()["validation"]["issues"] == []  # exported: nothing to warn
+
+
+def test_a_copy_in_the_same_selection_exports_with_the_hold(client, owner, app, invoice):
+    invoice("one", None, "INV-5"), invoice("two", None, "INV-5")
+    result = check(client, owner, app, "one", "two")
+    assert [codes(r["attention"]) for r in result["ready"]] == [[], [POSSIBLE]]
+    assert export(client, owner, app, "one", "two").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "two")["open_holds"])
+
+
+def test_a_deleted_invoice_keeps_the_signal_on_its_tombstone(client, owner, app, invoice):
+    invoice("blank", None, None, sha256="same-file"), invoice("no-site", None, "INV-5")
+    assert export_one(client, owner, app, "blank").status_code == 200
+    assert export_one(client, owner, app, "no-site").status_code == 200
+    delete(client, owner, app, "blank", "no-site")
+    kept = tombstones(app)
+    assert kept["blank"][1]["sha256"] == "same-file" and kept["no-site"][1]["document"] == "INV-5"
+    invoice("again", None, None, sha256="same-file"), invoice("number", None, "INV-5")
+    assert POSSIBLE in attention(client, owner, app, "again")
+    assert POSSIBLE in attention(client, owner, app, "number")
+
+
+# Review finding 5: through the real rules path, not a hand-set view.
+def real_job(client, owner, app, jid, number=None):
+    source = app.state.store.root / "uploads" / f"{jid}.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    app.state.store.job(jid, {"id": jid, "filename": f"{jid}.pdf", "path": str(source), "status": "review", "revision": 1,
+                              "reviewed": True, "provenance": [], "invoice": {"number": number, "lines": [{}, {}]}})
+    assert client.get(f"/api/jobs/{jid}", headers=bearer(owner)).status_code == 200
+
+
+def save(client, owner, app, jid, number=None, entries=None):
+    j = app.state.store.job(jid)
+    body = {"invoice": {**j["invoice"], **({"number": number} if number is not None else {})},
+            "revision": j["revision"], "confirm": True, **({"entries": entries} if entries is not None else {})}
+    # json.dumps escapes a lone surrogate, which the test client's own encoder cannot send.
+    return client.post(f"/api/jobs/{jid}/review", headers={**bearer(owner), "Content-Type": "application/json"},
+                       content=json.dumps(body))
+
+
+def test_a_site_and_number_typed_at_review_make_the_real_key(client, owner, app):
+    for jid, number, site in (("first", " inv-7 ", " 101 "), ("again", "INV-7", "101")):
+        real_job(client, owner, app, jid)
+        assert save(client, owner, app, jid, entries={"header": {"number": number, "site": site}}).status_code == 200
+    assert export_one(client, owner, app, "first").status_code == 200
+    assert stored_keys(app)["first"] == "rules|101|INV-7"
+    response = export_one(client, owner, app, "again")
+    assert (response.status_code, response.json()["detail"]) == (409, DUPLICATE)
+    real_job(client, owner, app, "no-site")
+    assert save(client, owner, app, "no-site", entries={"header": {"number": "inv-7"}}).status_code == 200
+    assert export_one(client, owner, app, "no-site").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "no-site")["open_holds"])
+
+
+# Review finding 3: a value the workbook or PostgreSQL cannot hold.
+BAD_TEXT = {"nul": "A\x00B", "soh": "A\x01B", "vertical-tab": "A\x0bB", "escape": "A\x1bB", "non-character": "A\ufffeB",
+            "surrogate": "A\ud800B"}
+
+
+@pytest.mark.parametrize("name", list(BAD_TEXT))
+def test_a_typed_value_excel_cannot_hold_is_refused_at_the_save(client, owner, app, name):
+    real_job(client, owner, app, "a")
+    before = app.state.store.job("a")["revision"]
+    for attempt in ({"number": BAD_TEXT[name]}, {"entries": {"header": {"number": BAD_TEXT[name]}}}):
+        response = save(client, owner, app, "a", **attempt)
+        if name == "surrogate" and "number" in attempt:  # the request model refuses this one first, as clean
+            assert response.status_code == 422, response.text
+        else:
+            assert response.status_code == 400 and "cannot be saved" in response.json()["detail"], response.text
+    assert app.state.store.job("a")["revision"] == before
+
+
+@pytest.mark.parametrize("name", list(BAD_TEXT))
+def test_a_value_the_reader_sends_is_cleaned_and_the_invoice_exports(client, owner, app, monkeypatch, name):
+    def reader(path, options, store, ai_reader, progress, **context):
+        return {"invoice": {"number": BAD_TEXT[name], "lines": []}, "text": "INVOICE\x0cInvoice No: A" + BAD_TEXT[name] + "B\nSupplier: X" + BAD_TEXT[name] + "Y\n", "boxes": [],
+                "trace": [{"engine": "fake", "status": "extracted"}], "selected_engine": "fake", "completeness": 40,
+                "document_type_hint": None, "extraction_note": None, "evidence": {}, "readers": {}, "annotated_evidence": {}}
+    monkeypatch.setattr(main_module, "process_job", reader)
+    data = b"synthetic text invoice"
+    plan = client.post("/api/preflight", headers=bearer(owner),
+                       json={"options": OPTIONS, "files": [{"name": "a.txt", "size": len(data)}]}).json()["token"]
+    assert client.post("/api/preflight/confirm", json={"token": plan}, headers=bearer(owner)).status_code == 200
+    jid = client.post("/api/invoices", files={"file": ("a.txt", data, "text/plain")}, headers=bearer(owner),
+                      data={"options": json.dumps(OPTIONS), "preflight_token": plan}).json()["id"]
+    for _ in range(100):
+        if app.state.store.job(jid)["status"] not in ("queued", "processing"):
+            break
+        time.sleep(.1)
+    shown = client.get(f"/api/jobs/{jid}", headers=bearer(owner)).json()
+    assert shown["status"] != "error" and shown["invoice"]["number"] == "AB", shown.get("error")
+    assert shown["text"].startswith("INVOICE\x0c")  # the page mark stays: it only cannot go in a cell
+    assert not has_unwritable_text([shown["invoice"], shown["rules"]["fields"]])  # so a save sends back nothing it refuses
+    assert save(client, owner, app, jid, number="AB").status_code == 200
+    draft = client.post(f"/api/jobs/{jid}/extraction-draft", headers=bearer(owner), json={"revision": app.state.store.job(jid)["revision"], "acknowledge_unvalidated": True})
+    assert draft.status_code == 200, draft.text
+    assert export_one(client, owner, app, jid).status_code == 200
+
+
+@pytest.mark.parametrize("name", ["soh", "vertical-tab", "escape", "non-character"])  # NUL and surrogates: PostgreSQL never stored them
+def test_an_invoice_read_before_this_check_is_served_clean_and_exports(client, owner, app, name):
+    real_job(client, owner, app, "a", BAD_TEXT[name])
+    assert client.get("/api/jobs/a", headers=bearer(owner)).json()["invoice"]["number"] == "AB"
+    assert export_one(client, owner, app, "a").status_code == 200
+    real_job(client, owner, app, "b", BAD_TEXT[name])
+    assert export(client, owner, app, "b").status_code == 200
+
+
+def test_a_view_stored_before_the_check_still_exports_cleaned(client, owner, app, invoice):
+    invoice("stored", "S1", "A\x01B\ufffe")
+    response = export_one(client, owner, app, "stored")
+    assert response.status_code == 200, response.text
+    sheet = openpyxl.load_workbook(io.BytesIO(client.get(response.json()["url"], headers=bearer(owner)).content))["Header"]
+    assert sheet["B2"].value == "AB"

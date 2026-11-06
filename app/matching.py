@@ -333,11 +333,14 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
             **({"supplier_site_candidates":result["supplier_site_candidates"]} if result.get("supplier_site_candidates") else {})}
 
 
+def document_number(view):
+    return (view["fields"]["number"]["value"] or "").strip().upper()
+
+
 def duplicate_key(view):
     """What makes two invoices the same one: the number from the same supplier site. None without both (D11 exports such
     an invoice): no number leaves nothing to compare, and no site cannot tell one supplier's number from another's."""
-    f=view["fields"]
-    site,number=(f["site"]["value"] or "").strip(),(f["number"]["value"] or "").strip().upper()
+    site,number=(view["fields"]["site"]["value"] or "").strip(),document_number(view)
     return f"rules|{site}|{number}" if site and number else None
 
 
@@ -346,18 +349,35 @@ def rules_key(view,job_id):
     return duplicate_key(view) or f"rules-job|{job_id}"
 
 
+def copy_signal(view,job):
+    """What a receipt and its tombstone keep so a later copy of this invoice can be noticed; see possible_copy."""
+    return {"sha256":job.get("sha256"),"document":document_number(view)}
+
+
+def possible_copy(view,job,ledger):
+    """Not provably a duplicate, but worth a look: the same uploaded bytes, or the same number where a site is missing on
+    either side, so it may be the same supplier. A number under two known sites is two suppliers, so that is not one.
+    A re-scan with no number read shares nothing with the original and cannot be noticed."""
+    sha,number,complete=job.get("sha256"),document_number(view),duplicate_key(view)
+    return any((sha and x.get("sha256")==sha) or
+               (number and x.get("document")==number and not (complete and not x.get("invoice_key","").startswith("rules-job|")))
+               for x in ledger)
+
+
 def accepted_ids(view):
     """Review-level issues a reviewer's confirm accepts; a change here needs a fresh confirm."""
     return sorted({(i.get("rule") or "",i.get("code") or "",str(i.get("line") or "")) for i in (view or {}).get("issues",[])
                    if i.get("level","review")=="review" and i.get("blocking")})
 
 
-def rules_validation(view,ledger=(),reviewed=False):
+def rules_validation(view,ledger=(),reviewed=False,job=None):
     """Banner and readiness from the rules view only.
 
     Hard issues (duplicate, rules not run, an empty required target cell) hold the invoice whatever the reviewer does.
     Review-level issues, ITEM-LINE-95 and every other rules exception included, hold it until a reviewer confirms;
-    the confirm is the final say and the accepted issues travel in the export receipt.
+    the confirm is the final say and the accepted issues travel in the export receipt. Possible Duplicate is the
+    exception: a confirm does not clear it, so the export team always sees it on the receipt. ``job``: the unexported job
+    being checked for copies; an exported one has nothing left to warn about.
     """
     if not view:
         return {"ready":False,"issues":[{"code":"Rules Pending","message":"The fine rules have not run on this revision yet","owner":"","line":None,
@@ -371,6 +391,9 @@ def rules_validation(view,ledger=(),reviewed=False):
     if (duplicate:=duplicate_key(view)) and any(x.get("invoice_key")==duplicate for x in ledger):
         issues.append({"code":"Duplicate","message":"Invoice already exported for this supplier site","owner":"Accounts payable","line":None,
                        "blocking":True,"level":"hard"})
+    elif job and not job.get("export_id") and possible_copy(view,job,ledger):
+        issues.append({"code":"Possible Duplicate","message":"This file or invoice number was already exported; check it is not the same invoice",
+                       "owner":"Accounts payable","line":None,"blocking":True,"level":"review"})
     if not reviewed:
         issues.append({"code":"REVIEW","message":"Compare values and evidence with the document, then confirm review","owner":"","line":None,
                        "blocking":True,"level":"review"})

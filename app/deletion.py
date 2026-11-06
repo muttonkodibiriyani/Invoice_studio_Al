@@ -2,8 +2,8 @@
 
 Live job payloads, source uploads, audit evidence, generated exports and complete
 selected-batch workbooks are removed. For an approved export, only the invoice
-key and PO-line quantity allocations needed for duplicate and receipt controls
-remain. Provider backups, logs, object versions, and soft-delete retention are
+key, PO-line quantity allocations, file SHA-256 and invoice number needed for
+duplicate and receipt controls remain. Provider backups, logs, object versions, and soft-delete retention are
 outside this live-store operation and follow each provider's retention policy.
 """
 
@@ -139,6 +139,7 @@ def delete_invoices(store, selections, connection):
             tombstone.update(
                 invoice_key=invoice_key,
                 allocations=_minimal_allocations(exported["receipt"].get("allocations")),
+                **{k: exported["receipt"][k] for k in ("sha256", "document") if exported["receipt"].get(k)},
             )
         prepared_tombstones[job_id] = (exported, invoice_key, tombstone)
 

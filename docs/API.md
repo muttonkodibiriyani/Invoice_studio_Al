@@ -177,9 +177,9 @@ Review edits, retry, approve and export one invoice.
 
 | Method | Path | Access | What it does |
 |---|---|---|---|
-| `POST` | `/api/jobs/{jid}/review` | Member | **Save review edits.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409. |
+| `POST` | `/api/jobs/{jid}/review` | Member | **Save review edits.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409; a control character or another a workbook cannot hold with 400 (a value read from a document is cleaned instead). |
 | `POST` | `/api/jobs/{jid}/retry` | Member | **Read again.** Reads the invoice again under a new confirmed plan. |
-| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an invoice already exported returns its existing export. |
+| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. A duplicate is the same number from the same supplier site; with a site or number blank nothing can be called one, so the invoice exports. It gets the hold Possible Duplicate, which a review confirm does not clear, when the same file or (a site missing on either side) the same number was already exported. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed or a duplicate; an invoice already exported returns its existing export. |
 | `POST` | `/api/jobs/{jid}/extraction-draft` | Member | **Unvalidated extraction workbook.** Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated. |
 | `POST` | `/api/jobs/{jid}/draft` | Member | **Manual draft workbook.** Builds a target workbook from hand-entered Header, Tax_Breakdown and Details. Never approves. |
 
@@ -244,7 +244,7 @@ Download exports and batch workbooks; long downloads run in the background.
 | `GET` | `/api/exports/{eid}` | Member | **Download an export.** The export workbook. |
 | `GET` | `/api/exports/{eid}/evidence` | Member | **Evidence of an export.** The evidence record behind an export: sources, hashes, approvals. |
 | `POST` | `/api/exports/batch` | Member | **Export a batch.** One workbook for several invoices; each item names the invoice and its revision. Holds do not block (owner decision D11): each invoice is written with what was found, blanks blank, and its receipt records the open holds for the export team to validate by hand. All or nothing on integrity: an invoice still processing or not read, changed, already exported or duplicated refuses the batch with 409. The workbook holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet). |
-| `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Send the ready ones to /api/exports/batch. |
+| `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Possible Duplicate is a hold, so it shows under attention, not blocked; see Export one invoice. Send the ready ones to /api/exports/batch. |
 | `GET` | `/api/batches/{bid}` | Member | **Download a batch export.** The batch workbook. |
 | `POST` | `/api/exports/extraction-batch` | Member | **Unvalidated batch workbook.** What was read for several invoices, before validation. |
 | `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every sheet (red tab and header row, a note on A1, the printed header); sheet names and headers stay the template's. Never an export. |
@@ -613,7 +613,7 @@ Delete invoices, costs, users.
 
 | Method | Path | Access | What it does |
 |---|---|---|---|
-| `POST` | `/api/jobs/delete` | Admin | **Delete invoices.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean). |
+| `POST` | `/api/jobs/delete` | Admin | **Delete invoices.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean). For an exported invoice a minimal record stays so it is still noticed if sent again: its key, line quantities, the file's SHA-256 and its invoice number. |
 | `GET` | `/api/costs` | Admin | **AI spend.** Daily and month-to-date AI spend. ?days=30. |
 | `GET` | `/api/users` | Admin | **Users.** Everyone who has signed in, their role and last sign-in. Read-only: roles are granted in Entra ID. |
 

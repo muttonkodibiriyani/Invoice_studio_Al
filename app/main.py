@@ -50,8 +50,8 @@ from .mapping_tables import register_mapping_tables
 from .product_candidates import ProductCandidates
 from .coverage import coverage, refusal
 from .item_rules import rules as item_rules
-from .matching import accepted_ids, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
-from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel
+from .matching import accepted_ids, copy_signal, enrich, key, owner_entries, rules_key, rules_validation, rules_view, validate
+from .models import AI_PROVIDERS, API_KEY_PROVIDERS, MODEL_NAME, EditedInvoice, Invoice, Line, Policy, ProcessingOptions, StrictModel, has_unwritable_text, storable
 from .oauth import ChatGPTAuth, open_bundle, seal_bundle
 from .providers import Providers, allowed_ai_providers
 from .references import import_references, reference_workbook
@@ -455,7 +455,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         else:refs,rules,led=validation_context
         if j.get("export_id"):led=[x for x in led if x.get("job_id")!=j["id"]]
         if demo_references:j["validation"]=validate(inv,refs,rules,led,j.get("reviewed",False))
-        else:j["validation"]=rules_validation(fresh_rules(j),led,j.get("reviewed",False))
+        else:j["validation"]=rules_validation(fresh_rules(j),led,j.get("reviewed",False),j)
         if not j.get("export_id") and j["status"] not in ("queued","processing","error"):
             j["status"]="ready" if j["validation"]["ready"] else "review"
         return j
@@ -599,8 +599,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                         j["progress"]["characters"]=details.get("characters",0)
                     store.job(jid,j,c)
             if identity.cloud:store.ensure_blob(Path(job["path"]))
-            result=process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
-                             supplier_site=job.get("owner_supplier_site"))
+            result=storable(process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
+                                        supplier_site=job.get("owner_supplier_site")))
             annotated=result.pop("annotated_evidence")
             lines=Invoice.model_validate(result["invoice"]).model_dump(mode="json")["lines"]
             view=None
@@ -750,6 +750,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         # The confirm-time snapshot and records are served by the target-check endpoints, not with every job.
         # text_checks hold a normalised copy of the document text for the target check: never served.
         j={k:v for k,v in j.items() if k not in ("path","target_system","target_accuracy","text_checks")}
+        # Read before the save refused these: served clean, so sending the invoice back is not refused for a character nobody can see.
+        if has_unwritable_text(j.get("invoice")):j["invoice"]=Invoice.model_validate(j["invoice"]).model_dump(mode="json")
         if not full:
             j.pop("text",None);j.pop("boxes",None);j.pop("evidence",None)
             check=(j.get("rules") or {}).get("target_check")
@@ -949,6 +951,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.post("/api/jobs/{jid}/review")
     @access(MEMBER)
     def review(jid:str,body:Review):
+        if has_unwritable_text(body.model_dump()):
+            raise HTTPException(400,"This value cannot be saved: remove control characters and others a workbook cannot hold.")
         view=entries=pick=site=None;cleared=0
         if not demo_references:
             j=job_or_404(jid);assert_editable(j)
@@ -1049,7 +1053,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
                          "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1],
-                         "open_holds":open_holds(j["validation"],why),"validation":D11}
+                         "open_holds":open_holds(j["validation"],why),"validation":D11,**copy_signal(j["rules"],j)}
             receipt.update(ai_on_receipt(j))
             c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
@@ -1266,13 +1270,13 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             return j,None,[("Not Read",f"Invoice {j['filename']} has no current read yet. Refresh before exporting.")],[]
         inv=Invoice.model_validate(j["invoice"])
         if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
-        else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False))
+        else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False),j)
         reasons=[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True) and (demo_references or i["code"] in INTEGRITY)]
         if reasons:return j,result,reasons,[]
         holds=[] if demo_references else open_holds(result,refusal(coverage(j["rules"],item_rules().coverage_tiers())))
         result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"],j["id"])
         result["allocations"]=[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])
-        ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"]})
+        ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"],**({} if demo_references else copy_signal(j["rules"],j))})
         return j,result,[],holds
 
     @app.post("/api/exports/batch/check")
@@ -1317,7 +1321,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                          "allocations":result["allocations"]}
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {},
-                                   open_holds=holds,validation=D11)
+                                   open_holds=holds,validation=D11,**copy_signal(j["rules"],j))
                 receipt.update(ai_on_receipt(j))
                 entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
                 selected.append((j,receipt))

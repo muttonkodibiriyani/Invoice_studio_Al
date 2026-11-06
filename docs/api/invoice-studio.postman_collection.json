@@ -2018,7 +2018,7 @@
                     "review"
                   ]
                 },
-                "description": "**Member.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409.",
+                "description": "**Member.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409; a control character or another a workbook cannot hold with 400 (a value read from a document is cleaned instead).",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"invoice\": {\n    \"number\": \"INV-1\"\n  },\n  \"revision\": 1,\n  \"confirm\": false\n}",
@@ -2094,7 +2094,7 @@
                     "export"
                   ]
                 },
-                "description": "**Member.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an invoice already exported returns its existing export.",
+                "description": "**Member.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. A duplicate is the same number from the same supplier site; with a site or number blank nothing can be called one, so the invoice exports. It gets the hold Possible Duplicate, which a review confirm does not clear, when the same file or (a site missing on either side) the same number was already exported. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed or a duplicate; an invoice already exported returns its existing export.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"revision\": 1\n}",
@@ -2290,7 +2290,7 @@
                     "check"
                   ]
                 },
-                "description": "**Member.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Send the ready ones to /api/exports/batch.",
+                "description": "**Member.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Possible Duplicate is a hold, so it shows under attention, not blocked; see Export one invoice. Send the ready ones to /api/exports/batch.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ]\n}",
@@ -4119,7 +4119,7 @@
                     "delete"
                   ]
                 },
-                "description": "**Admin.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean).",
+                "description": "**Admin.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean). For an exported invoice a minimal record stays so it is still noticed if sent again: its key, line quantities, the file's SHA-256 and its invoice number.",
                 "body": {
                   "mode": "raw",
                   "raw": "{\n  \"jobs\": [\n    {\n      \"id\": \"{{jobId}}\",\n      \"revision\": 1\n    }\n  ],\n  \"confirm_permanent\": true\n}",

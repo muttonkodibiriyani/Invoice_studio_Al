@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from app import engines, ocr_worker
+from app import ocr_worker
 from app import target_check as tc
 from app.layout_extract import extract_invoice
 

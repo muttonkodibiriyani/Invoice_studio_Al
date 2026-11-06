@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import HEADERS, bearer
 from tests.test_ai_fallback import Source, read, sample_ai, store  # noqa: F401
 from tests.test_azure_foundry import FakeChatGPT, completed, options
+from tests.test_latest_master import activate, config
 
 FOUNDRY = {"provider": "azure"}
 USAGE = {"input_tokens": 1000, "output_tokens": 200, "input_tokens_details": {"cached_tokens": 100}}
@@ -656,3 +657,122 @@ def test_learning_keeps_a_cell_both_reads_agree_on_beside_the_same_ai_fill():
     final = {"lines": [{"qty": "1", "uom": "CTN"}, {"qty": "2", "uom": "CTN"}]}
     readers = {"ai_check": ai_check.compare(local, final, final, {}, [{"uom": "ai"}, {}])}
     assert [row["uom"] for row in ai_check.learnable(final, readers)["lines"]] == [None, "CTN"]
+
+
+# Follow-ups from Part C and the review of #53
+
+
+@pytest.mark.parametrize("sign", ["$", "€", "%"])
+def test_a_sign_both_reads_print_agrees_and_two_different_ones_do_not(sign):
+    assert ai_check.same("currency", sign, f" {sign} ")
+    readers = record_for({"currency": sign}, {"currency": sign})
+    assert ai_check.view(readers, {"currency": sign})["status"] == "confirmed"
+    assert not ai_check.same("currency", "---", "///") and not ai_check.same("currency", "$", "€")
+
+
+def row_marks(local, ai, now):
+    return ai_check.view(record_for({"lines": local}, {"lines": ai}), {"lines": now})
+
+
+def test_a_replaced_item_keeping_quantity_and_price_loses_the_row_marks():
+    row = {"sku": "ABC-1", "qty": "1", "price": "5"}
+    assert row_marks([row], [row], [row])["lines"][0] == dict.fromkeys(row, "confirmed")
+    shown = row_marks([row], [row], [{**row, "sku": "ZZZ-9"}])
+    assert shown["lines"][0] == {} and shown["status"] == "not_confirmed"
+
+
+@pytest.mark.parametrize("changed", [{"item_id": "77"}, {"gtin": "6291000000017"}, {"description": "Other goods"}], ids=["item", "barcode", "description"])
+def test_any_change_to_what_names_the_goods_loses_the_row_marks(changed):
+    row = {"sku": "ABC-1", "qty": "1", "price": "5", "description": "Rose cream"}
+    assert row_marks([row], [row], [{**row, **changed}])["lines"][0] == {}
+
+
+def test_swapped_rows_lose_their_marks_and_an_untouched_row_keeps_them():
+    one, two, three = ({"sku": s, "qty": "1", "price": "5"} for s in ("A", "B", "C"))
+    shown = row_marks([one, two, three], [one, two, three], [two, one, three])
+    assert shown["lines"][:2] == [{}, {}] and shown["lines"][2]["qty"] == "confirmed"
+
+
+def test_a_settled_quantity_stays_settled_only_on_the_same_goods():
+    invoice = {"lines": [{"sku": "BBB", "qty": "2", "price": "5"}]}
+    readers = record_for(invoice, {"lines": [{"sku": "BBB", "qty": "3", "price": "5"}]})
+    readers["ai_check"]["settled"] = {"line 1 qty": {"value": "2", "choice": "local"}}
+    assert ai_check.view(readers, invoice)["lines"][0]["qty"] == "settled"
+    assert "qty" not in ai_check.view(readers, {"lines": [{"sku": "DDD", "qty": "2", "price": "5"}]})["lines"][0]
+
+
+def test_a_replaced_item_keeps_an_open_dispute_on_its_row():
+    readers = record_for({"lines": [{"sku": "A", "qty": "1"}]}, {"lines": [{"sku": "A", "qty": "2"}]})
+    shown = ai_check.view(readers, {"lines": [{"sku": "Z", "qty": "1"}]})
+    assert shown["lines"][0] == {"qty": "disputed"} and [x["key"] for x in shown["disputes"]] == ["line 1 qty"]
+
+
+def test_a_pick_on_the_item_code_keeps_the_row_marks():
+    invoice = {"lines": [{"sku": "ABC-1", "qty": "1"}]}
+    readers = record_for(invoice, {"lines": [{"sku": "ABC-7", "qty": "1"}]})
+    readers["ai_check"]["settled"] = {"line 1 sku": {"value": "ABC-7", "choice": "ai"}}
+    assert ai_check.view(readers, {"lines": [{"sku": "ABC-7", "qty": "1"}]})["lines"][0] == {"sku": "settled", "qty": "confirmed"}
+
+
+def test_a_record_from_before_identities_were_kept_keeps_its_marks():
+    invoice = {"lines": [{"sku": "A", "qty": "1"}]}
+    readers = record_for(invoice, invoice)
+    del readers["ai_check"]["identities"]
+    assert ai_check.view(readers, invoice)["lines"][0]["qty"] == "confirmed"
+
+
+MASTER_TEXT = "Synthetic Co\nInvoice INV-9\nDate 2026-11-01\nDeliver To: 1200\nRose red 2 50.00 100.00\nNet 100.00\nVAT 5.00\n"
+
+
+def master_job(app, client, owner, tmp_path, invoice, readers):
+    """A job through the real rules on a real loaded master, where the invoice's supplier resolves to site 101."""
+    app.state.store.set("fine_rules_config", config())
+    activate(client, owner)
+    job_with(app.state.store, tmp_path, "site", readers=readers, invoice=invoice)
+    stored = app.state.store.job("site")
+    app.state.store.job("site", {**stored, "text": MASTER_TEXT})
+    view = client.get("/api/jobs/site", headers=bearer(owner)).json()["rules"]
+    assert view["fields"]["site"]["value"] == "101", "the site must resolve for this to prove anything"
+    return view
+
+
+def exported(client, owner, jid="site"):
+    response = client.post(f"/api/jobs/{jid}/export", headers=bearer(owner), json={"revision": client.get(f"/api/jobs/{jid}", headers=bearer(owner)).json()["revision"]})
+    assert response.status_code == 200, response.text
+    return load_workbook(io.BytesIO(client.get(response.json()["url"], headers=bearer(owner)).content))
+
+
+def test_ai_only_cells_carry_the_mark_in_the_downloaded_workbook(app, client, owner, tmp_path):
+    local = {"supplier_name": "Synthetic Co", "lines": [{"sku": "VPN-1", "description": "Rose red"}]}
+    final = {"number": "INV-9", "supplier_name": "Synthetic Co", "date": "2026-11-01", "date_printed": "2026-11-01", "currency": "AED", "po": "450001",
+             "location": "1200", "net": "100", "tax": "5", "lines": [{"sku": "VPN-1", "description": "Rose red", "qty": "2", "price": "50", "net_amount": "100"}]}
+    readers = {"ai_check": ai_check.compare(local, final, final, dict.fromkeys(("number", "date", "net", "tax"), "ai"), [{"qty": "ai", "price": "ai"}])}
+    view = master_job(app, client, owner, tmp_path, final, readers)
+    assert view["lines"][0]["cells"]["Item"]["value"] == "100000001"
+    book = exported(client, owner)
+    header, details = book["Header"], book["Details"]
+    for cell in (header["B2"], header["H2"], header["I2"], details["D2"], details["E2"]):
+        assert cell.value not in (None, ""), cell.coordinate
+        assert fill(cell) == MARKS["filled"][0] and cell.comment.text.startswith("AI filled"), cell.coordinate
+
+
+def test_an_item_from_an_ai_added_rule_is_flagged_through_a_site_that_resolves_with_the_ai_down(read, app, client, owner, tmp_path):
+    local = {"number": "INV-9", "supplier_name": "Synthetic Co", "date": "2026-11-01", "currency": "AED", "net": 100.0, "tax": 5.0,
+             "lines": [{"sku": "NOT-IN-MASTER", "description": "Unlisted goods", "qty": 2, "price": 50.0, "net_amount": 100.0}]}
+    fill_of_rule = {"line": 0, "rule": "air-1", "item_id": "100000001", "source": "Item master"}
+    result, _, _ = read(local=local, ai=RuntimeError("500"), text=MASTER_TEXT, fills=[fill_of_rule], **FOUNDRY)
+    assert result["invoice"]["lines"][0]["item_id"] == "100000001" and result["readers"]["ai"]["rules_applied"] == [fill_of_rule]
+    view = master_job(app, client, owner, tmp_path, result["invoice"], result["readers"])
+    item = view["lines"][0]["cells"]["Item"]
+    assert item["value"] in (None, ""), "an AI-added rule offers a candidate and does not fill the Item"
+    said = [i["message"] for i in view["issues"] if i.get("line") == 1 and "AI-added rule" in i["message"]]
+    assert said, "the reviewer is told the item comes from an AI-added rule"
+    trace = item["lookup_trace"]
+    assert trace["rows"][0] == "100000001 (AI-added rule, not printed)" and "printed" not in trace["reason"].replace("does not", "")
+    assert exported(client, owner)["Details"]["B2"].value in (None, "")
+
+
+def test_a_printed_item_number_is_still_said_to_be_printed(app, client, owner, tmp_path):
+    invoice = {"number": "INV-9", "supplier_name": "Synthetic Co", "lines": [{"sku": "NOT-IN-MASTER", "item_id": "100000001", "description": "Unlisted goods", "qty": "2", "price": "50"}]}
+    view = master_job(app, client, owner, tmp_path, invoice, {"ai_check": ai_check.not_read("skipped")})
+    assert view["lines"][0]["cells"]["Item"]["lookup_trace"]["rows"][0] == "100000001 (ITEM_PARENT printed)"

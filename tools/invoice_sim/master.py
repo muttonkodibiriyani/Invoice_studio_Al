@@ -21,7 +21,8 @@ def parent_id(item_id: str) -> str:
 
 def site_of(supplier: str, currency: str | None) -> dict:
     digest = zlib.crc32(f"{supplier}|{currency}".encode())
-    code = f"S{digest % 90000 + 10000}"
+    # One supplier code per name, one site per currency: what makes a supplier ambiguous is tested on purpose, not by accident here.
+    code = f"S{zlib.crc32(supplier.encode()) % 90000 + 10000}"
     return {"supplier_site": str(digest % 90000000 + 10000000), "currency": currency or "AED", "status": "Active",
             "supplier_name": supplier, "supplier_code": code, "site_name": f"{code}RA4{currency or 'AED'}"}
 

@@ -11,9 +11,15 @@ from .generator import CURRENCIES
 
 HEADER_FIELDS = ("number", "supplier_name", "date", "po", "currency", "net", "tax")
 LINE_FIELDS = ("sku", "gtin", "description", "uom", "qty", "price", "net_amount")
-# Words a rules issue names when it concerns the field. A broad match on purpose: it can only undercount silent wrongs.
-ISSUE_WORDS = {"number": ("document", "invoice number"), "supplier_name": ("supplier", "issuer"), "date": ("date",), "po": ("order",),
-               "currency": ("currency",), "net": ("net", "total", "arithmetic", "gross", "sum"), "tax": ("tax", "vat", "arithmetic", "gross", "total")}
+# What an issue must say to count as a flag on the field. Only issues a perfect read of the same document does not raise are
+# looked at (new_issues), because the supplier, mapping and currency issues fire on every invoice and would hide silent wrongs.
+ISSUE_WORDS = {"number": ("document number", "invoice number"), "supplier_name": ("supplier",), "date": ("date",), "po": ("order",),
+               "currency": ("currency",), "net": ("net ", "arithmetic", "gross", "sum of"), "tax": ("tax ", "vat", "arithmetic", "gross")}
+VIEW_FIELD = {"supplier_name": "site"}
+GAP_NAME = {"supplier_name": "supplier_name", "number": "number", "date": "date", "po": "po", "currency": "currency", "net": "net", "tax": "tax"}
+LINE_CELL = {"sku": ("Item", "VPN"), "gtin": ("Item", "UPC"), "description": ("Item",), "uom": ("Quantity",), "qty": ("Quantity",), "price": ("Unit Cost",), "net_amount": ("Unit Cost", "Quantity")}
+LINE_CODES = {"sku": ("Item Exception",), "gtin": ("Item Exception",), "description": ("Item Exception",), "uom": ("Line Parsing Exception",),
+              "qty": ("Line Parsing Exception",), "price": ("Line Parsing Exception",), "net_amount": ("Line Parsing Exception",)}
 SYMBOLS = {v[2].upper().rstrip("."): k for k, v in CURRENCIES.items()}
 
 
@@ -114,17 +120,35 @@ def align(read_lines, truth_lines):
     return sorted(out), dropped, phantom
 
 
-def field_flagged(field, read_result, view):
+def _issue_key(issue):
+    return issue.get("rule"), issue.get("field"), issue.get("line"), re.sub(r"[\d.,]+", "#", issue.get("message") or "")
+
+
+def new_issues(view, baseline):
+    """Issues this read raised that a perfect read of the same document did not. Without a baseline, all of them."""
+    known = {_issue_key(i) for i in (baseline or {}).get("issues") or []}
+    return [i for i in (view or {}).get("issues") or [] if _issue_key(i) not in known]
+
+
+def field_flagged(field, read_result, view, baseline=None):
+    """Would a reviewer be told about this field? Its own cell, its evidence, a reader gap, or an issue only this read raised."""
     evidence = ((read_result.get("evidence") or {}).get("header") or {}).get(field) or {}
-    if evidence.get("review"):
+    if evidence.get("review") or GAP_NAME[field] in ((read_result.get("readers") or {}).get("gaps") or []):
         return True
-    view = view or {}
-    key = {"supplier_name": "supplier", "number": "document"}.get(field, field)
-    for name, cell in (view.get("fields") or {}).items():
-        if (name == field or name == key) and cell.get("flagged"):
-            return True
-    words = ISSUE_WORDS.get(field, ())
-    return any(any(w in (i.get("message") or "").lower() for w in words) for i in view.get("issues") or [] if not i.get("line"))
+    cell = ((view or {}).get("fields") or {}).get(VIEW_FIELD.get(field, field)) or {}
+    if cell.get("flagged"):
+        return True
+    words = ISSUE_WORDS[field]
+    return any(any(w in (i.get("message") or "").lower() for w in words) for i in new_issues(view, baseline) if not i.get("line"))
+
+
+def line_flagged(field, index, view):
+    """A flag on a cell this field feeds, or an issue of the matching kind on that line."""
+    lines = (view or {}).get("lines") or []
+    cells = lines[index].get("cells", {}) if index < len(lines) else {}
+    if any((cells.get(name) or {}).get("flagged") for name in LINE_CELL[field]):
+        return True
+    return any(i.get("line") == index + 1 and i.get("code") in LINE_CODES[field] for i in (view or {}).get("issues") or [])
 
 
 def lines_add_up(invoice):
@@ -135,25 +159,24 @@ def lines_add_up(invoice):
     return abs(sum(amounts) - net) <= Decimal("0.05")
 
 
-def score_read(truth: dict, result: dict, view: dict | None = None) -> dict:
+def score_read(truth: dict, result: dict, view: dict | None = None, baseline: dict | None = None) -> dict:
     """Verdicts for one read of one document, with each WRONG value and whether anything flagged it."""
     invoice = result.get("invoice") or {}
     out = {"fields": {}, "lines": {f: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0} for f in LINE_FIELDS}, "wrong": []}
     for field in HEADER_FIELDS:
         verdict = verdict_header(field, invoice, truth)
-        flagged = verdict == "WRONG" and field_flagged(field, result, view)
+        flagged = verdict == "WRONG" and field_flagged(field, result, view, baseline)
         out["fields"][field] = {"verdict": verdict, "flagged": flagged}
         if verdict == "WRONG":
             out["wrong"].append({"field": field, "truth": truth.get(field), "read": invoice.get(field), "flagged": flagged})
     read_lines, truth_lines = invoice.get("lines") or [], truth.get("lines") or []
     pairs, dropped, phantom = align(read_lines, truth_lines)
-    line_issues = {i.get("line") for i in (view or {}).get("issues") or [] if i.get("line")}
     for i, j in pairs:
         for field in LINE_FIELDS:
             verdict = verdict_line(field, read_lines[i].get(field), truth_lines[j].get(field))
             cell = out["lines"][field]
             cell[verdict] += 1
-            if verdict == "WRONG" and i + 1 not in line_issues:
+            if verdict == "WRONG" and not line_flagged(field, i, view):
                 cell["silent"] += 1
     for j in dropped:
         for field in LINE_FIELDS:

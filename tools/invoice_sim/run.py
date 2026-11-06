@@ -97,6 +97,17 @@ def read(args):
             print(n, name, time.strftime("%H:%M:%S"), flush=True)
 
 
+def _plain(value):
+    # The JSON form the app hands to rules_view: create_app keeps its own copy of this inside the closure.
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items() if not str(k).startswith("_")}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, set):
+        return sorted(_plain(v) for v in value)
+    return value if isinstance(value, (int, float, str, bool)) or value is None else str(value)
+
+
 class RulesRig:
     """The real rule chain and export workbook on a master activated through the real API."""
 
@@ -129,21 +140,20 @@ class RulesRig:
         self.source = LookupRulesSource(self.app.state.store)
         self.config = RulesConfig.from_dict(rules_config(c))
 
-    def run(self, invoice_dict, supplier, site, text, boxes):
-        """As a reviewer who confirmed the supplier: the view on screen and the Details rows of the export."""
+    def run(self, invoice_dict, supplier, text, boxes, evidence=None, ocr_lines=False):
+        """As a reviewer who confirmed the printed supplier name: the view on screen and the Details rows of the export."""
         import io
 
         import openpyxl
 
         from app.excel import rules_workbook
         from app.fine_rules import run_invoice
-        from app.main import plain
         from app.matching import rules_view
         from app.models import Invoice
         invoice = Invoice.model_validate({**invoice_dict, "supplier_name": supplier})
         result = run_invoice(invoice, self.source, self.config, filename="sim.pdf", text_value=text, boxes=boxes,
-                             ocr_lines=False, owner_supplier_site=site)
-        view = rules_view(plain(result), text, boxes, None, None, None)
+                             ocr_lines=ocr_lines)
+        view = rules_view(_plain(result), text, boxes, evidence, None, None)
         content, _ = rules_workbook([{**view, "owner_accepted": []}], "barcode", blanks=True)
         book = openpyxl.load_workbook(io.BytesIO(content))
         sheet = book["Details"]
@@ -152,7 +162,7 @@ class RulesRig:
         return view, rows
 
 
-def _item_verdict(row, truth_line, status):
+def _item_verdict(row, truth_line):
     from .master import parent_id
     got = "" if row is None or row.get("Item") in (None, "") else str(row["Item"])
     want = parent_id(truth_line["item_id"]) if truth_line and truth_line.get("item_id") else ""
@@ -166,20 +176,19 @@ def score_items(truth, read_lines, pairs, phantom, view, rows):
     from .score import number
     items, columns, wrong = defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0}), defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0}), []
     view_lines = view.get("lines") or []
-    issues = {i.get("line") for i in view.get("issues") or [] if i.get("line")}
     by_read = dict(pairs)
     truth_lines = truth["lines"]
     for i, row in enumerate(rows):
         j = by_read.get(i)
         line = truth_lines[j] if j is not None else None
         cls = line["item_class"] if line else "phantom_row"
-        verdict = _item_verdict(row, line, None)
-        status = view_lines[i]["status"] if i < len(view_lines) else ""
-        flagged = (i + 1) in issues or status not in ("Matched", "")
+        verdict = _item_verdict(row, line)
+        cell = view_lines[i].get("cells", {}).get("Item", {}) if i < len(view_lines) else {}
+        flagged = bool(cell.get("flagged")) or any(n.get("line") == i + 1 and n.get("code") == "Item Exception" for n in view.get("issues") or [])
         items[cls][verdict] += 1
         if verdict == "WRONG":
             items[cls]["silent"] += 0 if flagged else 1
-            wrong.append({"class": cls, "line": i + 1, "truth_item": line and line.get("item_id"), "picked": row.get("Item"), "method": view_lines[i]["match_method"] if i < len(view_lines) else "",
+            wrong.append({"class": cls, "line": i + 1, "truth_item": line and line.get("item_id"), "picked": row.get("Item"), "method": view_lines[i].get("match_method") if i < len(view_lines) else "",
                           "sku_read": read_lines[i].get("sku") if i < len(read_lines) else None, "gtin_read": read_lines[i].get("gtin") if i < len(read_lines) else None, "flagged": flagged})
         if line:
             expect = {"UPC": line.get("gtin"), "Quantity": line.get("qty"), "Unit Cost": line.get("price")}
@@ -195,8 +204,15 @@ def score_items(truth, read_lines, pairs, phantom, view, rows):
     return dict(items), dict(columns), wrong
 
 
+def _truth_invoice(truth):
+    fields = ("number", "supplier_name", "date", "date_printed", "po", "currency", "net", "tax")
+    lines = [{k: line.get(k) for k in ("sku", "gtin", "description", "uom", "qty", "price", "net_amount")} for line in truth["lines"]]
+    return {**{k: truth.get(k) for k in fields}, "lines": lines}
+
+
 def score(args):
-    from .master import site_of
+    from app.fine_rules import ocr_read
+
     from .score import HEADER_FIELDS, LINE_FIELDS, score_read
     out = Path(args.out)
     manifest = json.loads((out / "manifest.json").read_text())
@@ -217,16 +233,17 @@ def score(args):
             entry.update(crash=result["crash"], message=result.get("message"))
             results.append(entry)
             continue
-        view, rows = None, []
+        view, rows, baseline = None, [], None
         rules_error = None
         if inv and result.get("invoice") is not None:
-            code = inv.style["totals_values"]["code"]
-            site = site_of(truth["supplier_name"], code)["supplier_site"]
             try:
-                view, rows = rig.run(result["invoice"], truth["supplier_name"], site, result.get("text") or "", result.get("boxes") or [])
+                ocr = ocr_read(result)
+                text, boxes = result.get("text") or "", result.get("boxes") or []
+                view, rows = rig.run(result["invoice"], truth["supplier_name"], text, boxes, result.get("evidence"), ocr)
+                baseline, _ = rig.run(_truth_invoice(truth), truth["supplier_name"], text, boxes, result.get("evidence"), ocr)
             except Exception as error:
                 rules_error = f"{type(error).__name__}: {str(error)[:200]}"
-        scored = score_read(truth, result, view)
+        scored = score_read(truth, result, view, baseline)
         entry.update(scored)
         entry["rules_error"] = rules_error
         entry["status"] = (view or {}).get("status")

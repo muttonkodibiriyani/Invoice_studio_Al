@@ -22,7 +22,6 @@ from .files import _join, _pdf
 from .generator import SEED, render_pdf
 from .master import parent_id, site_of
 from .run import RulesRig, corpus
-from .scan import scan_pdf
 
 HOST = "sim-foundry.openai.azure.com"
 MODEL = "sim-reader"
@@ -249,6 +248,8 @@ def told(job) -> dict:
 
 
 def main():
+    from .scan import scan_pdf
+
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="")

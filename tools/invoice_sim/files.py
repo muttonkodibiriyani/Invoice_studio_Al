@@ -10,7 +10,6 @@ import random
 import time
 from pathlib import Path
 
-import numpy as np
 import openpyxl
 import pypdfium2
 from PIL import Image
@@ -18,7 +17,6 @@ from reportlab.lib.pdfencrypt import StandardEncryption
 from reportlab.pdfgen import canvas
 
 from .generator import render_pdf
-from .scan import scan_pdf
 
 OPTIONS = {"engine": "auto", "ai_fallback": False, "provider": "openai", "model": "", "language": "en"}
 LETTER = ["Dear Sir or Madam,", "We write to confirm the annual maintenance visit next month.", "Please make sure the loading bay is clear.",
@@ -56,6 +54,10 @@ def _image(pdf: bytes, fmt: str, dpi=150) -> bytes:
 
 
 def cases(c, folder: Path) -> list[dict]:
+    import numpy as np
+
+    from .scan import scan_pdf
+
     """Name, bytes, what the file is. The invoices come from the corpus, so the expected number is known."""
     rng = random.Random(c.seed)
     folder.mkdir(parents=True, exist_ok=True)

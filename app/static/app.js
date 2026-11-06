@@ -2210,9 +2210,16 @@ function renderExportButton(job) {
   $("#export-job").textContent = exported ? "Download Excel" : "Export Excel";
 }
 
+function refuseUnsavedExport() {
+  if (!app.reviewDirty) return false;
+  notify("Save the current invoice before exporting. Your unsaved edits are still in the form.", "error", 8000);
+  $("#save-review").focus();
+  return true;
+}
+
 async function exportCurrentJob() {
   const job = app.currentJob;
-  if (!job) return;
+  if (!job || refuseUnsavedExport()) return;
   if (job.export_id) return writeExport(job);
   const button = $("#export-job");
   button.disabled = true;
@@ -2232,6 +2239,7 @@ async function exportCurrentJob() {
     notify("The selected invoice changed during the check. Nothing was exported; open the invoice and export again.", "error", 7000);
     return;
   }
+  if (refuseUnsavedExport()) return;
   if (!warning) return writeExport(job);
   app.exportPending = job;
   $("#export-confirm-text").textContent = `${job.filename}: ${warning} Export anyway?`;
@@ -2246,10 +2254,13 @@ async function writeExport(job) {
   button.textContent = "Preparing…";
   try {
     const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/export`, { method: "POST", body: { revision: job.revision } });
-    await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
-    await loadState();
-    // Unsaved edits on another invoice stay; the exported invoice itself always reloads, so it shows as locked.
-    if (app.selectedJobId && (app.selectedJobId === job.id || !app.reviewDirty)) await selectJob(app.selectedJobId);
+    try {
+      await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
+    } finally {
+      await loadState();
+      // Unsaved edits on another invoice stay; the exported invoice itself always reloads, so it shows as locked, even if the download failed.
+      if (app.selectedJobId && (app.selectedJobId === job.id || !app.reviewDirty)) await selectJob(app.selectedJobId);
+    }
     notify("Excel workbook prepared.");
   } catch (error) {
     notify(error.message, "error", 7000);

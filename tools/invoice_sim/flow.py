@@ -142,9 +142,15 @@ def typed_entries(truth, tax_code="SIMV5", items=True):
 
 
 def review_typed(api, job, truth, items=True, site=None):
-    """The reviewer's typed values. A name typed on its own does not resolve a supplier the rules could not find: that takes the site picker, so site is what picking sends."""
-    chosen = {"supplier_code": site["supplier_code"], "supplier_site": site["supplier_site"]} if site else {}
-    return api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": _typed_invoice(truth), "revision": job["revision"], "confirm": True, "entries": typed_entries(truth, items=items), **chosen})
+    """The reviewer's typed values. A name typed on its own does not always resolve a supplier: a site comes from the picker when the rules offer candidates, otherwise it is typed in its review cell."""
+    entries, chosen = typed_entries(truth, items=items), {}
+    if site:
+        offered = (job.get("rules") or {}).get("supplier_site_candidates") or []
+        if offered:
+            chosen = {"supplier_code": site["supplier_code"], "supplier_site": site["supplier_site"]}
+        else:
+            entries["header"]["site"] = site["supplier_site"]
+    return api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": _typed_invoice(truth), "revision": job["revision"], "confirm": True, "entries": entries, **chosen})
 
 
 def review_with_pick(api, job, truth, invoice, items=True):
@@ -311,22 +317,20 @@ def blank_keys(api, by, out):
         fields = (now.get("rules") or {}).get("fields", {})
         before = [i["message"] for i in (now.get("validation") or {}).get("issues", []) if i.get("code") == "Duplicate"]
         made = export(api, job["id"])
-        result[f"{name}: {inv.id}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
+        result[f"{name}: {inv.id} #{len(result)}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
                                        "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail")}
-    readable = ("grid-classic", "ruled-zebra", "boxed-header", "inline-header")
     groups = {}
     for inv in by.values():
-        if inv.family in readable:
-            groups.setdefault((inv.truth["supplier_name"], inv.style["totals_values"]["code"]), []).append(inv)
-    pair = next((g[:2] for g in groups.values() if len(g) > 1), None)
+        groups.setdefault((inv.truth["supplier_name"], inv.style["totals_values"]["code"]), []).append(inv)
+    pairs = [g[:2] for g in groups.values() if len(g) > 1][:3]
     # The same document uploaded twice shares a site however the supplier reads; two documents from one supplier are the case as a user meets it.
     forced("no number, same document twice", by["grid-classic-03"], None, None)
     forced("no number, same document twice", by["grid-classic-03"], None, None)
-    if pair:
+    for pair in pairs:
         forced("no number, two documents one supplier", pair[0], None, None)
         forced("no number, two documents one supplier", pair[1], None, None)
-    else:
-        result["no number, two documents one supplier"] = "no such pair in the readable families"
+    if not pairs:
+        result["no number, two documents one supplier"] = "no such pair in the corpus"
 
     def forced_letter(name, n, number):
         def draw(page):

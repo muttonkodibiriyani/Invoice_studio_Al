@@ -249,6 +249,7 @@ FAMILIES: dict[str, dict] = {
 # How a line relates to the master. Share of lines; the truth Item ID follows from the class.
 ITEM_CLASSES = [("in_master_code", 50), ("in_master_barcode", 16), ("not_in_master", 10), ("lookalike_code", 4),
                 ("ambiguous_code", 6), ("ambiguous_barcode", 4), ("other_supplier_code", 6), ("other_supplier_barcode", 4)]
+_DEGRADED_BASES = ["grid-classic", "plain-whitespace", "ruled-zebra", "vat-summary", "boxed-header", "supplier-labelled"]
 _DATEFMT = ["dmy_slash", "dmon", "iso", "long", "dmy_dot", "dmy_dash"]
 
 
@@ -391,7 +392,7 @@ def _lines(rng, s, dec, master, supplier):
     return lines
 
 
-def build_invoice(index: int, family: str, seed: int, master: _Master) -> Invoice:
+def build_invoice(index: int, family: str, seed, master: _Master) -> Invoice:
     rng = random.Random(f"{seed}:{family}:{index}")
     s = _style(rng, family)
     code = s.get("currency_pool") and rng.choice(s["currency_pool"]) or rng.choice(list(CURRENCIES))
@@ -452,9 +453,18 @@ def build_invoice(index: int, family: str, seed: int, master: _Master) -> Invoic
     return Invoice(f"{family}-{index:02d}", family, truth, s, code)
 
 
-def build_corpus(seed: int = SEED, per_family: int = 5) -> Corpus:
+def build_corpus(seed: int = SEED, per_family: int = 5, degraded: tuple[str, ...] = (), degraded_per_family: int = 5) -> Corpus:
+    """``degraded``: family names of degrade.py. Each takes a base layout; the base families' invoices do not change."""
     master = _Master(random.Random(f"{seed}:master"))
     invoices = [build_invoice(i, fam, seed, master) for fam in FAMILIES for i in range(per_family)]
+    for fam in degraded:
+        for i in range(degraded_per_family):
+            base = random.Random(f"{seed}:{fam}:{i}:base").choice(_DEGRADED_BASES)
+            inv = build_invoice(i, base, f"{seed}:{fam}", master)
+            if fam == "thermal-faded":
+                inv = build_invoice(i, "receipt-narrow", f"{seed}:{fam}", master)
+            inv.family, inv.id = fam, f"{fam}-{i:02d}"
+            invoices.append(inv)
     return Corpus(invoices, master.rows, seed)
 
 

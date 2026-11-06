@@ -402,6 +402,18 @@ BOUNDARY_PAIRS = [
     ("Star Building Materials", "Moon Building Materials", False),
     ("Star Food Industries LLC", "Moon Food Industries LLC", False),
     ("شركة النور للمواد الغذائية", "شركة الفجر للمواد الغذائية", False),
+    # The same words in another order, or one repeated.
+    ("Ali Ahmed Trading", "Ahmed Ali Trading", False),
+    ("محمد علي للتجارة", "علي محمد للتجارة", False),
+    ("Star Moon Foods", "Moon Star Foods", False),
+    ("A&B Foods", "B&A Foods", False),
+    ("Store 1.2", "Store 2.1", False),
+    ("Star Star Foods", "Star Foods", False),
+    # Two dotted letters are initials, even when they spell a legal form or an article.
+    ("A.L. Foods", "E.L. Foods", False),
+    ("A.L. Foods", "Foods", False),
+    ("C.O. Foods", "Foods", False),
+    ("F.Z. Foods", "Foods", False),
 ]
 
 
@@ -467,6 +479,7 @@ def test_close_supplier_names_differ_only_by_legal_form_or_article(one, other, c
     ("SA Foods", "Foods", False),
     ("Northwind Trading", "Northwind Trading LLC", True),
     ("Northwind L.L.C", "Northwind LLC", True),
+    ("Gulf Trading W.L.L", "Gulf Trading", True),
     ("Gulf Trading LLC", "Gulf Trading Co", True),
 ])
 def test_a_pick_from_accept_through_add_and_fill_follows_the_name_boundary(store, printed, row_supplier, rule):

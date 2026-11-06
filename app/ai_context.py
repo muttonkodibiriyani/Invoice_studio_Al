@@ -95,18 +95,21 @@ def _name_score(one, other):
 
 
 def _company_words(name):
-    """The name without legal forms or articles. A dotted abbreviation is one word, so L.L.C reads as LLC; any other single
-    letter or digit stays: Star A is not Star B, and Store 1 is not Store 2."""
-    words = set()
+    """The name's words in order, without legal forms or articles. Dotted single letters are one word, so L.L.C reads as LLC;
+    two of them are initials and stay, because A.L. is not the article. Any other single letter or digit stays: Star A is
+    not Star B, and Store 1 is not Store 2."""
+    words = []
     for token in re.findall(r"[^\W_]+(?:\.[^\W_]+)*", str(name or "").casefold()):
         parts = token.split(".")
-        words.update(["".join(parts)] if len(parts) > 1 and all(len(part) == 1 and part.isalpha() for part in parts) else parts)
-    return words - LEGAL_NAME_WORDS
+        dotted = len(parts) > 1 and all(len(part) == 1 and part.isalpha() for part in parts)
+        words += [word for word in (["".join(parts)] if dotted else parts) if word not in LEGAL_NAME_WORDS or (dotted and len(parts) == 2)]
+    return words
 
 
 def close_names(one, other):
-    """The same supplier, written with or without its legal form: every other word must match. A true variant with one more
-    word stays a suggestion a person can accept, because a wrong suggestion writes nothing and a wrong rule keeps filling."""
+    """The same supplier, written with or without its legal form: every other word must match, in the same order. Ali Ahmed
+    Trading is not Ahmed Ali Trading. A true variant with one more word stays a suggestion a person can accept, because a
+    wrong suggestion writes nothing and a wrong rule keeps filling."""
     words = _company_words(one)
     return bool(words) and words == _company_words(other)
 

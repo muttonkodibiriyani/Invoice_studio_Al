@@ -329,7 +329,8 @@ def test_changing_the_azure_connection_turns_the_assistant_off(studio_app, found
     connection_test(client, token)
     assert state(client, token)["enabled"]
     if change == "connect":
-        r = client.post("/api/connections/azure", json={"endpoint": ENDPOINT, "api_key": "another-key"},
+        app.state.providers.test_azure = lambda connection: None  # the connection test has its own tests
+        r = client.post("/api/connections/azure", json={"endpoint": ENDPOINT, "name": "reader", "api_key": "another-key"},
                         headers=bearer(token))
     else:
         r = client.delete("/api/connections/azure", headers=bearer(token))

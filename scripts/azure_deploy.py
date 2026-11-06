@@ -10,6 +10,7 @@ request. The preflight runs in this order and stops at the first check that fail
 before anything is created:
 
   kit        every placeholder filled, nothing missing or unknown; Entra in the public cloud
+  ai         the AI endpoint is one the app accepts, with a deployment, managed identity and an egress rule; or n/a
   tools      az and Bicep present
   sign-in    signed in, in the kit's tenant and subscription, as TARKESH_UPN
   group      the resource group exists in AZ_REGION and is empty (--rerun and --image skip "empty")
@@ -45,10 +46,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from app import azure_foundry  # noqa: E402  standard library only, so Cloud Shell runs it with no install
+
 TEMPLATE = ROOT / "infra" / "azure" / "main.bicep"
 STATE = Path.home() / "inv-studio-azure"
 DEPLOYMENT_NAME = "invstudio-infra"
@@ -75,12 +81,11 @@ KIT_KEYS = (
 # The app's sign-in authority is fixed at the public cloud (Entra design 01a187ad-16bc §3.1).
 PUBLIC_CLOUD = {"public", "azurecloud", "login.microsoftonline.com", "https://login.microsoftonline.com"}
 NOT_APPLICABLE = "n/a"
+AI_EGRESS = re.compile(r"[A-Za-z][A-Za-z0-9.]{1,80}")  # a service tag, optionally with .region
 
 # Kit value -> main.bicep parameter. A parameter main.bicep does not declare yet (the "(new)" lines of the
 # access request) is skipped with a note, and passed once the Entra or target-round change adds it.
-# CITADEL_ENDPOINT and CITADEL_DEPLOYMENT are record only: release 1 runs with AI off. With an endpoint set
-# the app reports Foundry connected on the placeholder key, and a Citadel host outside the allow-list of
-# app/azure_foundry.py makes configured() raise. AI is switched on later, by AZURE.md §7.
+# CITADEL_ENDPOINT=n/a deploys with AI off; the other AI lines are then ignored. check_ai() guards the rest.
 STRING = lambda v: v  # noqa: E731
 
 
@@ -134,15 +139,24 @@ PARAMS = {
     "HUB_FIREWALL_IP": ("egressFirewallIp", ip_address),
     "PDNS_ZONE_IDS": ("privateDnsZoneIds", json.loads),
     "AMPLS_ID": ("amplsId", STRING),
+    "CITADEL_ENDPOINT": ("foundryEndpoint", STRING),
+    "CITADEL_DEPLOYMENT": ("foundryDeployment", STRING),
     "CITADEL_AUTH_MODE": ("foundryAuthMode", auth_mode),
     "LAW_ID": ("existingLogWorkspaceId", STRING),
     # Optional lines (InfoSec hardening). A kit without them still works: they are left at main.bicep's defaults.
     "ALERT_EMAILS": ("alertEmails", email_list),
     "INGRESS_ALLOWED_CIDRS": ("ingressAllowedCidrs", cidr_list),
     "RESTRICT_EGRESS": ("restrictEgress", boolean),
+    # Optional lines (AI on, AZURE.md §7).
+    "CITADEL_GATEWAY_HOST": ("foundryGatewayHost", str.casefold),
+    "CITADEL_TOKEN_SCOPE": ("foundryTokenScope", STRING),
+    "AI_EGRESS_DESTINATION": ("aiEgressDestination", STRING),
 }
 # Lines a kit may leave out: added after the access request, so an older filled-in kit stays valid.
-OPTIONAL_KIT_KEYS = ("ALERT_EMAILS", "INGRESS_ALLOWED_CIDRS", "RESTRICT_EGRESS")
+OPTIONAL_KIT_KEYS = ("ALERT_EMAILS", "INGRESS_ALLOWED_CIDRS", "RESTRICT_EGRESS",
+                     "CITADEL_GATEWAY_HOST", "CITADEL_TOKEN_SCOPE", "AI_EGRESS_DESTINATION")
+# Meaningless without an endpoint: an AI-off kit may keep them filled, they are not passed.
+AI_ONLY_KEYS = ("CITADEL_DEPLOYMENT", "CITADEL_GATEWAY_HOST", "CITADEL_TOKEN_SCOPE", "AI_EGRESS_DESTINATION")
 # main.bicep's own default tags, kept when the platform's tags are added.
 DEFAULT_TAGS = {"application": "inv-studio", "managedBy": "infra/azure/main.bicep"}
 
@@ -170,6 +184,8 @@ NOT_RUN = (
     "ACR Tasks allowed on the subscription (access request D3): shows on the first image build",
     "Entra tenant settings, consent and Conditional Access (E5, E6): shows at the first sign-in",
     "Hub firewall allow-list and routing (H3, H4): shows when the first revision starts",
+    "With AI on, the app identity's Cognitive Services OpenAI User role on the Foundry resource (AZURE.md §7): "
+    "shows at the first AI read",
 )
 
 
@@ -227,6 +243,75 @@ def read_kit(path):
     return kit
 
 
+def check_ai(kit):
+    """AI on or off, decided before anything is created. The origin to probe when AI is on, else None."""
+    endpoint = kit["CITADEL_ENDPOINT"]
+    if endpoint == NOT_APPLICABLE:
+        print("  note  AI off on this deploy: CITADEL_ENDPOINT is n/a. AZURE.md §7 switches it on later")
+        return None
+    gateway = "" if kit["CITADEL_GATEWAY_HOST"] == NOT_APPLICABLE else kit["CITADEL_GATEWAY_HOST"].casefold()
+    if gateway and not azure_foundry.valid_gateway(gateway):
+        raise Stop("deploy kit: CITADEL_GATEWAY_HOST must be one bare host name, with no https://, path, port or address")
+    try:
+        origin = azure_foundry.normalise_endpoint(endpoint, gateway)
+    except ValueError as err:
+        host = (urllib.parse.urlsplit(endpoint if "://" in endpoint else "https://" + endpoint).hostname or "").casefold()
+        hint = (" Name exactly this host in CITADEL_GATEWAY_HOST to use the gateway." if not gateway
+                and host.endswith(".azure-api.net") else "")
+        raise Stop(f"deploy kit: the app would refuse CITADEL_ENDPOINT: {err}.{hint} The endpoint must be the host "
+                   "alone, or end in /openai or /openai/v1, or be a Foundry project (<resource>.services.ai.azure.com/api/projects/"
+                   "<project>); a gateway under any other path needs its API moved. "
+                   "Write n/a to deploy with AI off") from None
+    if gateway and origin != "https://" + gateway:
+        raise Stop(f"deploy kit: CITADEL_GATEWAY_HOST is {gateway}, but CITADEL_ENDPOINT is {origin}: "
+                   "they must name the same host, or write n/a for the gateway")
+    if not azure_foundry._DEPLOYMENT.fullmatch(kit["CITADEL_DEPLOYMENT"]) or kit["CITADEL_DEPLOYMENT"] == NOT_APPLICABLE:
+        raise Stop("deploy kit: CITADEL_DEPLOYMENT must name the Foundry deployment, or the agent on a project endpoint, when CITADEL_ENDPOINT is set")
+    try:
+        mode = auth_mode(kit["CITADEL_AUTH_MODE"])
+    except ValueError:
+        raise Stop("deploy kit: CITADEL_AUTH_MODE is not in the form the comment on its line asks for") from None
+    if mode != "managed_identity":
+        raise Stop("deploy kit: an endpoint with key auth would report Foundry connected on the placeholder key. Use "
+                   "CITADEL_AUTH_MODE=managed_identity, or write CITADEL_ENDPOINT=n/a and follow AZURE.md §7 for a key")
+    scope = kit["CITADEL_TOKEN_SCOPE"]
+    if scope != NOT_APPLICABLE and not azure_foundry._SCOPE.fullmatch(scope):
+        raise Stop("deploy kit: CITADEL_TOKEN_SCOPE must look like api://<gateway app id>/.default, or write n/a")
+    egress = kit["AI_EGRESS_DESTINATION"]
+    if not (AI_EGRESS.fullmatch(egress) and egress != NOT_APPLICABLE or is_cidr(egress)):
+        raise Stop("deploy kit: AI_EGRESS_DESTINATION must be the Foundry or gateway private endpoint CIDR, or a service "
+                   "tag such as CognitiveServicesFrontend: without it the apps NSG blocks every AI call")
+    ok(f"AI on: endpoint {origin} accepted by the app" + (", by the exact gateway host in the kit" if gateway else ""))
+    return origin
+
+
+def is_cidr(value):
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def probe_endpoint(origin):
+    """True when the endpoint answers at all over TLS: any HTTP status counts, no credential is sent."""
+    try:
+        urllib.request.urlopen(origin + "/openai/v1/models", timeout=10)  # noqa: S310  an https origin check_ai accepted
+    except urllib.error.HTTPError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def report_probe(origin, probe):
+    if probe(origin):
+        ok(f"{origin} answers from here (no credential sent)")
+    else:
+        print(f"  note  {origin} did not answer from here. Not counted as passed: a private endpoint is reachable only "
+              "from the app's network, so prove it from the running revision (AZURE.md §7)")
+
+
 def data_plane_access(kit, run):
     """Disabled once scripts/azure_lockdown.py closed the vault, so a re-run never opens it again; else None."""
     try:
@@ -245,7 +330,7 @@ def parameters(kit, declared, pg_password, vault_key, image=""):
               "writeSecrets": not image}
     skipped = []
     for key, (name, convert) in PARAMS.items():
-        if kit[key] == NOT_APPLICABLE:
+        if kit[key] == NOT_APPLICABLE or (key in AI_ONLY_KEYS and kit["CITADEL_ENDPOINT"] == NOT_APPLICABLE):
             continue
         if name not in declared:
             skipped.append(f"{key} -> {name}")
@@ -489,7 +574,7 @@ def save_outputs(group_name, outputs):
     return STATE / "outputs.env"
 
 
-def main(argv=None, run=az, ask=ask_secrets, confirm=input):
+def main(argv=None, run=az, ask=ask_secrets, confirm=input, probe=probe_endpoint):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--kit", required=True, help="the filled deploy kit, e.g. ~/inv-studio-azure/deploy-kit.env")
     parser.add_argument("--check", action="store_true", help="preflight only, with throwaway secrets")
@@ -503,6 +588,7 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
         print("Preflight")
         kit = read_kit(Path(args.kit).expanduser())
         ok("deploy kit: every access-request line filled in")
+        ai_origin = check_ai(kit)
         if run is az and not shutil.which("az"):
             raise Stop("az is not installed: run this in Azure Cloud Shell (Bash)")
         try:
@@ -529,6 +615,8 @@ def main(argv=None, run=az, ask=ask_secrets, confirm=input):
         check_template(declared, values, skipped)
         params_file = write_params(values)
         check_policy(kit["AZ_RESOURCE_GROUP"], params_file, run)
+        if ai_origin:
+            report_probe(ai_origin, probe)
         print("\nNot checked before the deploy (not counted as passed):")
         for line in NOT_RUN:
             print(f"  -     {line}")

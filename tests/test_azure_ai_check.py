@@ -170,7 +170,7 @@ def test_a_changed_key_is_used_by_the_next_read_and_a_ui_connection_wins_over_th
     read(providers, tmp_path)
     monkeypatch.setenv("INV_STUDIO_AZURE_API_KEY", ROTATED)
     read(providers, tmp_path)
-    providers.azure.connect(FOUNDRY_ENDPOINT, UI_KEY)  # an administrator's Engines & AI connection
+    providers.azure.save(providers.azure.prepare(FOUNDRY_ENDPOINT, UI_KEY))  # an administrator's Engines & AI connection
     read(providers, tmp_path)
     providers.azure.disconnect()
     read(providers, tmp_path)
@@ -267,7 +267,7 @@ def test_a_refused_endpoint_fails_the_check_before_any_request(monkeypatch, foun
     fake = foundry()
     assert check.main(["--env-file", no_env_file]) == 1
     report = capsys.readouterr().out
-    assert says in report and "/api/state answers 400" in report
+    assert says in report and "keeps working with AI off" in report
     assert fake.calls == []
 
 

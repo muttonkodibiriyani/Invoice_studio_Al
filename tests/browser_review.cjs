@@ -133,6 +133,14 @@ async function main() {
     vm.runInContext("renderAiReader(job)", context);
     assert(texts(box)[0] === "AI reader: Read rejected · 1 call");
     vm.runInContext("renderAiReader({})", context);
+    context.job = { readers: { ai: { status: "gap_fill", calls: 1, reason: "gaps",
+      rules_applied: [{ line: 0, rule: "air-1", item_id: "1001", source: "Item master, items:12" }],
+      suggestions: [{ line: 1, kind: "search", field: "item_id", value: "1002", source: "Item master, items:13", why: "similar" }] } } };
+    vm.runInContext("renderAiReader(job)", context);
+    assert(texts(box).some((t) => t.startsWith("Line 1: item 1001 filled by AI-added rule air-1")), "a rule's fill names the rule");
+    assert(texts(box).some((t) => t.startsWith("Suggestion") && t.includes("1002") && t.includes("Item master, items:13")), "a suggestion names its source");
+    assert(!fs.readFileSync(script, "utf8").match(/ai-rules[^\n]*approve|approve[^\n]*ai-rules/i), "AI-added rules have no approval step");
+    vm.runInContext("renderAiReader({})", context);
     assert(box.hidden && !box.children.length, "a job with no readers record shows nothing");
     // The running view lists the stages in the order the server reads them: PDF text before a chosen OCR reader.
     const stages = (job) => vm.runInContext(`plannedProcessingStages(${JSON.stringify(job)})`, context);

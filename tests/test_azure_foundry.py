@@ -90,7 +90,8 @@ def test_the_connection_is_fernet_encrypted_and_the_key_is_never_returned(store)
     connection = AzureFoundry(store)
     assert connection.configured() is False
 
-    assert connection.connect(ENDPOINT, KEY) == {"connected": True, "provider": "azure", "endpoint": ENDPOINT}
+    assert connection.save(connection.prepare(ENDPOINT, KEY, "reader")) == {
+        "connected": True, "provider": "azure", "endpoint": ENDPOINT, "name": "reader", "route": "deployment"}
     assert connection.configured() is True
     assert connection.endpoint() == ENDPOINT
     assert connection.credentials() == (ENDPOINT + "/openai/v1", KEY)
@@ -108,9 +109,9 @@ def test_the_connection_is_fernet_encrypted_and_the_key_is_never_returned(store)
 def test_a_refused_endpoint_saves_nothing(store):
     connection = AzureFoundry(store)
     with pytest.raises(ValueError):
-        connection.connect("https://evil.example.com", KEY)
+        connection.save(connection.prepare("https://evil.example.com", KEY))
     with pytest.raises(ValueError, match="API key"):
-        connection.connect(ENDPOINT, "   ")
+        connection.save(connection.prepare(ENDPOINT, "   "))
     assert connection.configured() is False
 
 
@@ -127,7 +128,7 @@ def test_deployment_configuration_connects_azure_without_the_ui(store, monkeypat
     assert connection.managed_default() == "gpt-5-invoices"
 
     # A connection saved in the UI wins over the deployment default.
-    connection.connect(ENDPOINT, KEY)
+    connection.save(connection.prepare(ENDPOINT, KEY))
     assert connection.credentials() == (ENDPOINT + "/openai/v1", KEY)
     # Removing it falls back to the deployment default rather than leaving no reader.
     assert connection.disconnect() == {"connected": True, "provider": "azure"}
@@ -150,7 +151,7 @@ def test_a_deployment_name_the_model_field_would_refuse_is_not_a_default(monkeyp
 @pytest.mark.parametrize("endpoint", [ENDPOINT, FOUNDRY_ENDPOINT])
 def test_azure_extract_calls_the_resource_responses_api_with_the_openai_body(tmp_path, store, monkeypatch, endpoint):
     """Both endpoint styles: <resource>.openai.azure.com and <resource>.services.ai.azure.com."""
-    AzureFoundry(store).connect(endpoint, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(endpoint, KEY))
     fake = FakeClient(post=FakeResponse(completed()))
     monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: fake)
     path = tmp_path / "invoice.txt"
@@ -176,7 +177,7 @@ def test_azure_extract_calls_the_resource_responses_api_with_the_openai_body(tmp
 
 
 def test_azure_sends_a_pdf_as_file_input(tmp_path, store, monkeypatch):
-    AzureFoundry(store).connect(ENDPOINT, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(ENDPOINT, KEY))
     fake = FakeClient(post=FakeResponse(completed()))
     monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: fake)
     path = tmp_path / "invoice.pdf"
@@ -190,7 +191,7 @@ def test_azure_sends_a_pdf_as_file_input(tmp_path, store, monkeypatch):
 
 
 def test_azure_model_listing_uses_the_resource_and_drops_unreadable_deployments(store, monkeypatch):
-    AzureFoundry(store).connect(FOUNDRY_ENDPOINT, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(FOUNDRY_ENDPOINT, KEY))
     fake = FakeClient(get=FakeResponse({"data": [
         {"id": "invoice-reader"},
         {"id": "gpt-4.1-vision"},
@@ -224,7 +225,7 @@ def test_azure_without_a_connection_is_refused_before_any_request(tmp_path, stor
 @pytest.mark.parametrize("status,words", [(401, "rejected the credential"), (403, "cannot access"),
                                           (429, "rate limit"), (400, "rejected this model"), (503, "HTTP 503")])
 def test_azure_http_failures_are_named_and_never_echo_the_key(tmp_path, store, monkeypatch, status, words):
-    AzureFoundry(store).connect(ENDPOINT, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(ENDPOINT, KEY))
     fake = FakeClient(post=FakeResponse(status_code=status))
     monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: fake)
     path = tmp_path / "invoice.txt"
@@ -237,7 +238,7 @@ def test_azure_http_failures_are_named_and_never_echo_the_key(tmp_path, store, m
 
 
 def test_an_incomplete_or_malformed_azure_answer_is_not_accepted(tmp_path, store, monkeypatch):
-    AzureFoundry(store).connect(ENDPOINT, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(ENDPOINT, KEY))
     path = tmp_path / "invoice.txt"
     path.write_text("visible")
     for payload, words in ((dict(completed(), status="incomplete"), "incomplete"),
@@ -249,7 +250,7 @@ def test_an_incomplete_or_malformed_azure_answer_is_not_accepted(tmp_path, store
 
 def test_an_azure_read_is_counted_and_priced_in_the_spend_ledger(tmp_path, store, monkeypatch):
     """The usage Azure returns flows into the same cost record Vertex reads produce."""
-    AzureFoundry(store).connect(ENDPOINT, KEY)
+    AzureFoundry(store).save(AzureFoundry(store).prepare(ENDPOINT, KEY))
     usage = {"input_tokens": 4000, "input_tokens_details": {"cached_tokens": 1000},
              "output_tokens": 1700, "output_tokens_details": {"reasoning_tokens": 200}, "total_tokens": 5700}
     fake = FakeClient(post=FakeResponse(completed(usage)))
@@ -270,7 +271,7 @@ def test_an_azure_read_is_counted_and_priced_in_the_spend_ledger(tmp_path, store
     assert costs.model_of(trace) == "invoice-reader"
 
 
-def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, owner, tenant):
+def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, owner, tenant, monkeypatch):
     state = client.get("/api/state", headers=bearer(owner)).json()
     assert state["connections"]["azure"] is False
     assert state["azure_endpoint"] == ""
@@ -285,10 +286,11 @@ def test_azure_is_connectable_through_the_api_by_an_administrator_only(client, o
                             json={"endpoint": "acme.openai.azure.com", "api_key": KEY})
     assert forbidden.status_code == 403
 
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: FakeClient(post=FakeResponse(completed())))
     saved = client.post("/api/connections/azure", headers=bearer(owner),
-                        json={"endpoint": "acme.openai.azure.com", "api_key": KEY})
+                        json={"endpoint": "acme.openai.azure.com", "name": "invoice-reader", "api_key": KEY})
     assert saved.status_code == 200, saved.text
-    assert saved.json() == {"connected": True, "provider": "azure", "endpoint": ENDPOINT}
+    assert saved.json() == {"connected": True, "provider": "azure", "endpoint": ENDPOINT, "name": "invoice-reader", "route": "deployment"}
 
     state = client.get("/api/state", headers=bearer(member)).json()
     assert state["connections"]["azure"] is True
@@ -373,3 +375,113 @@ def test_the_browser_offers_the_shared_provider_list_in_every_picker():
         assert f'"{provider}"' in listed, f"{provider} missing from AI_ENGINES"
     assert "saveAzureConnection" in script
     assert HEADERS  # the mutation header the browser sends; kept imported so the fixture contract is visible here
+
+
+# The connection test (ac6): a real call first, saved only on a pass. Microsoft Learn documents the agent call; it is
+# unproven against a real agent until someone runs it.
+
+PROJECT = "https://acme.services.ai.azure.com/api/projects/invoices"
+
+
+def said(text="OK"):
+    return FakeResponse({"status": "completed", "output": [{"content": [{"type": "output_text", "text": text}]}]})
+
+
+def connecting(monkeypatch, response):
+    fake = FakeClient(post=response)
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: fake)
+    return fake
+
+
+def test_a_saved_connection_stays_when_a_new_ones_test_fails(client, owner, monkeypatch):
+    connecting(monkeypatch, said())
+    first = client.post("/api/connections/azure", headers=bearer(owner), json={"endpoint": ENDPOINT, "name": "reader", "api_key": KEY})
+    assert first.status_code == 200, first.text
+    for response in (FakeResponse(status_code=401), FakeResponse(status_code=404), FakeResponse({"status": "failed"}), said("  ")):
+        connecting(monkeypatch, response)
+        refused = client.post("/api/connections/azure", headers=bearer(owner),
+                              json={"endpoint": "https://other.openai.azure.com", "name": "other", "api_key": "another-key-012345"})
+        assert refused.status_code == 400 and "Nothing was saved" in refused.json()["detail"]
+        assert "another-key" not in refused.text
+        assert client.get("/api/state", headers=bearer(owner)).json()["azure_endpoint"] == ENDPOINT
+
+
+def test_a_failed_first_test_saves_nothing(client, owner, monkeypatch):
+    connecting(monkeypatch, FakeResponse(status_code=500))
+    assert client.post("/api/connections/azure", headers=bearer(owner),
+                       json={"endpoint": ENDPOINT, "name": "reader", "api_key": KEY}).status_code == 400
+    assert client.get("/api/state", headers=bearer(owner)).json()["connections"]["azure"] is False
+
+
+def test_the_test_is_a_real_call_needing_a_name(client, owner, monkeypatch):
+    fake = connecting(monkeypatch, said())
+    nameless = client.post("/api/connections/azure", headers=bearer(owner), json={"endpoint": ENDPOINT, "api_key": KEY})
+    assert nameless.status_code == 400 and fake.calls == []
+    assert client.post("/api/connections/azure", headers=bearer(owner),
+                       json={"endpoint": ENDPOINT, "name": "reader", "api_key": KEY}).status_code == 200
+    [(method, url, sent)] = fake.calls
+    assert method == "POST" and url == ENDPOINT + "/openai/v1/responses"
+    assert sent["headers"] == {"api-key": KEY} and sent["json"]["model"] == "reader" and sent["json"]["store"] is False
+
+
+def test_an_agent_is_called_by_reference_with_managed_identity_and_no_key(client, owner, monkeypatch):
+    scopes = []
+    monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: scopes.append(scope) or "entra-token")
+    fake = connecting(monkeypatch, said())
+    saved = client.post("/api/connections/azure", headers=bearer(owner),
+                        json={"endpoint": PROJECT, "name": "invoice-agent", "auth": "managed_identity"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["route"] == "agent" and saved.json()["endpoint"] == PROJECT
+    [(_, url, sent)] = fake.calls
+    assert url == PROJECT + "/openai/v1/responses"
+    assert sent["json"] == {"input": "Reply with the word OK.", "store": False,
+                            "agent_reference": {"name": "invoice-agent", "type": "agent_reference"}}
+    assert sent["headers"] == {"Authorization": "Bearer entra-token"} and scopes == ["https://ai.azure.com/.default"]
+
+
+def test_a_read_goes_to_the_agent_named_with_the_schema_in_its_input(store, monkeypatch):
+    monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: "entra-token")
+    providers = Providers(store, FakeChatGPT())
+    providers.azure.save(providers.azure.prepare(PROJECT, None, "invoice-agent", "managed_identity"))
+    fake = connecting(monkeypatch, FakeResponse(completed()))
+    invoice, _ = providers.extract(Path(ROOT / "samples" / "invoice.pdf"), "text", options(model="invoice-agent"))
+    assert invoice.number
+    [(_, url, sent)] = fake.calls
+    assert url == PROJECT + "/openai/v1/responses"
+    assert sent["json"]["agent_reference"]["name"] == "invoice-agent"
+    assert not {"model", "instructions", "text", "tools"} & set(sent["json"])
+    assert "matching this JSON schema" in sent["json"]["input"][0]["content"][0]["text"]
+
+
+def test_a_key_refused_on_an_agent_names_managed_identity(client, owner, monkeypatch):
+    connecting(monkeypatch, FakeResponse(status_code=401))
+    refused = client.post("/api/connections/azure", headers=bearer(owner), json={"endpoint": PROJECT, "name": "invoice-agent", "api_key": KEY})
+    assert refused.status_code == 400 and "managed identity" in refused.json()["detail"] and KEY not in refused.text
+
+
+def test_managed_identity_with_no_token_says_which_role_and_saves_nothing(client, owner, monkeypatch):
+    def no_token(scope=None):
+        raise RuntimeError("no identity here")
+    monkeypatch.setattr(azure_module, "bearer_token", no_token)
+    fake = connecting(monkeypatch, said())
+    refused = client.post("/api/connections/azure", headers=bearer(owner),
+                          json={"endpoint": PROJECT, "name": "invoice-agent", "auth": "managed_identity"})
+    assert refused.status_code == 400 and "Foundry Agent Consumer" in refused.json()["detail"]
+    assert fake.calls == [] and client.get("/api/state", headers=bearer(owner)).json()["connections"]["azure"] is False
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://evil.example.com/api/projects/x", "https://acme.openai.azure.com/api/projects/x",
+    "https://acme.services.ai.azure.com/api/projects/x/extra", "https://acme.services.ai.azure.com/other",
+])
+def test_the_allow_list_holds_for_a_project_endpoint(endpoint):
+    with pytest.raises(ValueError):
+        normalise_endpoint(endpoint, "")
+
+
+def test_the_key_and_test_are_kept_out_of_the_audit(client, owner, app, monkeypatch):
+    connecting(monkeypatch, said())
+    client.post("/api/connections/azure", headers=bearer(owner), json={"endpoint": ENDPOINT, "name": "reader", "api_key": KEY})
+    with app.state.store.connection() as c:
+        logged = json.dumps([tuple(r) for r in c.execute("SELECT * FROM audit").fetchall()])
+    assert "connection_connected" in logged and KEY not in logged

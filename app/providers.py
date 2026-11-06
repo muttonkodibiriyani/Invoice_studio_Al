@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import tempfile
 import httpx
-from .azure_foundry import NON_TEXT as AZURE_NON_TEXT, AzureFoundry
+from . import ai_context
+from .azure_foundry import NON_TEXT as AZURE_NON_TEXT, AzureFoundry, base_url as azure_base_url, headers_for, is_project
 from .models import IMAGE_FORMATS, ai_schema, parse_ai_output
 from .subscriptions import ClaudeSubscription
 from .vertex import VertexProvider
@@ -62,6 +63,20 @@ def safe_error(status):
             400:"Provider rejected this model, document or output schema. Select a compatible vision model."}.get(status,f"Provider request failed (HTTP {status}). No invoice was approved.")
 
 
+def _agent_reference(name):
+    return {"agent_reference":{"name":name,"type":"agent_reference"}}
+
+
+def _responses_text(result):
+    return "".join(c.get("text","") for item in result.get("output",[]) for c in item.get("content") or [] if c.get("type")=="output_text")
+
+
+def _unfenced(output):
+    """An agent's JSON without a code fence around it: nothing holds an agent to the bare object a schema enforces."""
+    text=output.strip()
+    return text.removeprefix("```json").removeprefix("```").removesuffix("```").strip() if text.startswith("```") else output
+
+
 class Providers:
     def __init__(self,store,chatgpt,learned=None):
         self.learned=learned
@@ -83,6 +98,31 @@ class Providers:
         """Azure Foundry serves the same OpenAI v1 Responses contract on the operator's resource."""
         return self.azure.credentials()[0]+"/responses" if provider=="azure" else OPENAI_RESPONSES
 
+    def test_azure(self,connection):
+        """A real call to the deployment or agent. Raises when it does not answer; a read is what it must be able to do."""
+        endpoint,name=connection["endpoint"],connection["name"]
+        kept=" Nothing was saved; any previous connection stays."
+        if not name:raise ValueError("Enter the agent or deployment name: the test makes a real call to it."+kept)
+        agent=is_project(endpoint)
+        body={"input":"Reply with the word OK.","store":False,**(_agent_reference(name) if agent else {"model":name,"max_output_tokens":200})}
+        try:
+            headers=headers_for(endpoint,connection["api_key"])
+        except ValueError as e:raise ValueError(str(e)+kept) from None
+        try:
+            with httpx.Client(timeout=httpx.Timeout(60,connect=15),follow_redirects=False) as http:
+                r=http.post(azure_base_url(endpoint)+"/responses",headers=headers,json=body)
+        except httpx.HTTPError:
+            raise ValueError("Azure AI Foundry could not be reached from this app. Check the endpoint and network."+kept) from None
+        if r.status_code!=200:
+            hint=(" Microsoft lists the Agents service as Entra ID only: choose managed identity and give the app the Foundry Agent Consumer role."
+                  if agent and connection["api_key"] and r.status_code in (401,403) else "")
+            raise ValueError(f"The connection test failed (HTTP {r.status_code}). "+safe_error(r.status_code)+hint+kept)
+        try:
+            result=r.json();said=_responses_text(result)
+        except (ValueError,AttributeError,TypeError):result,said={},""
+        if result.get("status")!="completed" or not said.strip():
+            raise ValueError("The connection test reached Azure, but the "+("agent" if agent else "deployment")+" gave no completed answer."+kept)
+
     def verify_key(self,provider,key):
         """Refuse a key the provider rejects; network or quota failures stay unverified, not fatal."""
         url="https://api.anthropic.com/v1/models" if provider=="anthropic" else "https://api.openai.com/v1/models"
@@ -98,6 +138,7 @@ class Providers:
         if provider=="claude_local":
             return [{"id":k,"name":k} for k in ("sonnet","opus","haiku")]
         if provider=="vertex":return self.vertex.models()
+        if provider=="azure" and self.azure.agent():return [{"id":self.azure.agent(),"name":self.azure.agent()}]
         if provider=="anthropic":url="https://api.anthropic.com/v1/models"
         elif provider=="azure":url=self.azure.credentials()[0]+"/models"
         # A ChatGPT plan token authorises the same api.openai.com resource server
@@ -124,8 +165,11 @@ class Providers:
             except Exception:extra=""
         return PROMPT+extra
 
-    def extract(self,path,text,options,examples=None):
+    def extract(self,path,text,options,examples=None,context=None):
+        """``context`` (app.ai_context, Azure Foundry only) adds the rules and item master candidates as data."""
         prompt=self.prompt(text,examples)
+        if context is not None and options.provider!="azure":raise ValueError("Item master context goes only to Azure AI Foundry")
+        if context is not None:prompt+=ai_context.INSTRUCTIONS
         if options.provider=="claude_local":return self.local_claude(text,options.model,prompt)
         if options.provider=="vertex":return self.vertex.extract(path,text,options.model,prompt)
         provider=options.provider;headers=self.headers(provider)
@@ -143,15 +187,32 @@ class Providers:
         elif mime!="application/pdf" and not text.strip():
             raise ValueError("No readable text was obtained from this office/text document")
         encoded=base64.b64encode(path.read_bytes()).decode() if mime=="application/pdf" else ""
-        schema=ai_schema()
+        schema=ai_context.extend_schema(ai_schema()) if context is not None else ai_schema()
+        document=[{"type":"input_text","text":"Extract this invoice. Document text, if available:\n"+text[:100000]}]
+        if context is not None:
+            document=[{"type":"input_text","text":"Extract this invoice."},
+                      *({"type":"input_text","text":ai_context.data_block(tag,value)} for tag,value in
+                        (("document_text",text[:100000]),("rules_data",context["rules"]),("item_master_data",context["candidates"])))]
         with httpx.Client(timeout=httpx.Timeout(120,connect=15),follow_redirects=False) as http:
             if provider in ("openai","chatgpt","azure"):
                 responses_url=self.responses_url(provider)
                 attachments=([{ "type":"input_file","filename":"invoice.pdf","file_data":"data:application/pdf;base64,"+encoded}] if mime=="application/pdf" else [{"type":"input_image","image_url":"data:image/png;base64,"+image} for image in images])
                 body={"model":options.model,"instructions":prompt,"store":False,
-                      "input":[{"role":"user","content":[*attachments,{"type":"input_text","text":"Extract this invoice. Document text, if available:\n"+text[:100000]}]}],
+                      "input":[{"role":"user","content":[*attachments,*document]}],
                       "text":{"format":{"type":"json_schema","name":"invoice","strict":True,"schema":schema}}}
-                if provider=="chatgpt":
+                agent=self.azure.agent() if provider=="azure" else ""
+                if agent:
+                    # The agent carries the model, its instructions and any structured output (Microsoft documents those
+                    # on the agent's definition, not beside an agent_reference), so this read asks in the input and
+                    # parse_ai_output refuses whatever does not fit.
+                    asked=prompt+"\n\nReturn only one JSON object matching this JSON schema:\n"+json.dumps(schema)
+                    body={"store":False,**_agent_reference(agent),
+                          "input":[{"role":"user","content":[{"type":"input_text","text":asked},*attachments,*document]}]}
+                    r=http.post(responses_url,headers=headers,json=body)
+                    if r.status_code!=200:raise ValueError(safe_error(r.status_code))
+                    result=r.json()
+                    if result.get("status")!="completed":raise ValueError("AI output was incomplete; it was not accepted")
+                elif provider=="chatgpt":
                     body["stream"]=True
                     with http.stream("POST",responses_url,headers=headers,json=body) as r:
                         if r.status_code!=200:raise ValueError(safe_error(r.status_code))
@@ -170,7 +231,8 @@ class Providers:
                     if r.status_code!=200:raise ValueError(safe_error(r.status_code))
                     result=r.json()
                     if result.get("status")!="completed":raise ValueError("AI output was incomplete; it was not accepted")
-                output="".join(c.get("text","") for item in result.get("output",[]) for c in item.get("content",[]) if c.get("type")=="output_text")
+                output=_responses_text(result)
+                if agent:output=_unfenced(output)
             else:
                 attachments=([{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":encoded}}] if mime=="application/pdf" else [{"type":"image","source":{"type":"base64","media_type":"image/png","data":image}} for image in images])
                 body={"model":options.model,"max_tokens":12000,"system":prompt,
@@ -181,9 +243,15 @@ class Providers:
                 result=r.json()
                 if result.get("stop_reason")!="end_turn":raise ValueError("Claude output was incomplete or refused")
                 output="".join(c.get("text","") for c in result.get("content",[]) if c.get("type")=="text")
-        try:invoice,evidence=parse_ai_output(output)
+        answer={}
+        try:
+            if context is not None:
+                output=json.loads(output)
+                suggestions,refused=ai_context.accept(context,output)
+                answer={"suggestions":suggestions,**({"ai_answers_refused":refused} if refused else {})}
+            invoice,evidence=parse_ai_output(output)
         except Exception:raise ValueError("AI returned an invalid invoice structure. Review the document manually.") from None
-        return invoice,{**result.get("usage",{}),**({"evidence":evidence} if evidence else {})}
+        return invoice,{**result.get("usage",{}),**({"evidence":evidence} if evidence else {}),**answer}
 
     def local_claude(self,text,model,prompt=PROMPT):
         cli=shutil.which("claude")

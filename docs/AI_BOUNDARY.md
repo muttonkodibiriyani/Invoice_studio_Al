@@ -19,7 +19,7 @@ master. A rules workbook that cannot load is told on the `item_rules` trace entr
 | need | When | What the AI may change |
 |---|---|---|
 | `fallback` | The local result fails `_basic_checks`: no lines, no number or net, or lines that do not sum to the net. | It fills empty fields and flags every disagreement. Its lines stand in only for local lines that do not sum to a printed net (`merge_ai_fields`). On a **weak scan read** see below. |
-| `gap_fill` | The local result passes the checks but leaves gaps (a missing date, an item code, a unit). | It fills empty fields only. Every value a local reader read stays, and a different AI value is flagged for review. |
+| `gap_fill` | The local result passes the checks but leaves gaps (a missing date, an item code, a unit), or a line the rules could not identify (not in the item master, ambiguous or only a suggestion; a Conflict stays with the reviewer). | It fills empty fields only. Every value a local reader read stays, and a different AI value is flagged for review. |
 | `cross_check` | The local result is complete and reconciled. | Nothing, unless the owner opts in with `ai_cross_check` or `INV_STUDIO_AI_CROSS_CHECK=1`. Then it flags disagreements and fills optional empty fields. |
 
 `need` is recorded on every job, whether or not the AI ran, so AI calls per invoice can be counted on an AI-off run.
@@ -35,7 +35,7 @@ master. A rules workbook that cannot load is told on the `item_rules` trace entr
    "…a local reader read as much, so the local read is kept".
 2. **No local reader read anything.** In `fallback`, the AI's read becomes the whole invoice, and every field names
    `ai`. On a PDF the reason is "No local reader read this invoice, so the AI read the whole invoice". On a scan it
-   goes through the weak-scan rule below, which says "replaced the whole invoice".
+   goes through the weak-scan rule below, which says "read the whole invoice".
 
 ## The weak-scan rule
 
@@ -45,12 +45,53 @@ goes through `gap_fill`.
 
 - If the AI's read of the page image fails its own checks (`scan_guard.ai_self_check`), nothing is filled and the
   job is `not_read`.
-- Otherwise the AI replaces **only the fields that are empty or disagree**. A net or tax total needs the AI's quote.
-  Local lines that align one to one with the AI's lines (same count, `_aligned` pairwise) are kept, and only
-  their empty or differing figures change. Only when the lines do not align do the AI's lines replace them all.
-- Example (diagnosis C2): PaddleOCR reads the net as 8.0 from `Net total: 8 800.00`. The AI replaces the net and
-  nothing else. The lines keep `paddleocr` as their reader, and the reason ends "replaced only the fields that are
-  empty or disagree: net".
+- Otherwise the AI **fills only the empty fields** and flags what it reads differently, with its value beside the
+  local one in review. A net or tax total needs the AI's quote. Only when the local lines do not align one to one with
+  the AI's (same count, `_aligned` pairwise) do the AI's lines stand in for them, every value marked `ai`.
+- Example (diagnosis C2): PaddleOCR reads the net as 8.0 from `Net total: 8 800.00`. The 8.0 stays, the AI's 800 shows
+  beside it for the person reviewing, and the reason ends "flagged what it reads differently (net)".
+
+## Nothing the document does not print (owner decision D11)
+
+`ai_context.absent_values` checks what the AI read against the document's text. A value the text does not print is
+not written, and the field is left for review with a note: amounts by number, codes and words by their folded text, a
+date against the printed date. A scan or a page with almost no text has nothing to check against, so there it is the
+weak-scan self-check that holds. A value the AI saw only in a PDF's image (a logo's supplier name, say) is left blank
+by this: strict D11.
+
+## What the AI read is given
+
+On Azure AI Foundry only (`Providers.extract` refuses it for anything else), the read also gets the rules workbook's
+lookup order and item master rows near what the local read found: by printed code, by barcode, by a similar
+description, by a similar supplier name, by order number. Each row is a candidate with an id. All of it is JSON inside
+a tag pair it cannot close, and the model is told it is data, never instructions. The request carries no tools.
+
+What comes back is an id. `ai_context.accept` takes the value and the source from the candidate this server sent and
+refuses an id or field it did not send, so a suggestion cannot carry a value that is not in the item master.
+
+- Supplier and order candidates, and a plain search over what the AI read, stay **suggestions** with their source. They
+  fill nothing.
+- An item candidate the AI names for a line's empty item becomes a rule.
+
+## The rules the AI adds (owner, 6 Nov: no approval, they run on the fly)
+
+`app/ai_rules.py` keeps a rule: this supplier, this printed code or description, this item master item. It runs at once
+and on later invoices from that supplier, with no approval step. It holds to these limits:
+
+- It fills only an item cell the rules left empty. A rules result of Found or Conflict stands; an Ambiguous or
+  Suggestion result lets through only an item it already lists.
+- A row at a site other than the supplier's is not a rule. Item master `SUPPLIER_NAME` holds coded site names, so a
+  printed name the master does not carry resolves to no site, and the rule then rests on the printed supplier it is
+  keyed on.
+- Its item must still be in the item master each time it runs, or it fills nothing.
+- Each fill is marked `ai` in review, listed in `readers.ai.rules_applied`, and on the receipt.
+- Each rule keeps its source, reason, model and file, and counts the lines it filled. **Engines & AI** lists them
+  (`GET /api/ai-rules`); an administrator removes one (`DELETE /api/ai-rules/{id}`). Both changes are audited.
+- With AI off, none of them runs.
+
+The risk that comes with no approval: a wrong pick fills wrong items on later invoices until it is removed. It stays
+visible as AI on every line, and `scripts/ai_fallback_compare.py` counts each rule's right and wrong lines against
+truth files. `/api/rules-assistant/propose` is separate and unchanged: it still only logs a proposal.
 
 ## What every job records
 

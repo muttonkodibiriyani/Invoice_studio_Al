@@ -3671,6 +3671,48 @@
               }
             },
             {
+              "name": "Rules the AI added",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai-rules",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "ai-rules"
+                  ]
+                },
+                "description": "**Member.** The rules the AI added, each with its source, reason, model, file and the lines it has filled. There is no approval step."
+              }
+            },
+            {
+              "name": "Remove a rule the AI added",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "X-Studio-Request",
+                    "value": "1"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/ai-rules/{rule_id}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "ai-rules",
+                    "{rule_id}"
+                  ]
+                },
+                "description": "**Admin.** Removes one rule the AI added, so it fills nothing more. Audited."
+              }
+            },
+            {
               "name": "Connect Azure AI Foundry",
               "request": {
                 "method": "POST",
@@ -3695,10 +3737,10 @@
                     "azure"
                   ]
                 },
-                "description": "**Admin.** Endpoint (an Azure resource host only) and api-key, stored encrypted. Not needed when the deployment uses its managed identity.",
+                "description": "**Admin.** Endpoint (an Azure resource host or Foundry project), agent or deployment name, and an api-key or managed identity. Makes a real call first: only a completed answer saves it, stored encrypted; a failed test saves nothing and keeps the previous connection.",
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"endpoint\": \"https://<resource>.openai.azure.com\",\n  \"api_key\": \"<key>\"\n}",
+                  "raw": "{\n  \"endpoint\": \"https://<resource>.openai.azure.com\",\n  \"name\": \"<deployment or agent>\",\n  \"auth\": \"key\",\n  \"api_key\": \"<key>\"\n}",
                   "options": {
                     "raw": {
                       "language": "json"

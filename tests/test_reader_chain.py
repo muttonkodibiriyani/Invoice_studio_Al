@@ -17,6 +17,9 @@ from app.models import Invoice, ProcessingOptions  # noqa: E402
 INVOICE = json.loads((ROOT / "samples" / "invoice.json").read_text())
 # The demo PDF's text without a template match: long enough for the 250-character exit.
 TEXT = "Lumena Beauty Trading LLC\nInvoice DEMO-2026-001\n" + "ITEMS BEGIN Lumena serum 30 ml 10 60.00\n" * 8
+# Every value the sample invoice prints: the AI's values are checked against the document (ai_context.absent_values).
+TEXT += " ".join(str(v) for v in (*INVOICE.values(), *(v for line in INVOICE["lines"] for v in line.values()))
+                 if isinstance(v, (str, int, float))) + "\n"
 
 
 @pytest.fixture
@@ -157,22 +160,23 @@ def test_no_local_read_makes_the_ai_the_whole_invoice_and_the_reason_says_so(cha
     assert local_readers(result) == {"ai"}
     # On a scan the AI's read must pass its own checks (printed line nets that sum to its net).
     result, _ = chain("invoice-scan.png", installed=("invoice2data",), ai=PRICED)
-    assert "replaced the whole invoice" in result["readers"]["ai"]["reason"]
+    assert "read the whole invoice" in result["readers"]["ai"]["reason"]
     assert local_readers(result) == {"ai"}
 
 
-def test_a_weak_scan_read_loses_only_the_field_the_ai_reads_differently(chain):
-    # C2 of the diagnosis: a stray OCR token makes the net 8.0; the lines and other header fields are right.
+def test_a_weak_scan_read_keeps_its_value_and_the_ai_reading_differently_is_flagged(chain):
+    # C2 of the diagnosis: a stray OCR token makes the net 8.0. The AI fills only what is empty (task ac1): the person
+    # reviewing sees its 800 beside the 8.0.
     result, calls = chain("invoice-scan.png", installed=("invoice2data", "paddleocr"),
                           reads={"paddleocr": {**PRICED, "net": "8.0"}}, ai=PRICED,
                           evidence={"net": {"quote": "Net total: 800.00", "page": 1}})
     assert calls == ["invoice2data", "paddleocr", "ai"]
-    assert result["invoice"]["net"] == "800" and result["readers"]["header"]["net"] == "ai"
+    assert result["invoice"]["net"] == "8.0" and result["readers"]["header"]["net"] == "paddleocr"
+    assert result["evidence"]["header"]["net"]["review"] ["other_value"] == "800"
     assert result["selected_engine"] == "paddleocr"
-    assert local_readers(result) == {"paddleocr", "ai"}
     assert all(set(line.values()) == {"paddleocr"} for line in result["readers"]["lines"])
-    reason = result["readers"]["ai"]["reason"]
-    assert reason.endswith("replaced only the fields that are empty or disagree: net"), reason
+    ai = result["readers"]["ai"]
+    assert ai["flagged"] == ["net"] and "flagged what it reads differently (net)" in ai["reason"], ai["reason"]
 
 
 def test_a_weak_scan_read_that_passes_the_basic_checks_keeps_every_value_it_read(chain):

@@ -221,10 +221,15 @@ ROUTES = {
     ("POST", "/api/settings"): dict(area="ai", title="AI settings",
         text="Default provider and model, and the AI on/off switch (ai_fallback). With it off the server refuses "
              "every AI read.", body={"provider": "azure", "model": "", "ai_fallback": False}),
+    ("GET", "/api/ai-rules"): dict(area="ai", title="Rules the AI added",
+        text="The rules the AI added, each with its source, reason, model, file and the lines it has filled. There is no approval step."),
+    ("DELETE", "/api/ai-rules/{rule_id}"): dict(area="ai", title="Remove a rule the AI added",
+        text="Removes one rule the AI added, so it fills nothing more. Audited."),
     ("POST", "/api/connections/azure"): dict(area="ai", title="Connect Azure AI Foundry",
-        text="Endpoint (an Azure resource host only) and api-key, stored encrypted. Not needed when the deployment "
-             "uses its managed identity.",
-        body={"endpoint": "https://<resource>.openai.azure.com", "api_key": "<key>"}),
+        text="Endpoint (an Azure resource host or Foundry project), agent or deployment name, and an api-key or managed "
+             "identity. Makes a real call first: only a completed answer saves it, stored encrypted; a failed test saves "
+             "nothing and keeps the previous connection.",
+        body={"endpoint": "https://<resource>.openai.azure.com", "name": "<deployment or agent>", "auth": "key", "api_key": "<key>"}),
     ("DELETE", "/api/connections/azure"): dict(area="ai", title="Disconnect Azure AI Foundry",
         text="Removes the saved connection."),
     ("POST", "/api/connections/{provider}"): dict(area="ai", title="Connect OpenAI or Anthropic",

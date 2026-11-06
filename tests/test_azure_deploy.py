@@ -51,7 +51,9 @@ def filled_kit(tmp_path, **overrides):
                   TARKESH_UPN="tarkesh@example.com", SPOKE_VNET_CIDR="10.1.2.0/24", HUB_DNS_IP="10.0.0.4",
                   PDNS_ZONE_IDS="{}", LOG_RETENTION_DAYS="30", APP_HOSTNAME="invoices.example.com",
                   LAW_ID="n/a", ENTRA_GROUP_MEMBER_NAME="n/a", ENTRA_CLOUD="public",
-                  HUB_FIREWALL_IP="10.0.0.68", CITADEL_AUTH_MODE="Managed identity")
+                  HUB_FIREWALL_IP="10.0.0.68", CITADEL_AUTH_MODE="Managed identity", CITADEL_ENDPOINT="n/a",
+                  CITADEL_DEPLOYMENT="n/a", CITADEL_GATEWAY_HOST="n/a", CITADEL_TOKEN_SCOPE="n/a",
+                  AI_EGRESS_DESTINATION="n/a")
     values.update(overrides)
     path = tmp_path / "deploy-kit.env"
     path.write_text("".join(f"{k}={v}   # comment\n" for k, v in values.items() if v is not None))
@@ -110,9 +112,9 @@ class FakeAz:
         return any(call[:3] == ("deployment", "group", "create") for call in self.calls)
 
 
-def run(tmp_path, az, *flags, kit=None, confirm="DEPLOY"):
+def run(tmp_path, az, *flags, kit=None, confirm="DEPLOY", probe=lambda origin: True):
     return deploy.main(["--kit", str(kit or filled_kit(tmp_path)), *flags], run=az,
-                       ask=lambda: ("a-long-db-password", FERNET), confirm=lambda prompt: confirm)
+                       ask=lambda: ("a-long-db-password", FERNET), confirm=lambda prompt: confirm, probe=probe)
 
 
 @pytest.fixture(autouse=True)
@@ -165,16 +167,65 @@ def test_mapped_parameters_that_exist_today_are_in_main_bicep():
         assert name in declared
 
 
-def test_release_one_is_ai_off():
-    # Citadel's endpoint and deployment are record only: a filled endpoint would report Foundry connected on
-    # the placeholder key. Only these kit lines are mapped.
-    assert "CITADEL_ENDPOINT" in deploy.KIT_KEYS and "CITADEL_DEPLOYMENT" in deploy.KIT_KEYS
+AI_ON = dict(CITADEL_ENDPOINT="https://acme.openai.azure.com", CITADEL_DEPLOYMENT="invoice-reader",
+             AI_EGRESS_DESTINATION="CognitiveServicesFrontend")
+
+
+def test_ai_is_on_when_the_kit_names_an_endpoint_and_every_ai_line_reaches_the_template(tmp_path, capsys):
     mapped = {name for name, _ in deploy.PARAMS.values()}
-    assert not mapped & {"foundryEndpoint", "foundryDeployment", "foundryApiKey"}
-    assert len(deploy.PARAMS) == 20
-    kit = KIT_EXAMPLE.read_text()
-    for key in ("CITADEL_ENDPOINT", "CITADEL_DEPLOYMENT"):
-        assert re.search(rf"^{key}=<{key}>\s+# H7  record only", kit, re.M)
+    assert {"foundryEndpoint", "foundryDeployment", "foundryGatewayHost", "foundryTokenScope", "aiEgressDestination"} <= mapped
+    assert "foundryApiKey" not in mapped
+    az = FakeAz()
+    assert run(tmp_path, az, "--check", kit=filled_kit(tmp_path, **AI_ON)) == 0
+    assert "AI on: endpoint https://acme.openai.azure.com accepted" in capsys.readouterr().out
+    assert az.params_seen["foundryEndpoint"]["value"] == AI_ON["CITADEL_ENDPOINT"]
+    assert az.params_seen["foundryDeployment"]["value"] == "invoice-reader"
+    assert az.params_seen["aiEgressDestination"]["value"] == "CognitiveServicesFrontend"
+
+
+def test_n_a_deploys_with_ai_off_and_passes_no_ai_parameter(tmp_path, capsys):
+    az = FakeAz()
+    assert run(tmp_path, az, "--check") == 0
+    assert "AI off on this deploy" in capsys.readouterr().out
+    assert not {"foundryEndpoint", "foundryDeployment", "aiEgressDestination"} & set(az.params_seen)
+
+
+def test_a_project_endpoint_and_agent_pass_the_check(tmp_path, capsys):
+    kit = filled_kit(tmp_path, **{**AI_ON, "CITADEL_ENDPOINT": "https://acme.services.ai.azure.com/api/projects/inv",
+                                  "CITADEL_DEPLOYMENT": "invoice-agent"})
+    assert run(tmp_path, FakeAz(), "--check", kit=kit) == 0
+    assert "acme.services.ai.azure.com/api/projects/inv accepted" in capsys.readouterr().out
+
+
+def test_the_citadel_route_needs_its_exact_host_in_the_kit(tmp_path, capsys):
+    citadel = {**AI_ON, "CITADEL_ENDPOINT": "https://citadel-gw.azure-api.net"}
+    az = FakeAz()
+    assert run(tmp_path, az, "--check", kit=filled_kit(tmp_path, **citadel)) == 1
+    assert "Name exactly this host in CITADEL_GATEWAY_HOST" in stop_reason(capsys)
+    assert not az.created()
+    assert run(tmp_path, FakeAz(), "--check", kit=filled_kit(tmp_path, **citadel, **{"CITADEL_GATEWAY_HOST": "other.azure-api.net"})) == 1
+    assert "the app would refuse CITADEL_ENDPOINT" in stop_reason(capsys)
+    assert run(tmp_path, FakeAz(), "--check", kit=filled_kit(tmp_path, **AI_ON, **{"CITADEL_GATEWAY_HOST": "other.azure-api.net"})) == 1
+    assert "must name the same host" in stop_reason(capsys)
+    assert run(tmp_path, FakeAz(), "--check", kit=filled_kit(tmp_path, **citadel, **{"CITADEL_GATEWAY_HOST": "citadel-gw.azure-api.net"})) == 0
+
+
+@pytest.mark.parametrize("override,says", [
+    ({"CITADEL_ENDPOINT": "https://evil.example.com"}, "the app would refuse CITADEL_ENDPOINT"),
+    ({"CITADEL_AUTH_MODE": "API key"}, "key auth"),
+    ({"AI_EGRESS_DESTINATION": "n/a"}, "NSG blocks every AI call"),
+    ({"CITADEL_DEPLOYMENT": "n/a"}, "CITADEL_DEPLOYMENT must name"),
+])
+def test_an_ai_kit_the_app_could_not_use_stops_before_anything_is_created(tmp_path, capsys, override, says):
+    az = FakeAz()
+    assert run(tmp_path, az, "--check", kit=filled_kit(tmp_path, **{**AI_ON, **override})) == 1
+    assert says in stop_reason(capsys)
+    assert not az.calls or not az.created()
+
+
+def test_an_endpoint_that_does_not_answer_is_reported_not_counted_as_passed(tmp_path, capsys):
+    assert run(tmp_path, FakeAz(), "--check", kit=filled_kit(tmp_path, **AI_ON), probe=lambda origin: False) == 0
+    assert "did not answer from here. Not counted as passed" in capsys.readouterr().out
 
 
 def test_admin_login_is_main_bicep_default():

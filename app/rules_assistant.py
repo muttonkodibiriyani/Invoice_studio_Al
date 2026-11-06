@@ -14,12 +14,11 @@ Invoice text, the user's note and item master cells are untrusted: each goes in 
 close, never in the instructions, and the request carries no tools. The model's answer is data, parsed into a strict
 schema or refused. Neither the key nor a prompt, invoice text or model output is logged or audited.
 """
-import json
-
 import httpx
 from fastapi import HTTPException
 from pydantic import Field, ValidationError
 
+from .ai_context import data_block
 from .authentication import actor
 from .authorization import ADMIN, MEMBER, RateLimiter, access
 from .azure_foundry import env_deployment
@@ -124,12 +123,6 @@ def engine_facts(line, lookup):
     return {"vpns": vpns, "barcodes": barcodes, "candidates": list(candidates.values())[:MAX_CANDIDATES]}
 
 
-def data_block(tag, value):
-    """Untrusted content as JSON inside one tag pair. '<' and '>' are escaped, so it cannot close the tag."""
-    text = json.dumps(value, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-    return f"<{tag}>{text}</{tag}>"
-
-
 def upstream(message):
     """A failed Foundry call: a fixed message and the request reference, never the provider's body."""
     return HTTPException(502, f"{message} (reference {request_id.get() or '-'})")
@@ -153,6 +146,8 @@ def register_rules_assistant(app, store, providers, lookup):
             return "This deployment does not use Azure AI Foundry"
         if not azure.configured() or not model():
             return "Connect Azure AI Foundry and choose a deployment"
+        if azure.agent():
+            return "The rules assistant reads with a model deployment; this connection is a Foundry agent"
         if tested and store.get(TESTED) != azure.endpoint():
             return "An administrator must run the assistant's connection test"
         return ""

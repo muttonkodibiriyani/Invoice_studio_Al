@@ -23,7 +23,7 @@ copies share no sign-in, no database and no files.
                                               ├──► Key Vault      database login, encryption key, AI key
                                               │
                                               └──► AI provider    only when the local readers leave gaps
-                                                   (Azure AI Foundry, or another the admin picks)
+                                                   (Azure AI Foundry only, by managed identity)
 
   The app's image comes from Container Registry. Logs from every part go to Log Analytics.
 ```
@@ -711,21 +711,57 @@ app assumes `https://login.microsoftonline.com`).
 
 ## 7. Azure AI Foundry
 
-Release 1 runs with AI off. Two things change when AI is switched on: how the app authenticates to
-Foundry, and the outbound rule that lets the call out (the apps NSG denies the internet, InfoSec LLD §3).
+AI is on when the deploy kit names an endpoint, off when `CITADEL_ENDPOINT=n/a`. Fill these lines and
+`scripts/azure_deploy.py` passes them to the template, after its `ai` check accepts them:
 
-**Preferred: the app's managed identity, no key at all** (InfoSec LLD §9). Whoever owns the Foundry
-resource (or the Citadel gateway in front of it) grants the app identity *Cognitive Services OpenAI
-User*; then the app sends an Entra token instead of an api-key:
+| Kit line | What it is |
+|---|---|
+| `CITADEL_ENDPOINT` | `https://<resource>.openai.azure.com`, the gateway host, or a Foundry project: `https://<resource>.services.ai.azure.com/api/projects/<project>` |
+| `CITADEL_DEPLOYMENT` | The deployment name; on a project endpoint, the agent's name |
+| `CITADEL_AUTH_MODE` | `managed_identity` (a kit endpoint with key auth is refused: only the placeholder key would be there) |
+| `AI_EGRESS_DESTINATION` | The Foundry or gateway private endpoint CIDR, or the service tag `CognitiveServicesFrontend` (confirm it against the published Service Tags file for the region). The template turns it into the `allow-out-ai` NSG rule |
+| `CITADEL_GATEWAY_HOST` | Only through a gateway (Citadel): the exact host in `CITADEL_ENDPOINT`. The app accepts that one host, nothing else under its domain |
+| `CITADEL_TOKEN_SCOPE` | Only if the gateway names its own audience: `api://<gateway app id>/.default` |
+
+The check stops the deploy, before anything is created, when the app would refuse the endpoint, when a gateway is
+not named exactly, when the path is anything but none, `/openai` or `/openai/v1` (the app calls
+`<host>/openai/v1/responses`, so the gateway API must be published at that path), or when the deployment or egress
+line is missing. It also tries the endpoint without a credential; no answer is reported as not passed, not as a
+failure, because a private endpoint answers only from the app's network. If a revision is ever started with a refused
+value anyway, the app keeps working with AI off and Engines & AI says why.
+
+**A Foundry agent.** A project endpoint makes the name an agent. The app calls
+`POST <project>/openai/v1/responses` with `agent_reference` ([Build with runtime components](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/runtime-components);
+[endpoints](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview)). Microsoft lists the Agents
+service as Entra ID only ([authentication](https://learn.microsoft.com/en-us/azure/foundry/concepts/authentication-authorization-foundry)),
+so grant the app identity *Foundry Agent Consumer* on the project
+([RBAC](https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry)); the token scope is
+`https://ai.azure.com/.default`. The agent carries its own model and instructions; the app asks for the JSON in the
+input and refuses an answer that does not fit. Whether an agent takes the PDF or image attachment is not stated by the
+documents: **this route is unproven until run against the real agent.** The rules assistant reads with a deployment, and
+says so when the connection is an agent.
+
+**Connecting on Engines & AI.** *Test and save* makes a real call to the agent or deployment first. Only a completed
+answer saves it; a failed test saves nothing and the previous connection stays. Choose managed identity to send no key.
+
+Two things stay with the people who own them. **Grant the role:** whoever owns the Foundry resource (or the
+Citadel gateway in front of it) grants the app identity *Cognitive Services OpenAI User* (InfoSec LLD §9). **Open
+the hub:** the hub firewall must allow the host, and the private DNS must resolve it.
 
 ```bash
 PRINCIPAL=$(az identity show -g "$RG" -n "${APP%-api}-app" --query principalId -o tsv)
 az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal-type ServicePrincipal \
   --role "Cognitive Services OpenAI User" --scope "<Foundry resource id>"
+```
+
+**Switching AI on for a running app without re-running the template** (the same values by hand):
+
+```bash
 az containerapp update -n "$APP" -g "$RG" \
   --set-env-vars "INV_STUDIO_AZURE_AUTH=managed_identity" \
                  "INV_STUDIO_AZURE_ENDPOINT=https://<resource>.openai.azure.com" \
                  "INV_STUDIO_AZURE_DEPLOYMENT=<deployment name>"
+# Through a gateway: also INV_STUDIO_AZURE_GATEWAY_HOST=<exact host>
 # A gateway that names its own audience: also INV_STUDIO_AZURE_TOKEN_SCOPE=api://<gateway app id>/.default
 ```
 
@@ -793,9 +829,11 @@ Run from a laptop or Cloud Shell, the check proves the endpoint, the key and the
 network route. Once the revision runs with AI on, read `samples/invoice-scan.png` in the app with Azure AI Foundry
 as the reader: that proves the NSG rule and the private DNS as well.
 
-The endpoint must be the Foundry resource itself. A Citadel gateway address (`*.azure-api.net`) is refused by
-the app's allow-list today, and while `INV_STUDIO_AZURE_ENDPOINT` holds a refused value every page fails to load
-(`/api/state` answers 400). The check reports both before anything is deployed.
+**Measure it on the real invoices, once the revision runs with AI on.** From a checkout that has the private
+corpus and the truth files, `scripts/ai_fallback_compare.py` reads each invoice through the deployed app with AI off,
+then on, and prints correct, blank and wrong per cell, as counts only. It refuses to start unless the app says Azure
+AI Foundry is connected. Rules the AI adds in the AI-on pass stay in the app; the report and `/api/ai-rules` count the
+lines each one filled, and the report scores them against the truth files.
 
 ## 8. Go live
 

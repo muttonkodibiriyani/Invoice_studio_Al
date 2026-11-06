@@ -27,6 +27,8 @@ from pydantic import Field, SecretStr, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
 from .authentication import EntraIdentity, actor
+from . import ai_rules
+from .azure_foundry import env_refusal
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
 from .users import UserDirectory
@@ -149,7 +151,9 @@ class Connection(StrictModel):
 
 class AzureConnection(StrictModel):
     endpoint: str = Field(min_length=3,max_length=300)
-    api_key: SecretStr = Field(min_length=10,max_length=500)
+    name: str = Field(default="",max_length=150)  # the deployment, or the agent on a project endpoint
+    auth: str = Field(default="key",pattern="^(key|managed_identity)$")
+    api_key: SecretStr|None = Field(default=None,min_length=10,max_length=500)
 
 
 class SubscriptionToken(StrictModel):
@@ -786,7 +790,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             refs=references(c);rules=policy(c);ledger=store.ledger(c)
             exports=[{"id":r["id"],"job_id":r["job_id"],**{k:v for k,v in json.loads(r["payload"]).items() if k in ("number","created_at")}} for r in c.execute("SELECT id,job_id,payload FROM exports ORDER BY rowid DESC")]
         return {"engines":capabilities(),"connections":connections,
-                "azure_endpoint":azure_endpoint,"azure_deployment":azure_deployment,
+                "azure_endpoint":azure_endpoint,"azure_deployment":azure_deployment,"azure_refused":env_refusal(),
                 "accounts":accounts,"active_account":active_account,"settings":settings,
                 "policy":rules.model_dump(mode="json"),"references":{"version":refs.get("version"),"imported_at":refs.get("imported_at"),"counts":{k:len(refs.get(k,[])) for k in ("sites","routes","items","orders","receipts","taxRules")}} if refs else None,
                 "jobs":[public(evaluate(j,validation_context=(refs,rules,ledger)),False) for j in jobs],"exports":exports,
@@ -1046,6 +1050,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
                          "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1],
                          "open_holds":open_holds(j["validation"],why),"validation":D11}
+            receipt.update(ai_on_receipt(j))
             c.execute("INSERT INTO exports VALUES (?,?,?,?,?)",(eid,receipt["invoice_key"],jid,json.dumps(receipt),content))
             mark_exported(j,export_id=eid);store.job(jid,j,c);store.audit("exported",audit_receipt(receipt),c)
         learn_later(j)
@@ -1128,6 +1133,13 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 else:cell.value=str(value);cell.data_type="s"  # text only, never a formula
         buffer=io.BytesIO();book.save(buffer);return buffer.getvalue()
     def target_upc(c=None):return store.get("target_export",{},c).get("upc","empty")
+    def ai_on_receipt(j):
+        """What the AI did on this invoice, for its receipt: the cells it filled, what it reads differently, what it only
+        suggests and which added rules ran. Absent when it did nothing."""
+        ai=(j.get("readers") or {}).get("ai") or {}
+        told={k:ai[k] for k in ("filled","flagged","rules_added","rules_applied") if ai.get(k)}
+        if ai.get("suggestions"):told["suggestions"]=len(ai["suggestions"])
+        return {"ai":{"status":ai.get("status"),"calls":ai.get("calls",0),**told}} if told or ai.get("calls") else {}
     def audit_receipt(receipt):
         # Cell evidence holds owner rows; the audit keeps its size, the receipt keeps the rows.
         return {**{k:v for k,v in receipt.items() if k!="evidence"},**({"evidence_cells":len(receipt["evidence"])} if "evidence" in receipt else {})}
@@ -1306,6 +1318,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 if not demo_references:
                     receipt.update(rules_status=j["rules"]["status"],owner_accepted=result["accepted"],owner_entries=j.get("owner_entries") or {},
                                    open_holds=holds,validation=D11)
+                receipt.update(ai_on_receipt(j))
                 entries.append((inv,result) if demo_references else {**j["rules"],"owner_accepted":result["accepted"]})
                 selected.append((j,receipt))
             if demo_references:content=batch_workbook(entries)
@@ -1458,9 +1471,11 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(ADMIN)
     def connect_azure(body:AzureConnection):
         refuse_provider("azure")
-        result=providers.azure.connect(body.endpoint,body.api_key.get_secret_value())
+        connection=providers.azure.prepare(body.endpoint,body.api_key.get_secret_value() if body.api_key else None,body.name,body.auth)
+        providers.test_azure(connection)  # raises on anything but a real answer: nothing saved, the previous connection stays
+        result=providers.azure.save(connection)
         store.set(RULES_ASSISTANT_TESTED,None)  # a new key or auth mode needs the assistant's connection test again
-        store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"]})
+        store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"],"name":result["name"],"route":result["route"],"auth":body.auth})
         return result
 
     @app.delete("/api/connections/azure")
@@ -1709,6 +1724,15 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         learn_from_job(j)
         return learned.summary()
 
+    @app.get("/api/ai-rules")
+    @access(MEMBER)
+    def added_rules():
+        return {"rules":ai_rules.all_rules(store)}
+    @app.delete("/api/ai-rules/{rule_id}")
+    @access(ADMIN)
+    def remove_added_rule(rule_id:str):
+        if not ai_rules.remove(store,rule_id):raise HTTPException(404,"That AI-added rule is not there")
+        return {"removed":rule_id}
     @app.delete("/api/learned/{key}")
     @access(ADMIN)
     def forget_learned(key:str):

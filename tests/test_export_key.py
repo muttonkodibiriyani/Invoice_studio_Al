@@ -8,6 +8,7 @@ a throwaway PostgreSQL to run them there too; CI has no PostgreSQL, so they skip
 import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from cryptography.fernet import Fernet
@@ -219,3 +220,10 @@ def test_keys_stored_before_this_change_block_nothing_and_still_merge_on_delete(
     kept = tombstones(app)
     assert kept["old-1"][0] == "rules||"
     assert kept["old-2"][0] is None and kept["old-2"][1]["invoice_key_kept_by"] == "old-1"
+
+
+def test_a_real_duplicate_exported_at_the_same_moment_is_refused_not_a_crash(client, owner, app, invoice):
+    invoice("first", "S1", "INV-1"), invoice("again", "S1", "INV-1")
+    with ThreadPoolExecutor(2) as pool:
+        codes = sorted(pool.map(lambda jid: export_one(client, owner, app, jid).status_code, ("first", "again")))
+    assert codes == [200, 409]

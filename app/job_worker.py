@@ -13,12 +13,33 @@ from types import SimpleNamespace
 
 from . import engines
 from .evidence import annotate
+from .fine_rules import ocr_read
 from .item_rules import RulesError
 from .item_search import for_invoice
-from .models import Invoice, ProcessingOptions
+from .models import IMAGE_FORMATS, Invoice, ProcessingOptions
+from .multi_invoice import page_texts_from_boxes, suspect_pages
 from .sandbox import limit
 
 ERRORS={"ReaderTimedOut":engines.ReaderTimedOut,"ReaderFailed":engines.ReaderFailed,"RulesError":RulesError}
+
+
+def picture_pages(path):
+    """Pages of a PDF or a TIFF that hold a picture."""
+    if path.suffix.lower()==".pdf":
+        import pdfplumber
+        with pdfplumber.open(path) as pdf:return sum(1 for page in pdf.pages[:20] if page.images)
+    if path.suffix.lower() in (".tif",".tiff"):
+        from PIL import Image
+        with Image.open(path,formats=IMAGE_FORMATS) as image:return min(getattr(image,"n_frames",1),20)
+    return 1
+
+
+def several_in_read(path,result):
+    """Pages where a read of scanned pages shows another invoice may start; the upload check covered native text. A
+    multi-page scan with no OCR text to look at (the AI read it alone) cannot be checked, so every later page is held."""
+    if not ocr_read(result):return []
+    texts=page_texts_from_boxes(result.get("boxes") or [])
+    return suspect_pages(texts) if any(text.strip() for text in texts) else list(range(2,picture_pages(path)+1))
 
 
 class Parent:
@@ -117,6 +138,8 @@ def main():
         result=engines.process(Path(start["path"]),ProcessingOptions.model_validate(start["options"]),
                                SimpleNamespace(root=root),ai_reader,progress,item_master=item_master,ai_local=True,ai_rule_fill=ai_rule_fill,ai_rule_keep=ai_rule_keep)
         result["annotated_evidence"]=annotate(result.get("evidence"),result["invoice"],filename=start["filename"])
+        several=several_in_read(Path(start["path"]),result)
+        if several:result["several_read"]=several
     except Exception as e:
         # The class name only: no document content.
         parent.send({"failed":type(e).__name__});raise SystemExit(1)

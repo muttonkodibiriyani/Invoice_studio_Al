@@ -1885,6 +1885,25 @@ function addLine(line = {}, disabled = false, reviews = null, readers = null) {
   $("#no-lines").hidden = true;
 }
 
+// The hold on a file that may bind several invoices is released by a person who looked at its pages.
+function oneInvoiceButton(job) {
+  const button = make("button", "button button-quiet button-small", "This file is one invoice");
+  button.type = "button";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      const released = await api(`/api/jobs/${encodeURIComponent(job.id)}/one-invoice`, { method: "POST" });
+      app.currentJob = released;
+      replaceJobSummary(released);
+      renderSelectedJob(released);
+    } catch (error) {
+      button.disabled = false;
+      notify(error.message, "error");
+    }
+  });
+  return button;
+}
+
 function renderValidation(job) {
   const issues = job.validation?.issues || [];
   const summary = $("#validation-summary");
@@ -1961,6 +1980,7 @@ function renderValidation(job) {
   });
   if (confirmStep && !confirmed && !copy) details.append(make("p", "validation-extra", "Last step: compare the values with the document, then confirm review."));
   summary.append(details);
+  if (issues.some((issue) => issue.code === "Several Invoices")) summary.append(oneInvoiceButton(job));
 }
 
 function renderTrace(job) {

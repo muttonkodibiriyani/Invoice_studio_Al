@@ -58,12 +58,23 @@ from .references import import_references, reference_workbook
 from .rules_assistant import TESTED as RULES_ASSISTANT_TESTED, register_rules_assistant
 from .sandbox import protect_process
 from .store import Store
+from .multi_invoice import SEVERAL_CODE, clean_pages, hold_message, several_issue, several_pages
 from .upload_check import check as check_upload
 
 ROOT=Path(__file__).resolve().parent.parent
 APP_DIR=ROOT/"app"
 MIME_XLSX="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_UPLOAD=12_000_000
+TOO_LARGE="This file is over the 12 MB limit. Split it into smaller files, or scan it again at a lower resolution, then upload again."
+EMPTY_FILE="This file is empty. Check it opens on your computer, then upload it again."
+
+
+def upload_size_message(errors):
+    """Plain words when a planned file's size is refused; any other invalid request keeps the developer's message."""
+    for error in errors:
+        if tuple(error["loc"])[:2]==("body","files") and error["loc"][-1]=="size":
+            return TOO_LARGE if error["type"]=="less_than_equal" else EMPTY_FILE if error["type"]=="greater_than_equal" else None
+    return None
 MAX_BATCH=500  # files in one processing plan; INV_STUDIO_MAX_QUEUED (unfinished jobs admitted) defaults to the same
 PLAN_TTL=600  # seconds a confirmed plan stays usable; renewed by each upload under it and by /api/preflight/renew
 
@@ -396,6 +407,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_,exc):
         # Pydantic's default error includes the submitted input. Never echo a key.
+        plain=upload_size_message(exc.errors())
+        if plain:return JSONResponse({"detail":plain},422)
         return JSONResponse({"detail":"Invalid input: "+"; ".join(".".join(map(str,e["loc"]))+": "+e["msg"] for e in exc.errors())},422)
 
     def client_detail(exc):
@@ -445,6 +458,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def assert_editable(j):
         if j.get("export_id"):raise HTTPException(409,"This invoice was exported. Download its existing export.")
         if j["status"] in ("queued","processing"):raise HTTPException(409,"Wait for extraction to finish")
+    def several_hold(j,result):
+        """A file that may hold several invoices stays held whatever the review says, until a person releases it."""
+        issue=several_issue(j)
+        if issue:result["issues"].insert(0,issue);result["ready"]=False
     def evaluate(j,c=None,validation_context=None):
         inv=Invoice.model_validate(j["invoice"])
         if validation_context is None:
@@ -456,6 +473,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         if j.get("export_id"):led=[x for x in led if x.get("job_id")!=j["id"]]
         if demo_references:j["validation"]=validate(inv,refs,rules,led,j.get("reviewed",False))
         else:j["validation"]=rules_validation(fresh_rules(j),led,j.get("reviewed",False),j)
+        several_hold(j,j["validation"])
         if not j.get("export_id") and j["status"] not in ("queued","processing","error"):
             j["status"]="ready" if j["validation"]["ready"] else "review"
         return j
@@ -621,6 +639,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 kept=reread_entries(job,lines)
                 split_note=(job.get("split") or {}).get("note")  # from the upload, so a re-read never stacks notes
                 job.update(result);job.update(evidence=annotated)
+                try:job["several_read"]=clean_pages(result.get("several_read") or [])
+                except ValueError:job["several_read"]=[1]
+                held=several_pages(job);split_note=hold_message(held) if held else split_note
                 if split_note:job["extraction_note"]=" ".join(x for x in (split_note,job.get("extraction_note")) if x)
                 if kept:
                     job.update(kept[0])
@@ -667,7 +688,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             suffix=Path(filename).suffix.lower()
             if suffix not in (".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tif",".tiff",".docx",".xlsx",".csv",".txt",".json"):
                 raise ValueError("Supported: PDF, PNG, JPEG, WebP, BMP, TIFF, DOCX, XLSX, CSV, TXT and invoice JSON")
-            if not content or len(content)>MAX_UPLOAD:raise ValueError("Invoice must be between 1 byte and 12 MB")
+            if not content:raise ValueError(EMPTY_FILE)
+            if len(content)>MAX_UPLOAD:raise ValueError(TOO_LARGE)
             if suffix==".pdf" and not content.startswith(b"%PDF-"):raise ValueError("File is not a PDF")
             if suffix in (".pdf",".png",".jpg",".jpeg",".webp",".bmp",".tif",".tiff"):
                 check_upload(content,suffix,reader_env())
@@ -696,7 +718,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                                                   "sha256":hashlib.sha256(content).hexdigest()})
                     raise ValueError("This PDF could not be checked for several invoices in one file. "
                                      "Try again, or upload each invoice as its own file.") from None
-                if outcome.multiple:
+                if outcome.hold_pages:
+                    parts=[(content,Path(filename).name[:200],{"several_upload":outcome.hold_pages,"extraction_note":hold_message(outcome.hold_pages)})]
+                elif outcome.multiple:
                     if outcome.refusal:refusal=outcome.refusal
                     else:
                         count=len(outcome.segments);name=Path(filename).name[:200]
@@ -729,6 +753,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                                 store.job(job["id"],job);store.audit("multi_invoice_refused",{"job_id":job["id"],"filename":job["filename"],"sha256":job["sha256"]})
                                 continue
                             store.job(job["id"],job);store.audit("uploaded",{"job_id":job["id"],"filename":job["filename"],"sha256":job["sha256"],
+                                                              **({"several_pages":job["several_upload"]} if job.get("several_upload") else {}),
                                                               **({"split":{k:v for k,v in job["split"].items() if k not in ("invoice_number","note")}} if job.get("split") else {})})
                         for job in jobs:
                             if not refusal:track(job["id"],"queued");pool.submit(copy_context().run,run,job["id"],opts)
@@ -948,6 +973,20 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         if len(old)==len(invoice.lines) and all(isinstance(was,dict) and key(was)==key(l.model_dump()) for was,l in zip(old,invoice.lines)):
             return evidence
         return {**evidence,"lines":[]}
+    @app.post("/api/jobs/{jid}/one-invoice")
+    @access(MEMBER)
+    def one_invoice(jid:str):
+        """A person looked at a held file and says it holds one invoice: the hold lifts, and the audit says who lifted it."""
+        with store.connection(True) as c:
+            j=job_or_404(jid,c);assert_editable(j)
+            pages=several_pages(j)
+            if not pages:raise HTTPException(409,"This invoice has no several-invoices hold")
+            j["several_released"]={"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()}
+            j["extraction_note"]=(j.get("extraction_note") or "").replace(hold_message(pages),"").strip() or None
+            evaluate(j,c);store.job(jid,j,c)
+            store.audit("several_invoices_released",{"job_id":jid,"pages":pages},c)
+        return public(j)
+
     @app.post("/api/jobs/{jid}/review")
     @access(MEMBER)
     def review(jid:str,body:Review):
@@ -1212,6 +1251,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if j["status"] in ("queued","processing","error"):reason="Extraction has not finished"
             elif j["revision"]!=request.revision:reason="Invoice changed. Refresh before downloading."
             elif not fresh_rules(j):reason="No current fine-rules result for this revision"
+            elif several_pages(j):reason=hold_message(several_pages(j))
             else:reason=None
             if reason:skipped.append((j,reason));continue
             views.append(j["rules"]);included.append(j)
@@ -1249,7 +1289,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     # manually'. Validation and review holds no longer stop the real export; each receipt lists the ones still open.
     # Only integrity blocks: not read yet, changed since the check, already exported, the same invoice twice.
     D11="exported unvalidated by owner decision D11"
-    INTEGRITY=("Duplicate","Rules Pending")
+    INTEGRITY=("Duplicate","Rules Pending",SEVERAL_CODE)
     def open_holds(result,why=None):
         """The holds still open at export time, each with the cell it applies to when it names one (D11)."""
         holds=[{"code":i["code"],"cell":i.get("field"),"line":i.get("line"),"message":i["message"]}
@@ -1271,6 +1311,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         inv=Invoice.model_validate(j["invoice"])
         if demo_references:result=validate(inv,references(c),policy(c),ledger,j.get("reviewed",False))
         else:result=rules_validation(fresh_rules(j),ledger,j.get("reviewed",False),j)
+        several_hold(j,result)
         reasons=[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True) and (demo_references or i["code"] in INTEGRITY)]
         if reasons:return j,result,reasons,[]
         holds=[] if demo_references else open_holds(result,refusal(coverage(j["rules"],item_rules().coverage_tiers())))
@@ -1618,6 +1659,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             for jid in dict.fromkeys(body.job_ids):
                 ensure_rules(jid);j=job_or_404(jid)
                 if not fresh_rules(j):raise HTTPException(409,f"Invoice {j['filename']} has no current fine-rules result")
+                if several_pages(j):raise HTTPException(409,hold_message(several_pages(j)))
                 views.append(j["rules"])
             try:content,_=rules_workbook(views,target_upc())
             except ValueError as exc:raise HTTPException(409,str(exc))

@@ -80,8 +80,8 @@ ORDER = {"po": "RMS_ORDER_NO", "item_id": "RMS_ITEM_ID", "qty": "QTY_RECEIVED"}
 # Legal forms and articles: the same supplier may print them or not. Business words such as Trading stay in the name.
 LEGAL_NAME_WORDS = frozenset({
     "al", "el", "the", "co", "company", "corp", "corporation", "dmcc", "est", "establishment", "fz", "fzc", "fzco", "fze",
-    "gmbh", "inc", "limited", "llc", "ltd", "plc", "private", "pvt",
-    "شركة", "مؤسسة", "ذات", "مسؤولية", "محدودة", "المحدودة",
+    "gmbh", "inc", "limited", "llc", "ltd", "pjsc", "plc", "private", "psc", "pvt", "sa", "saoc", "saog", "wll",
+    "شركة", "مؤسسة", "ذات", "مسؤولية", "محدودة", "المحدودة", "شمم", "ذمم",
 })
 
 

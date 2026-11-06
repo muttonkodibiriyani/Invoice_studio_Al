@@ -11,7 +11,7 @@ from decimal import Decimal
 import pytest
 
 from app import engines, ocr_worker
-from app.models import ProcessingOptions
+from app.models import ProcessingOptions, uom_code
 
 PRIVATE = pathlib.Path(os.environ.get("INV_MASTER_GOLDEN_DIR", "/nonexistent"))
 READS = PRIVATE / "scan_vs_truth" / "reads"
@@ -53,4 +53,6 @@ def test_header_and_lines_match_the_truth_file(pdf, monkeypatch, tmp_path):
         gaps += [] if same("po", invoice.get("po"), truth["po"]) else ["po"]
     if len(invoice["lines"]) != len(truth["lines"]):
         gaps.append("line count")
+    gaps += [f"line {n} uom" for n, (line, want) in enumerate(zip(invoice["lines"], truth["lines"]), 1)
+             if uom_code(line.get("uom")) != uom_code(want.get("uom"))]
     assert not gaps

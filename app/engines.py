@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from .models import Invoice
+from .models import Invoice, uom_code
 from .evidence import build as build_evidence
 from . import item_rules, item_search, rules_first, scan_guard
 from .fine_rules_source import LookupRulesSource
@@ -528,6 +528,7 @@ def _same(field,mine,theirs):
     if field in AMOUNT_FIELDS:
         try:return Decimal(str(mine))==Decimal(str(theirs))
         except (InvalidOperation,ValueError):return False
+    if field=="uom":return uom_code(mine)==uom_code(theirs)
     fold=lambda v:re.sub(r"[^0-9a-z]","",str(v).casefold())
     return fold(mine)==fold(theirs)
 

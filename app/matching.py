@@ -328,6 +328,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
             # The currency the target check's arithmetic tolerance is looked up in (owner decision, task 01a1ab56).
             **({"arithmetic_currency":result["arithmetic_currency"]} if result.get("arithmetic_currency") else {}),
             **({"line_amounts_total":result["line_amounts_total"]} if result.get("line_amounts_total") else {}),
+            **({"line_discounts_printed":True} if result.get("line_discounts_printed") else {}),
             **({"receipt_date":result["receipt_date"]} if result.get("receipt_date") else {}),
             # Codes left when the rules cannot pick a supplier code: offered for the owner's pick, never a value.
             **({"supplier_site_candidates":result["supplier_site_candidates"]} if result.get("supplier_site_candidates") else {})}

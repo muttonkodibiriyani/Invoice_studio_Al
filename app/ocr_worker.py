@@ -226,7 +226,23 @@ def apply_learned(text,learned_templates,baseline,method):
     return baseline,method,None
 
 
+def _checked_candidate(candidate, boxes, text):
+    # Rows the headings read that do not multiply are checked against the rows' own arithmetic.
+    from .arithmetic_lines import checked_lines, credit_signed
+    from .layout_extract import _normalise_words
+    from .models import Invoice
+    invoice=Invoice.model_validate(candidate).model_dump(mode="json")
+    if boxes:invoice={**invoice,"lines":checked_lines(invoice["lines"],_normalise_words(boxes))}
+    return Invoice.model_validate(credit_signed(invoice,text)).model_dump(mode="json")
+
+
 def structured_extract(text, boxes, templates, tables=None):
+    if boxes:
+        from .page_turn import turn_pages
+        turned=turn_pages(boxes)
+        if turned is not None:
+            # The reader's text and tables run in the order of the page as fed.
+            boxes,text,tables=turned,spatial_text(turned),[]
     parsed = template_extract(text, templates) if text else None
     if parsed is not None:
         return parsed, "template"
@@ -252,14 +268,12 @@ def structured_extract(text, boxes, templates, tables=None):
                 for key in fields:
                     if candidate.get(key) in (None,"") and header.get(key) not in (None,""):
                         candidate[key]=header[key]
-            from .models import Invoice
-            return Invoice.model_validate(candidate).model_dump(mode="json"), "table"
+            return _checked_candidate(candidate,boxes,text), "table"
     if text:
         from .layout_extract import extract_invoice
         candidate = extract_invoice(text, boxes)
         if candidate is not None:
-            from .models import Invoice
-            return Invoice.model_validate(candidate).model_dump(mode="json"), "layout"
+            return _checked_candidate(candidate,boxes,text), "layout"
     return None, "text_only"
 
 

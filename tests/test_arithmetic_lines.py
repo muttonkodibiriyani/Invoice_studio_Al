@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.arithmetic_lines import names_another_document, read_lines
+from app.arithmetic_lines import checked_lines, credit_signed, names_another_document, read_lines
 from app.layout_extract import _normalise_words, extract_invoice
 
 WIDTH, HEIGHT = 600.0, 800.0
@@ -254,5 +254,103 @@ def test_a_document_that_names_itself_something_else_gets_no_lines_from_the_arit
     assert invoice is None or not invoice["lines"]
 
 
+@pytest.mark.parametrize("label", ["Purchase Order: 4471", "Delivery Note 88", "Statement of Account 12 for May"])
+def test_a_reference_an_invoice_prints_is_not_a_title(label):
+    assert not names_another_document(f"Remittance\n{label}")
+
+
 def test_no_title_and_no_confirmed_table_still_reads_nothing():
     assert extract_invoice("Remittance\nThanks", page(["Remittance"], ["Thanks"])) is None
+
+
+def _heading_row(**cells):
+    return {"sku": None, "qty": None, "price": None, "net_amount": None, "tax_amount": None, **cells}
+
+
+TWO_ROWS = (row("BR-104 Hinge", "12", "4.50", "54.00"), row("TL-221 Adhesive", "3", "19.25", "57.75"))
+
+
+def test_a_price_that_is_really_the_amount_takes_the_figures_the_rows_multiply_to():
+    # A heading took the amount column for the price, and left no amount to check it against.
+    read_by_heading = [_heading_row(sku="BR-104", qty="12", price="54.00"), _heading_row(sku="TL-221", qty="3", price="57.75")]
+    lines = checked_lines(read_by_heading, _normalise_words(page(*TWO_ROWS)))
+    assert [(l["sku"], Decimal(str(l["price"])), Decimal(str(l["net_amount"]))) for l in lines] == [
+        ("BR-104", Decimal("4.50"), Decimal("54.00")), ("TL-221", Decimal("19.25"), Decimal("57.75"))]
+
+
+def test_a_price_nothing_can_confirm_is_cleared_so_the_line_is_flagged():
+    read_by_heading = [_heading_row(sku="BR-104", qty="12", price="54.00"), _heading_row(sku="TL-221", qty="3", price="57.75")]
+    rows = (["BR-104 Hinge", ("a", "12"), ("b", "54.00")], ["TL-221 Adhesive", ("a", "3"), ("b", "57.75")])
+    assert checked_lines(read_by_heading, _normalise_words(page(*rows))) == read_by_heading
+    same_count = (row("BR-104 Hinge", "12", "4.50", "54.00"), row("TL-221 Adhesive", "3", "19.25", "60.00"))
+    lines = checked_lines(read_by_heading, _normalise_words(page(*same_count, row("ZZ-1 Spare", "2", "2.00", "4.00"))))
+    assert len(lines) == 3
+
+
+def test_rows_a_heading_read_that_multiply_are_left_exactly_as_read():
+    read_by_heading = [_heading_row(sku="X", qty="2", price="10.00", net_amount="20.00", description="As the heading read it")]
+    assert checked_lines(read_by_heading, _normalise_words(page(*TWO_ROWS))) is read_by_heading
+
+
+@pytest.mark.parametrize("title", ["Credit Note", "CREDIT MEMO", "Sales Return Note", "Refund Advice"])
+def test_a_document_titled_a_credit_has_negative_amounts_whatever_it_prints(title):
+    invoice = credit_signed({"net": "50.00", "tax": None, "lines": [_heading_row(net_amount="50.00", qty="2", price="25.00")]},
+                            f"Acme\n{title}\nNumber 4")
+    assert invoice["net"] == Decimal("-50.00") and invoice["tax"] is None
+    assert invoice["lines"][0]["net_amount"] == Decimal("-50.00")
+    assert invoice["lines"][0]["qty"] == "2" and invoice["lines"][0]["price"] == "25.00"
+
+
+@pytest.mark.parametrize("text", ["Tax Invoice\nCredit Note No: 44", "Invoice\nCredit terms 30 days", "Invoice\nReturn policy note"])
+def test_a_mention_of_a_credit_changes_no_sign(text):
+    assert credit_signed({"net": "50.00", "lines": []}, text)["net"] == "50.00"
+
+
+def test_a_page_turned_over_is_put_the_right_way_up():
+    from app.page_turn import turn_pages
+    upright = page(
+        ["Remittance"],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Amount payable", ("c", "111.75")],
+    )
+    assert turn_pages(upright) is None
+    over = [{**word, "box": [WIDTH - word["box"][2], HEIGHT - word["box"][3], WIDTH - word["box"][0], HEIGHT - word["box"][1]]}
+            for word in reversed(upright)]
+    turned = turn_pages(over)
+    assert turned is not None
+    assert [(l.sku, l.qty, l.net_amount) for l in read_lines(_normalise_words(turned))] == [
+        ("BR-104", 12, Decimal("54.00")), ("TL-221", 3, Decimal("57.75"))]
+
+
+@pytest.mark.parametrize("inverse", [1, 3])
+def test_a_page_on_its_side_turns_the_way_its_totals_say(inverse):
+    from app.page_turn import _turned, turn_pages
+    upright = page(
+        ["Remittance", "note", "for", "goods", "lifted"],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Grand total", ("c", "111.75")],
+    )
+    sideways = [{**_turned(word, inverse), "geometry": "word"} for word in upright]
+    turned = turn_pages(sideways)
+    assert turned is not None
+    assert [(l.sku, l.net_amount) for l in read_lines(_normalise_words(turned))] == [
+        ("BR-104", Decimal("54.00")), ("TL-221", Decimal("57.75"))]
+
+
+def test_a_sideways_page_with_no_way_to_tell_stays_as_it_is():
+    from app.page_turn import _turned, turn_pages
+    sideways = [_turned(word, 1) for word in page(["Goods", "note", "printed", "without", "figures", "anywhere", "here", "either", "ever", "again"])]
+    assert turn_pages(sideways) is None
+
+
+def test_figures_first_on_an_upright_page_do_not_turn_it():
+    from app.page_turn import turn_pages
+    amounts_first = page(
+        ["Remittance"],
+        [("a", "54.00"), ("b", "12"), ("c", "4.50"), "BR-104 hinge"],
+        [("a", "57.75"), ("b", "3"), ("c", "19.25"), "TL-221 adhesive"],
+        [("a", "111.75"), "Amount payable"],
+    )
+    assert turn_pages(amounts_first) is None

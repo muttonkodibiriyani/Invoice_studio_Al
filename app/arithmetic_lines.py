@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
-from typing import Iterable
+from typing import Any, Iterable
 
 from .layout_extract import (
     _clean_description,
@@ -48,11 +48,17 @@ _CURRENCY_WORD = re.compile(r"(?i)(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR|EGP
 _OTHER_DOCUMENT = re.compile(
     r"(?im)^[\s#]*(?:(?:sales\s+|price\s+)?quot(?:e|ation)|pro\s*-?\s*forma(?:\s+invoice)?|estimate"
     r"|delivery\s+(?:note|order)|goods\s+received(?:\s+note)?|packing\s+(?:list|slip)"
-    r"|(?:account\s+)?statement(?:\s+of\s+account)?|purchase\s+order|order\s+confirmation)\b"
+    r"|(?:account\s+)?statement(?:\s+of\s+account)?|purchase\s+order|order\s+confirmation)[\s:.]*$"
+)
+# The title on a line of its own, as "Credit Note" or "Sales Return Note"; "Credit Note No: 12" against an invoice is
+# a reference. Wording a credit under no such title reads as printed: the rules still see its printed signs.
+_CREDIT_TITLE = re.compile(
+    r"(?im)^[\s#*]*(?:\w+\s+){0,2}?(?:credit|return|refund)s?\s+(?:note|memo|invoice|voucher|advice|adjustment)[\s:.*]*$"
 )
 _UOM_SHAPE = re.compile(r"[A-Z]{1,5}\.?")
 # A share of the rows that must agree before a text column is read as codes or units.
 _COLUMN_VOTE = 0.6
+_ROUNDING_SHARE = Decimal("0.005")
 
 
 @dataclass(frozen=True)
@@ -544,8 +550,24 @@ def _marked_credit(row: _Row, amount: _Number) -> bool:
     return last + 1 < len(row.words) and row.words[last + 1].text.strip().casefold().strip(".") == "cr"
 
 
+def credit_signed(invoice: dict[str, Any], text: str) -> dict[str, Any]:
+    """A document titled a credit or a return takes money back whatever sign it prints, so its amounts are negative."""
+    if not _CREDIT_TITLE.search(text or ""):
+        return invoice
+    def negative(value: Any) -> Any:
+        number = _as_decimal(value)
+        return value if number is None else -abs(number)
+    return {
+        **invoice,
+        **{field: negative(invoice.get(field)) for field in ("net", "tax", "gross") if field in invoice},
+        "lines": [{**line, "net_amount": negative(line.get("net_amount")), "tax_amount": negative(line.get("tax_amount"))}
+                  for line in invoice.get("lines") or []],
+    }
+
+
 def names_another_document(text: str) -> bool:
-    """The document's own title says it is a quotation, an order, a statement or the like."""
+    """A line of its own says the document is a quotation, an order, a statement or the like. The same words
+    with a value after them are a reference an invoice prints: "Purchase Order: 4471"."""
     return bool(_OTHER_DOCUMENT.search(text))
 
 
@@ -619,3 +641,41 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
             )
         )
     return lines
+
+
+def _row_multiplies(line: dict[str, Any]) -> bool:
+    qty, price, amount = (_as_decimal(line.get(field)) for field in ("qty", "price", "net_amount"))
+    if qty is None or price is None or amount is None:
+        return False
+    return abs(abs(qty * price) - abs(amount)) <= max(Decimal("0.02"), abs(amount) * _ROUNDING_SHARE)
+
+
+def _as_decimal(value: Any) -> Decimal | None:
+    try:
+        return None if value in (None, "") else Decimal(str(value))
+    except ArithmeticError:
+        return None
+
+
+def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[dict[str, Any]]:
+    """A heading can name the wrong column: "Ext. Price" read as the price, with no amount left to check it against.
+    A row whose figures do not multiply takes them from the rows' own arithmetic, when the page confirms a table;
+    otherwise the figure nothing confirms is cleared, so the line rules flag it. Rows that multiply are left alone."""
+    if not lines or all(_row_multiplies(line) for line in lines):
+        return lines
+    found = [line.model_dump(mode="json") for line in read_lines(words)]
+    if len(found) < len(lines):
+        return lines
+    if len(found) > len(lines):
+        return found
+    merged = []
+    for line, other in zip(lines, found):
+        if _row_multiplies(line):
+            merged.append(line)
+        elif other.get("net_amount") not in (None, "") and other.get("price") not in (None, ""):
+            merged.append({**line, **{field: other[field] for field in ("qty", "price", "net_amount", "tax_amount")}})
+        elif line.get("net_amount") in (None, ""):
+            merged.append({**line, "price": None})
+        else:
+            merged.append(line)
+    return merged

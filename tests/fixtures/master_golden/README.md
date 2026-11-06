@@ -10,5 +10,5 @@
   never another one.
 - The invoices, the master workbook and the key never go into git. Set `INV_MASTER_GOLDEN_DIR` to run the cases;
   without it they skip.
-- Every case is `xfail(strict=True, reason="pending sign-off")`. When a fix makes a case pass, remove its mark in
-  the same PR.
+- Every case passes since the rule fixes in PR #29, with no `xfail` marks. The expected values still wait for the
+  business owner's sign-off (task "Confirm the expected outputs are right").

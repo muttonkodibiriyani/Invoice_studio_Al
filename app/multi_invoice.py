@@ -151,11 +151,6 @@ def pdf_pages(content: bytes) -> tuple[list[str], list[list[str]]]:
     return texts, columns
 
 
-def pdf_page_texts(content: bytes) -> list[str]:
-    """Native text per page, empty strings for pages without a text layer."""
-    return pdf_pages(content)[0]
-
-
 def analyse_pdf(content: bytes) -> Outcome:
     return analyse_pages(*pdf_pages(content))
 

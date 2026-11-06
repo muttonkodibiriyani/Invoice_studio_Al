@@ -36,9 +36,11 @@ base install has no scan readers. `-m scan_readers` on the command line replaces
 .venv/bin/pytest -q -m scan_readers tests/test_golden_samples.py   # the two scans, about 70-90 s each on 2 CPUs
 ```
 
-## How CI gets the readers and models, with no network at test time
+## The scan tests and CI
 
-The scan test runs in its own job, `golden-scan`. The default `test` job stays on the base install.
+No CI job runs the two scan tests yet. `.github/workflows/ci.yml` has one `test` job on the base install, so run them
+by hand, as above, before a release. When a `golden-scan` job is added, this is how it gets the readers and models with
+no network at test time:
 
 1. The job installs the readers with `scripts/install_ocr.py --uv`, at the versions pinned in `constraints.txt`.
    This is the same installer `./scripts/setup.sh --ocr` uses, so CI tests what a user installs.

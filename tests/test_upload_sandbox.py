@@ -91,7 +91,7 @@ def test_the_child_answers_each_kind_of_bad_file_with_its_own_message():
     upload_check.check(png(), ".png", env)
     with pytest.raises(ValueError, match="^Image is invalid"):
         upload_check.check(png((5001, 5001)), ".png", env)
-    with pytest.raises(ValueError, match="^PDF is damaged"):
+    with pytest.raises(ValueError, match="^This PDF is damaged"):
         upload_check.check(b"%PDF-1.4 broken", ".pdf", env)
 
 

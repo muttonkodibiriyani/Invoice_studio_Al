@@ -125,7 +125,8 @@ def main():
         result=engines.process(Path(start["path"]),ProcessingOptions.model_validate(start["options"]),
                                SimpleNamespace(root=root),ai_reader,progress,item_master=item_master)
         result["annotated_evidence"]=annotate(result.get("evidence"),result["invoice"],filename=start["filename"])
-        result["several_read"]=several_in_read(Path(start["path"]),result)
+        several=several_in_read(Path(start["path"]),result)
+        if several:result["several_read"]=several
     except Exception as e:
         # The class name only: no document content.
         parent.send({"failed":type(e).__name__});raise SystemExit(1)

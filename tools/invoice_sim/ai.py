@@ -6,6 +6,7 @@ is ever contacted. Each case's workbook is compared with the same document's AI-
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -144,6 +145,22 @@ def install(foundry):
     providers.httpx = types.SimpleNamespace(Client=lambda *a, **k: real(*a, transport=httpx.MockTransport(foundry), **k), Timeout=httpx.Timeout, HTTPError=httpx.HTTPError)
 
 
+def steady_local_reads(engines, keep=("paddleocr", "docling")):
+    """Each OCR engine really reads each file once, and every case gets that same answer. OCR times out under load, and a case that starts
+    from a different local read shows cells changing that no AI touched. A failed read is not kept. The AI path stays entirely real."""
+    real, kept = engines.local_read, {}
+
+    def local_read(engine, path, root, language="en", extra=(), timeout=None):
+        if engine not in keep:
+            return real(engine, path, root, language=language, extra=extra, timeout=timeout)
+        key = (engine, hashlib.sha256(Path(path).read_bytes()).hexdigest(), language, tuple(extra))
+        if key not in kept:
+            kept[key] = json.dumps(real(engine, path, root, language=language, extra=extra, timeout=timeout))
+        return json.loads(kept[key])
+    engines.local_read = local_read
+    return kept
+
+
 def upload(rig, name, content, options):
     plan = rig.client.post("/api/preflight", headers=rig.headers, json={"options": options, "files": [{"name": name, "size": len(content)}]})
     assert plan.status_code == 200, plan.text[:300]
@@ -262,6 +279,9 @@ def main():
     by = {i.id: i for i in c.invoices}
     foundry = Foundry()
     install(foundry)
+    import app.engines as engines
+    os.environ.setdefault("INV_ENGINE_TIMEOUT", "1500")
+    steady_local_reads(engines)
     native = render_pdf(by["grid-classic-00"], out / "native.pdf")
     scan, _ = scan_pdf(render_pdf(by["grid-classic-01"], out / "for-scan.pdf"), out / "scan.pdf", f"{c.seed}:ai", "office")
     documents = [("native", by["grid-classic-00"], Path(native).read_bytes()), ("scan", by["grid-classic-01"], Path(scan).read_bytes())]

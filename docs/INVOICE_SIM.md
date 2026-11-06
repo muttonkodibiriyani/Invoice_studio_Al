@@ -44,7 +44,8 @@ These need a throwaway PostgreSQL and Azurite of your own, named in `INV_STUDIO_
 - `ai.py`: the real app with the AI service replaced at the HTTP transport, so the provider code, parsing and every check still run. Any
   call to another host is recorded in `foreign.json`; it must stay empty. Cases: timeouts, 401, 403, 429, 500, invalid JSON, wrong
   totals, invented values, a wrong item pick and injected invoice text. Excel cells carry no mark, so "marked" means the app's review
-  screen shows the AI mark for that cell.
+  screen shows the AI mark for that cell. Each OCR engine really reads each file once and every case reuses that read, so a cell that
+  changes was changed by the AI path, not by OCR timing out under load.
 
 ## How to read the numbers
 

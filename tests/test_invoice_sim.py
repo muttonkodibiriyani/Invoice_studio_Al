@@ -52,6 +52,30 @@ def test_every_item_class_is_in_the_corpus(corpus):
             "other_supplier_code", "other_supplier_barcode"} <= seen
 
 
+def test_ai_cases_share_one_real_ocr_read(tmp_path):
+    calls = []
+
+    def real(engine, path, root, language="en", extra=(), timeout=None):
+        calls.append(engine)
+        if len(calls) == 1:
+            raise TimeoutError("first read timed out")
+        return {"read": len(calls)}
+    engines = SimpleNamespace(local_read=real)
+    ai.steady_local_reads(engines)
+    page = tmp_path / "a.pdf"
+    page.write_bytes(b"one")
+    # A failure is not kept: the next case reads for real, then that answer stands.
+    with pytest.raises(TimeoutError):
+        engines.local_read("paddleocr", page, tmp_path)
+    assert engines.local_read("paddleocr", page, tmp_path) == {"read": 2}
+    assert engines.local_read("paddleocr", page, tmp_path) == {"read": 2}
+    # Another file, and a reader that is not OCR, still read for real.
+    page.write_bytes(b"two")
+    assert engines.local_read("paddleocr", page, tmp_path) == {"read": 3}
+    assert engines.local_read("invoice2data", page, tmp_path) == {"read": 4}
+    assert engines.local_read("invoice2data", page, tmp_path) == {"read": 5}
+
+
 def test_file_verdict_says_what_a_user_meets():
     from tools.invoice_sim.files import verdict
     read = {"status": "review", "number": "A1", "lines": 2, "told": ["Check the date"]}

@@ -2,6 +2,7 @@
 // This checks script behavior, not browser layout, CSP enforcement or the live identity provider.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const path = require("node:path");
 const vm = require("node:vm");
 
 async function main() {
@@ -105,6 +106,282 @@ async function main() {
     // A check stored before #41 has holds but no "failed" names: held by a row check, it is never green.
     const old = vm.runInContext(`targetChip(${JSON.stringify({ status: "review", rules: { target_check: { counts: clean, holds: true } } })})`, context);
     assert(old.textContent === "Held at review" && old.className.includes("warning"), `a held pre-#41 job reads as "${old.textContent}"`);
+    return;
+  }
+  if (scenario === "export-confirm") {
+    // Export Excel asks first only for a Blocked or blank invoice (D11: it asks, it never refuses). The count comes
+    // from the server check, which reads the sheets the writer fills; a draft download shows nothing new.
+    const source = fs.readFileSync(script, "utf8");
+    vm.runInContext(source, context);
+    // bindEvents needs a real page; the browser run covers it. Here, that it binds these two handlers.
+    assert(source.includes('$("#confirm-export-anyway").addEventListener("click", () => writeExport(app.exportPending))'));
+    assert(source.includes('$("#confirm-batch-export").addEventListener("click", confirmBatchExport)'));
+    // The page itself: the ids this flow reads, a Cancel the shared handler closes, and first focus on Cancel.
+    const html = fs.readFileSync(path.join(path.dirname(script), "index.html"), "utf8");
+    const dialogHtml = (id) => {
+      const start = html.indexOf(`<dialog id="${id}"`);
+      assert(start >= 0, `${id} is in the page`);
+      return html.slice(start, html.indexOf("</dialog>", start));
+    };
+    const single = dialogHtml("export-confirm-dialog");
+    assert(single.includes('id="export-confirm-text"'));
+    assert(/<button[^>]*value="cancel"[^>]*autofocus[^>]*>Cancel</.test(single), "Cancel closes and has first focus, so Enter cannot export");
+    assert(/<button id="confirm-export-anyway"(?![^>]*autofocus)[^>]*>Export anyway</.test(single));
+    assert(source.includes(`$$('button[value="cancel"]').forEach`), "the handler that makes value=cancel a Cancel");
+    const many = dialogHtml("batch-export-dialog");
+    assert(many.includes('id="batch-export-warning"') && many.includes('id="batch-export-warning-list"') && many.includes('id="confirm-batch-export"'));
+    assert(/<button[^>]*value="cancel"[^>]*>Cancel</.test(many));
+
+    let reply = { ready: [], blocked: [] };
+    let hold = null;
+    let failure = null;
+    const calls = [];
+    const posts = [];
+    const checks = [];
+    const notes = [];
+    context.calls = calls;
+    context.notes = notes;
+    const opened = [];
+    context.opened = opened;
+    context.studioBackground = async (kind, body) => {
+      calls.push(kind);
+      if (kind === "export-check") {
+        checks.push(JSON.stringify(body));
+        if (hold) await hold;
+        if (failure) return failure();
+      }
+      return { ok: true, status: 200, json: async () => (kind === "export-batch" ? { id: "b1", url: "/api/batches/b1", count: body.jobs.length } : reply) };
+    };
+    context.api = async (url, options) => { calls.push(url); posts.push(`${url} ${JSON.stringify(options?.body)}`); return { id: "e1234567", url: "/api/exports/e1" }; };
+    context.studioFetch = async (path) => { calls.push(path); return { ok: true, status: 200, blob: async () => ({}), headers: new Map() }; };
+    vm.runInContext(`
+      downloadApi = async () => {}; loadState = async () => {}; selectJob = async (id) => { opened.push(id); }; notify = (message) => { notes.push(message); }; downloadBlob = () => {};
+      updateBatchControls = () => {};
+      $("#confirm-export-anyway").addEventListener("click", () => writeExport(app.exportPending));
+      $("#confirm-batch-export").addEventListener("click", confirmBatchExport);
+      app.state = { jobs: [{ id: "j1", revision: 3, filename: "one.pdf", status: "review" }, { id: "j2", revision: 1, filename: "two.pdf", status: "review" }] };
+      app.currentJob = app.state.jobs[0];
+      app.selectedJobId = "j1";
+    `, context);
+    const dialog = node("#export-confirm-dialog");
+    const exportOne = () => vm.runInContext("exportCurrentJob()", context);
+    const exportPath = "/api/jobs/j1/export";
+    const answer = (status, blank, more = {}) => { reply = { ready: [{ id: "j1", filename: "one.pdf", revision: 3, transaction_number: 1, attention: [], status, blank_fields: blank, line_count: 2, ...more }], blocked: [] }; calls.length = 0; posts.length = 0; checks.length = 0; notes.length = 0; dialog.open = false; };
+    const select = (expression) => vm.runInContext(`app.currentJob = ${expression}; app.selectedJobId = app.currentJob.id`, context);
+    // Runs one export while the check is still out, doing ``during`` in that window.
+    const duringCheck = async (during) => {
+      let release;
+      hold = new Promise((resolve) => { release = resolve; });
+      const run = exportOne();
+      during();
+      release();
+      await run;
+      hold = null;
+    };
+
+    answer("Approved", 0);
+    await exportOne();
+    assert(!dialog.open && calls.includes(exportPath), "a clean invoice exports with no extra step");
+    answer("Review", 0);
+    await exportOne();
+    assert(!dialog.open && calls.includes(exportPath), "no blanks and not Blocked is not asked about");
+
+    answer("Blocked", 18);
+    await exportOne();
+    assert(dialog.open && !calls.includes(exportPath), "a Blocked invoice is not exported before the answer");
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Blocked and has 18 blank fields. Export anyway?");
+    assert.equal(node("#export-job").textContent, "Export Excel");
+    assert(!node("#export-job").disabled, "cancelling leaves the button usable");
+    await node("#confirm-export-anyway").emit("click");
+    assert(calls.includes(exportPath), "Export anyway exports");
+    assert(!dialog.open, "the dialog closes when the export starts");
+
+    answer("Approved", 1);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Approved and has 1 blank field. Export anyway?");
+    answer("Review", 2);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is in Review and has 2 blank fields. Export anyway?");
+    answer("Blocked", 0);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Blocked and has 0 blank fields. Export anyway?");
+
+    // The check is for the invoice it was asked about, and only that one is ever written.
+    answer("Approved", 0);
+    await exportOne();
+    assert.equal(checks[0], JSON.stringify({ jobs: [{ id: "j1", revision: 3 }] }), "the check names the job and revision held");
+    assert.equal(posts[0], `${exportPath} ${JSON.stringify({ revision: 3 })}`);
+
+    // Clean, then the reviewer opens another invoice during the check: neither goes out, and they are told.
+    answer("Approved", 0);
+    await duringCheck(() => select("app.state.jobs[1]"));
+    assert(!dialog.open && !posts.length, "a moved selection exports nothing");
+    assert(notes.some((note) => note.includes("Nothing was exported")), "and says so");
+    select("app.state.jobs[0]");
+    // Warned, then moved: no dialog over an invoice it does not describe.
+    answer("Blocked", 18);
+    await duringCheck(() => select("app.state.jobs[1]"));
+    assert(!dialog.open && !posts.length, "no prompt for another invoice");
+    select("app.state.jobs[0]");
+    // The button belongs to the invoice now on screen, not the one that was checked.
+    answer("Approved", 0);
+    await duringCheck(() => select("{ ...app.state.jobs[1], export_id: 'e2' }"));
+    assert.equal(node("#export-job").textContent, "Download Excel");
+    assert(!node("#export-job").disabled);
+    select("app.state.jobs[0]");
+    // A reload moved the revision on during the check: the held revision is posted, so the server's 409 answers.
+    answer("Approved", 0);
+    await duringCheck(() => select("{ ...app.state.jobs[0], revision: 4 }"));
+    assert.equal(posts[0], `${exportPath} ${JSON.stringify({ revision: 3 })}`);
+    select("app.state.jobs[0]");
+    // The same with a warning: the dialog described revision 3, so revision 3 is what Export anyway posts.
+    answer("Blocked", 18);
+    await duringCheck(() => select("{ ...app.state.jobs[0], revision: 4 }"));
+    assert(dialog.open && !posts.length);
+    await node("#confirm-export-anyway").emit("click");
+    assert.equal(posts[0], `${exportPath} ${JSON.stringify({ revision: 3 })}`);
+    select("app.state.jobs[0]");
+    // The dialog holds its invoice: whatever replaced app.currentJob behind it, Export anyway writes the one it described.
+    answer("Blocked", 18);
+    await exportOne();
+    assert(dialog.open);
+    select("app.state.jobs[1]");
+    await node("#confirm-export-anyway").emit("click");
+    assert.equal(posts[0], `${exportPath} ${JSON.stringify({ revision: 3 })}`);
+    select("app.state.jobs[0]");
+    // The next invoice is still loading: selectJob has moved selectedJobId, and app.currentJob follows only when its
+    // GET returns. No dialog over it, and nothing goes out, whether or not this one needed a warning.
+    answer("Blocked", 18);
+    await duringCheck(() => vm.runInContext('app.selectedJobId = "j2"', context));
+    assert(!dialog.open && !posts.length, "no prompt while another invoice is loading");
+    assert(notes.some((note) => note.includes("Nothing was exported")));
+    select("app.state.jobs[0]");
+    answer("Approved", 0);
+    await duringCheck(() => vm.runInContext('app.selectedJobId = "j2"', context));
+    assert(!dialog.open && !posts.length, "and no export of a clean one");
+    assert(notes.some((note) => note.includes("Nothing was exported")));
+    select("app.state.jobs[0]");
+    // Away and back: this invoice is selected again but another is still on screen while it reloads.
+    answer("Blocked", 18);
+    await duringCheck(() => vm.runInContext("app.currentJob = app.state.jobs[1]", context));
+    assert(!dialog.open && !posts.length, "no prompt over the invoice on screen");
+    select("app.state.jobs[0]");
+    // Reopened afterwards is the invoice now selected, never the one exported: the reviewer stays where they went.
+    answer("Blocked", 18);
+    opened.length = 0;
+    await exportOne();
+    select("app.state.jobs[1]");
+    await node("#confirm-export-anyway").emit("click");
+    assert.deepEqual([...opened], ["j2"]);
+    select("app.state.jobs[0]");
+    answer("Blocked", 18);
+    opened.length = 0;
+    await exportOne();
+    vm.runInContext('app.selectedJobId = "j2"', context);  // still loading when the export finishes
+    await node("#confirm-export-anyway").emit("click");
+    assert.deepEqual([...opened], ["j2"], "a load under way is not pulled back");
+    select("app.state.jobs[0]");
+    // Nothing selected any more (deleted, or the list cleared): the export still finishes, with nothing to reopen.
+    answer("Blocked", 18);
+    opened.length = 0;
+    await exportOne();
+    vm.runInContext("app.currentJob = null; app.selectedJobId = null", context);
+    await node("#confirm-export-anyway").emit("click");
+    assert.equal(posts[0], `${exportPath} ${JSON.stringify({ revision: 3 })}`);
+    assert.deepEqual([...opened], []);
+    assert.deepEqual([...notes], ["Excel workbook prepared."]);
+    select("app.state.jobs[0]");
+    // After the export the button reads for the job on screen.
+    answer("Approved", 0);
+    vm.runInContext("var realSelect = selectJob; selectJob = async () => { app.currentJob = { ...app.currentJob, export_id: 'e1' }; }", context);
+    await exportOne();
+    assert.equal(node("#export-job").textContent, "Download Excel");
+    vm.runInContext("selectJob = realSelect", context);
+    select("app.state.jobs[0]");
+
+    // No answer from the check is not a clean answer: nothing goes out, on a refusal or a dropped connection.
+    answer("Approved", 0);
+    failure = () => ({ ok: false, status: 500, headers: new Map([["content-type", "application/json"]]), json: async () => ({ detail: "The check failed" }) });
+    await exportOne();
+    assert(!dialog.open && !posts.length, "a failed check does not export");
+    assert(notes.includes("The check failed"));
+    assert.equal(node("#export-job").textContent, "Export Excel");
+    assert(!node("#export-job").disabled);
+    answer("Approved", 0);
+    failure = () => { throw new Error("Connection lost"); };
+    await exportOne();
+    assert(!dialog.open && !posts.length && notes.includes("Connection lost"));
+    failure = null;
+
+    // No line items: the Excel would hold a header and nothing else.
+    answer("Approved", 0, { line_count: 0 });
+    await exportOne();
+    assert(dialog.open && !posts.length);
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Approved and has no line items. Export anyway?");
+    answer("Blocked", 12, { line_count: 0 });
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Blocked and has 12 blank fields and no line items. Export anyway?");
+    answer("Review", 1, { line_count: 0 });
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is in Review and has 1 blank field and no line items. Export anyway?");
+
+    // A possible copy never goes out on one click, however clean it looks. Other holds stay information only.
+    const copy = { attention: [{ code: "Possible Duplicate", cell: null, line: null, message: "This file or invoice number was already exported" }] };
+    answer("Review", 0, copy);
+    await exportOne();
+    assert(dialog.open && !posts.length, "a possible copy asks first");
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice may already be exported. Export anyway?");
+    await node("#confirm-export-anyway").emit("click");
+    assert(posts.length === 1, "and asking still never refuses (D11)");
+    answer("Blocked", 18, copy);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "one.pdf: This invoice is Blocked and has 18 blank fields. It may already be exported. Export anyway?");
+    answer("Review", 0, { attention: [{ code: "REVIEW", cell: null, line: null, message: "Confirm review" }] });
+    await exportOne();
+    assert(!dialog.open && posts.length === 1, "any other hold adds no step");
+
+    // An already exported invoice downloads its file; nothing to ask, and no check.
+    answer("Blocked", 9);
+    vm.runInContext("app.currentJob = { ...app.currentJob, export_id: 'e1' }", context);
+    await exportOne();
+    assert(!dialog.open && calls.includes(exportPath) && !calls.includes("export-check"), "Download Excel asks nothing");
+    vm.runInContext("app.currentJob = app.state.jobs[0]", context);
+    // An integrity refusal is the server's to word: the export runs and says why.
+    reply = { ready: [], blocked: [{ id: "j1", reasons: [{ code: "Duplicate", message: "Duplicate" }] }] };
+    calls.length = 0;
+    await exportOne();
+    assert(!dialog.open && calls.includes(exportPath), "a blocked check still reaches the export's own refusal");
+
+    // Batch: the existing dialog is the one step. A clean selection reads as it did; a Blocked or blank one names each.
+    const batch = () => vm.runInContext("app.selectedForBatch = new Set(['j1', 'j2']); exportBatch()", context);
+    const item = (id, filename, status, blank) => ({ id, filename, revision: 1, transaction_number: 1, attention: [], status, blank_fields: blank });
+    const warning = node("#batch-export-warning");
+    reply = { ready: [item("j1", "one.pdf", "Approved", 0), item("j2", "two.pdf", "Approved", 0)], blocked: [] };
+    calls.length = 0;
+    await batch();
+    assert(warning.hidden && !calls.includes("export-batch") && node("#batch-export-dialog").open);
+    assert.equal(node("#confirm-batch-export").textContent, "Export 2 invoices");
+    reply = { ready: [item("j1", "one.pdf", "Blocked", 18), item("j2", "two.pdf", "Approved", 0)], blocked: [] };
+    await batch();
+    assert(!warning.hidden && !calls.includes("export-batch"));
+    assert.deepEqual(node("#batch-export-warning-list").children.map((row) => row.textContent),
+      ["one.pdf: This invoice is Blocked and has 18 blank fields."]);
+    assert.equal(node("#confirm-batch-export").textContent, "Export 2 invoices anyway");
+    await node("#confirm-batch-export").emit("click");
+    assert(calls.includes("export-batch"), "Export anyway exports the batch");
+    // The same sentences name a zero-line invoice and a possible copy in the batch.
+    reply = { ready: [{ ...item("j1", "one.pdf", "Approved", 0), line_count: 0 }, { ...item("j2", "two.pdf", "Review", 0), ...copy }], blocked: [] };
+    await batch();
+    assert.deepEqual(node("#batch-export-warning-list").children.map((row) => row.textContent),
+      ["one.pdf: This invoice is Approved and has no line items.", "two.pdf: This invoice may already be exported."]);
+    assert.equal(node("#confirm-batch-export").textContent, "Export 2 invoices anyway");
+
+    // A draft download asks nothing new and checks nothing.
+    calls.length = 0;
+    dialog.open = false;
+    vm.runInContext("app.currentJob = { ...app.state.jobs[0], status: 'review' }", context);
+    await vm.runInContext("downloadExtractionDraft()", context);
+    assert(!dialog.open && !calls.includes("export-check"), "the extraction draft shows nothing new");
     return;
   }
   if (scenario === "reader-marks") {

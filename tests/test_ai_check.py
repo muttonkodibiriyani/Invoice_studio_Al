@@ -264,16 +264,29 @@ def test_a_person_picks_and_the_export_goes_out_saying_so(client, owner, app, tm
     assert receipt["ai_check"]["status"] == "partial" and receipt["ai_check"]["settled"] == 1
 
 
+def agreed_export(client, owner, app, tmp_path, jid, site):
+    invoice = {"number": "A1", "net": "5", "tax": "1", "date": "2026-10-04", "lines": [{"sku": "ABC-1", "qty": "1", "price": "5"}]}
+    job_with(app.state.store, tmp_path, jid, readers=record_for(invoice, invoice), invoice=invoice)
+    job = client.get(f"/api/jobs/{jid}", headers=bearer(owner)).json()
+    assert job["rules"]["ai_check"]["status"] == "confirmed"
+    if site:
+        stored = app.state.store.job(jid)
+        stored["rules"]["fields"]["site"] = {**stored["rules"]["fields"]["site"], "value": site}
+        app.state.store.job(jid, stored)
+    return client.post(f"/api/jobs/{jid}/export", headers=bearer(owner), json={"revision": job["revision"]})
+
+
 def test_ai_agreement_does_not_clear_a_duplicate(client, owner, app, tmp_path):
-    store_ = app.state.store
-    invoice = job_with(store_, tmp_path, "one", readers=record_for({"number": "A1"}, {"number": "A1"}))
-    job = client.get("/api/jobs/one", headers=bearer(owner)).json()
-    assert job["rules"]["ai_check"]["status"] != "disputed"
-    assert client.post("/api/jobs/one/export", headers=bearer(owner), json={"revision": job["revision"]}).status_code == 200
-    job_with(store_, tmp_path, "two", readers=record_for({"number": "A1"}, {"number": "A1"}), invoice=invoice)
-    second = client.get("/api/jobs/two", headers=bearer(owner)).json()
-    assert second["rules"]["ai_check"]["status"] != "disputed"
-    assert client.post("/api/jobs/two/export", headers=bearer(owner), json={"revision": second["revision"]}).status_code == 409
+    assert agreed_export(client, owner, app, tmp_path, "one", "501").status_code == 200
+    assert agreed_export(client, owner, app, tmp_path, "two", "501").status_code == 409
+
+
+def test_ai_agreement_does_not_clear_a_possible_duplicate(client, owner, app, tmp_path):
+    assert agreed_export(client, owner, app, tmp_path, "one", None).status_code == 200
+    assert agreed_export(client, owner, app, tmp_path, "two", None).status_code == 200
+    with app.state.store.connection() as c:
+        receipt = json.loads(c.execute("SELECT payload FROM exports WHERE job_id='two'").fetchone()[0])
+    assert "Possible Duplicate" in [hold["code"] for hold in receipt["open_holds"]]
 
 
 # The workbook

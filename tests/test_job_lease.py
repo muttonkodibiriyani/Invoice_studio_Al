@@ -1,11 +1,14 @@
 """Two processes on one database (overlapping revisions): a job is taken over only once its holder has gone quiet, and
 the old holder can no longer change it (security review M5)."""
 import json
+import sqlite3
 import threading
+import time
 
 import pytest
 
 from app import main as main_module
+from app import store as store_module
 from app.main import create_app
 from app.store import Store
 from tests.conftest import bearer
@@ -167,3 +170,77 @@ def test_a_candidate_revision_leaves_the_live_instance_jobs_alone(recover, expec
     monkeypatch.setenv("INV_STUDIO_RECOVER_JOBS", recover)
     restarted = create_app(data, identity=identity, store_type=Store)
     assert restarted.state.store.job("running")["status"] == expected
+
+
+def held_write_lock(app):
+    """A second connection in a write transaction, as an item master activation holds it."""
+    lock = sqlite3.connect(app.state.store.path, isolation_level=None, check_same_thread=False)
+    lock.execute("BEGIN IMMEDIATE")
+    return lock
+
+
+def holding_a_job(tmp_path, monkeypatch, gate):
+    reader = FakeReader(gate)
+    live, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
+    jid = upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]
+    assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
+    return live, jid
+
+
+def test_a_beat_that_waited_out_a_long_lock_takes_no_live_job(tmp_path, monkeypatch):
+    gate = threading.Event()
+    live, jid = holding_a_job(tmp_path, monkeypatch, gate)
+    try:
+        holder = live.state.store.job(jid)["holder"]
+        other, _, _ = studio(tmp_path, monkeypatch, FakeReader())
+        monkeypatch.setattr(main_module, "LEASE_BEAT", 0.2)
+        lock = held_write_lock(live)
+        clock = main_module.lease_clock() + main_module.LEASE_STALE + 1  # the lock outlasted the lease
+        monkeypatch.setattr(main_module, "lease_clock", lambda: clock)
+        waiting = threading.Thread(target=other.state.beat)
+        waiting.start()
+        time.sleep(0.3)
+        lock.execute("COMMIT")
+        lock.close()
+        waiting.join(10)
+        assert live.state.store.job(jid)["holder"] == holder  # the other process got the lock first and left it alone
+        live.state.beat()  # the holder, waiting on the same lock, renews
+        other.state.beat()  # this process's next beat, not slowed by a lock, finds a fresh heartbeat
+        job = live.state.store.job(jid)
+        assert (job["holder"], job["heartbeat"], job.get("takeovers")) == (holder, clock, None)
+    finally:
+        gate.set()
+    assert wait_until(lambda: statuses(live, [jid])[jid] == "review")
+
+
+def test_a_beat_that_cannot_get_the_lock_changes_nothing_and_the_next_one_renews(tmp_path, monkeypatch):
+    gate = threading.Event()
+    live, jid = holding_a_job(tmp_path, monkeypatch, gate)
+    try:
+        before = live.state.store.job(jid)
+        monkeypatch.setattr(store_module, "LOCK_WAIT", 0.1)
+        lock = held_write_lock(live)
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            live.state.beat()  # the server's loop logs this and beats again (test_the_server_beats_...)
+        lock.execute("COMMIT")
+        lock.close()
+        assert live.state.store.job(jid) == before
+        clock = main_module.lease_clock() + 1
+        monkeypatch.setattr(main_module, "lease_clock", lambda: clock)
+        live.state.beat()
+        assert live.state.store.job(jid)["heartbeat"] == clock
+    finally:
+        gate.set()
+
+
+def test_a_worker_write_waits_for_the_lock_instead_of_failing_the_invoice(tmp_path, monkeypatch):
+    gate = threading.Event()
+    live, jid = holding_a_job(tmp_path, monkeypatch, gate)
+    lock = held_write_lock(live)
+    gate.set()  # the read ends; its result has to wait for the lock
+    time.sleep(0.3)
+    lock.execute("COMMIT")
+    lock.close()
+    assert wait_until(lambda: statuses(live, [jid])[jid] == "review")
+    # Measured on a full catalog: see LOCK_WAIT. Below that, an activation fails or strands the invoices being read.
+    assert store_module.LOCK_WAIT >= main_module.LEASE_STALE

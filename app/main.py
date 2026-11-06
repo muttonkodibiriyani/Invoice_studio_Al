@@ -1759,11 +1759,15 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     STALLED="Processing this invoice was interrupted several times, so it was not queued again. Retry this invoice."
     def beat():
         """Renews this process's hold on its unfinished jobs and takes over those whose holder has gone quiet."""
-        now=lease_clock();taken=[]
+        taken=[];asked=time.monotonic()
         with store.connection(True) as connection:
+            # A beat this slow to get the write lock waited out a long transaction (an item master activation), and no
+            # holder could write its beat meanwhile, so nobody has gone quiet: this beat takes nothing over. Holders
+            # waiting on the same lock renew with the time they got it, before this process's next beat looks.
+            now=lease_clock();blocked=time.monotonic()-asked>=LEASE_BEAT
             for job in sorted(store.unfinished_jobs(connection),key=lambda j:j.get("created_at") or ""):
                 if job.get("holder")==holder:job["heartbeat"]=now
-                elif not recover or now-(job.get("heartbeat") or 0)<LEASE_STALE:continue
+                elif not recover or blocked or now-(job.get("heartbeat") or 0)<LEASE_STALE:continue
                 else:
                     try:opts=ProcessingOptions.model_validate(job.get("options") or {})
                     except ValidationError:opts=None

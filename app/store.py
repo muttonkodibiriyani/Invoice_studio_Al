@@ -8,6 +8,10 @@ from .authentication import actor
 
 
 UNFINISHED="json_extract(payload,'$.status') IN ('queued','processing')"
+# Seconds a connection waits for the write lock. Writers wait out an item master activation instead of failing, as they
+# do on PostgreSQL: its one transaction held the lock 86 s for the 150,000-row limit on a quiet host, and 73 s for half
+# that on a loaded one.
+LOCK_WAIT=600
 
 class Store:
     def __init__(self, root: Path):
@@ -51,7 +55,7 @@ class Store:
 
     @contextmanager
     def connection(self, transaction=False):
-        c = sqlite3.connect(self.path, timeout=30)
+        c = sqlite3.connect(self.path, timeout=LOCK_WAIT)
         c.row_factory = sqlite3.Row
         try:
             if transaction:

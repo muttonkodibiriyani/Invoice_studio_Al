@@ -81,13 +81,17 @@ ROUTES = {
         text="Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is "
              "refused with 409.",
         body={"invoice": {"number": "INV-1"}, "revision": 1, "confirm": False}),
+    ("POST", "/api/jobs/{jid}/one-invoice"): dict(area="edits", title="Release a several-invoices hold",
+        text="A person checked a file held as possibly binding several invoices and says it is one. Audited. 409 when "
+             "the file is not held."),
     ("POST", "/api/jobs/{jid}/retry"): dict(area="edits", title="Read again",
         text="Reads the invoice again under a new confirmed plan.",
         body={"options": LOCAL_ONLY, "preflight_token": "{{planToken}}"}),
     ("POST", "/api/jobs/{jid}/export"): dict(area="edits", title="Export one invoice",
         text="Creates the Excel export for an invoice at the given revision: the three template sheets with what was "
              "found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt "
-             "records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an "
+             "records them as open_holds. 409 only if it is still processing, not read, changed, a duplicate or a file "
+             "held as possibly binding several invoices; an "
              "invoice already exported returns its existing export.", body={"revision": 1}),
     ("POST", "/api/jobs/{jid}/extraction-draft"): dict(area="edits", title="Unvalidated extraction workbook",
         text="Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated.",
@@ -103,7 +107,8 @@ ROUTES = {
         text="One workbook for several invoices; each item names the invoice and its revision. Holds do not block "
              "(owner decision D11): each invoice is written with what was found, blanks blank, and its receipt records "
              "the open holds for the export team to validate by hand. All or nothing on integrity: an invoice still "
-             "processing or not read, changed, already exported or duplicated refuses the batch with 409. The workbook "
+             "processing or not read, changed, already exported, duplicated or held as possibly several invoices refuses "
+             "the batch with 409. The workbook "
              "holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet).",
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("POST", "/api/exports/batch/check"): dict(area="exports", title="Check a batch before export",

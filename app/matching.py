@@ -351,17 +351,24 @@ def rules_key(view,job_id):
 
 def copy_signal(view,job):
     """What a receipt and its tombstone keep so a later copy of this invoice can be noticed; see possible_copy."""
-    return {"sha256":job.get("sha256"),"document":document_number(view)}
+    return {"sha256":job.get("sha256"),"document":document_number(view),"filename":job.get("filename")}
 
 
 def possible_copy(view,job,ledger):
     """Not provably a duplicate, but worth a look: the same uploaded bytes, or the same number where a site is missing on
     either side, so it may be the same supplier. A number under two known sites is two suppliers, so that is not one.
-    A re-scan with no number read shares nothing with the original and cannot be noticed."""
+    A re-scan with no number read shares nothing with the original and cannot be noticed. Returns the hold's message,
+    naming the match; a tombstone keeps no filename, so a deleted one is named only as that."""
     sha,number,complete=job.get("sha256"),document_number(view),duplicate_key(view)
-    return any((sha and x.get("sha256")==sha) or
-               (number and x.get("document")==number and not (complete and not x.get("invoice_key","").startswith("rules-job|")))
-               for x in ledger)
+    for x in ledger:
+        same_file=sha and x.get("sha256")==sha
+        if same_file or (number and x.get("document")==number and
+                         not (complete and not x.get("invoice_key","").startswith("rules-job|"))):
+            name=x.get("filename") or "an export since deleted"
+            when=f", exported {x['created_at'][:10]}" if x.get("filename") and x.get("created_at") else ""
+            what="the same file" if same_file else f"the same invoice number, {number}"
+            return f"Possible copy of {name}{when}: {what}. Export anyway or delete this one."
+    return None
 
 
 def accepted_ids(view):
@@ -391,9 +398,9 @@ def rules_validation(view,ledger=(),reviewed=False,job=None):
     if (duplicate:=duplicate_key(view)) and any(x.get("invoice_key")==duplicate for x in ledger):
         issues.append({"code":"Duplicate","message":"Invoice already exported for this supplier site","owner":"Accounts payable","line":None,
                        "blocking":True,"level":"hard"})
-    elif job and not job.get("export_id") and possible_copy(view,job,ledger):
-        issues.append({"code":"Possible Duplicate","message":"This file or invoice number was already exported; check it is not the same invoice",
-                       "owner":"Accounts payable","line":None,"blocking":True,"level":"review"})
+    elif job and not job.get("export_id") and (copy:=possible_copy(view,job,ledger)):
+        # First: a flagged receipt can carry a long list of holds, and this one is about the whole invoice.
+        issues.insert(0,{"code":"Possible Duplicate","message":copy,"owner":"Accounts payable","line":None,"blocking":True,"level":"review"})
     if not reviewed:
         issues.append({"code":"REVIEW","message":"Compare values and evidence with the document, then confirm review","owner":"","line":None,
                        "blocking":True,"level":"review"})

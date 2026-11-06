@@ -360,6 +360,83 @@ def test_a_deleted_invoice_keeps_the_signal_on_its_tombstone(client, owner, app,
     assert POSSIBLE in attention(client, owner, app, "number")
 
 
+def status_of(client, owner, jid):
+    shown = client.get(f"/api/jobs/{jid}", headers=bearer(owner)).json()
+    return shown["status"], shown["validation"]["ready"]  # both must hold for Select approved (isBatchReady in app.js)
+
+
+def test_select_approved_takes_both_copies_before_the_original_exports(client, owner, app, invoice):
+    invoice("one", None, "INV-5"), invoice("two", None, "INV-5")
+    assert [status_of(client, owner, jid) for jid in ("one", "two")] == [("ready", True), ("ready", True)]
+    assert [codes(r["attention"]) for r in check(client, owner, app, "one", "two")["ready"]] == [[], [POSSIBLE]]
+    assert export(client, owner, app, "one", "two").status_code == 200
+    assert codes(receipt_of(app, "one")["open_holds"]) == [] and POSSIBLE in codes(receipt_of(app, "two")["open_holds"])
+
+
+def test_select_approved_skips_the_copy_after_the_original_exports_but_manual_selection_takes_it(client, owner, app, invoice):
+    invoice("one", None, "INV-5"), invoice("two", None, "INV-5")
+    assert status_of(client, owner, "two") == ("ready", True)
+    assert export_one(client, owner, app, "one").status_code == 200
+    assert status_of(client, owner, "two") == ("review", False)  # nobody acted on it: the original's export flips it
+    assert POSSIBLE in codes(check(client, owner, app, "two")["ready"][0]["attention"])
+    assert export(client, owner, app, "two").status_code == 200
+    assert POSSIBLE in codes(receipt_of(app, "two")["open_holds"])
+
+
+def test_a_batch_receipt_keeps_the_signal_so_a_later_copy_is_held(client, owner, app, invoice):
+    invoice("bulk", None, "INV-5", sha256="same-file")
+    assert export(client, owner, app, "bulk").status_code == 200
+    kept = receipt_of(app, "bulk")
+    assert (kept["sha256"], kept["document"], kept["filename"]) == ("same-file", "INV-5", "bulk.pdf")
+    invoice("file", None, None, sha256="same-file"), invoice("number", None, "INV-5")
+    assert POSSIBLE in attention(client, owner, app, "file")
+    assert POSSIBLE in attention(client, owner, app, "number")
+
+
+def test_two_exported_copies_have_nothing_left_to_warn(client, owner, app, invoice):
+    invoice("one", None, "INV-5"), invoice("two", None, "INV-5")
+    assert export_one(client, owner, app, "one").status_code == 200
+    assert export_one(client, owner, app, "two").status_code == 200
+    for jid in ("one", "two"):
+        shown = client.get(f"/api/jobs/{jid}", headers=bearer(owner)).json()
+        assert shown["status"] == "exported" and POSSIBLE not in codes(shown["validation"]["issues"])
+
+
+def message_of(app, jid):
+    return next(h["message"] for h in receipt_of(app, jid)["open_holds"] if h["code"] == POSSIBLE)
+
+
+def test_the_hold_names_the_match_and_never_asks_for_a_confirm(client, owner, app, invoice):
+    invoice("first", None, "INV-5", sha256="same-file"), invoice("copy", None, None, sha256="same-file"), invoice("number", None, "inv-5")
+    assert export_one(client, owner, app, "first").status_code == 200
+    assert export_one(client, owner, app, "copy").status_code == 200
+    assert export_one(client, owner, app, "number").status_code == 200
+    day = receipt_of(app, "first")["created_at"][:10]
+    assert message_of(app, "copy") == f"Possible copy of first.pdf, exported {day}: the same file. Export anyway or delete this one."
+    assert "the same invoice number, INV-5" in message_of(app, "number")
+
+
+def test_a_deleted_match_is_named_as_that_because_a_tombstone_keeps_no_filename(client, owner, app, invoice):
+    invoice("first", None, "INV-5")
+    assert export_one(client, owner, app, "first").status_code == 200
+    delete(client, owner, app, "first")
+    assert "filename" not in tombstones(app)["first"][1]
+    invoice("again", None, "INV-5")
+    assert export_one(client, owner, app, "again").status_code == 200
+    assert message_of(app, "again").startswith("Possible copy of an export since deleted: the same invoice number, INV-5.")
+
+
+def test_the_hold_is_listed_first(client, owner, app, invoice):
+    invoice("first", None, "INV-5"), invoice("copy", None, "INV-5")
+    assert export_one(client, owner, app, "first").status_code == 200
+    j = app.state.store.job("copy")
+    j["rules"]["issues"] = [{"code": "Blank Cell", "message": "A cell is blank", "owner": "", "line": 1, "blocking": True, "level": "hard"}]
+    app.state.store.job("copy", j)
+    assert attention(client, owner, app, "copy") == [POSSIBLE, "Blank Cell"]
+    assert export_one(client, owner, app, "copy").status_code == 200
+    assert codes(receipt_of(app, "copy")["open_holds"]) == [POSSIBLE, "Blank Cell"]
+
+
 # Review finding 5: through the real rules path, not a hand-set view.
 def real_job(client, owner, app, jid, number=None):
     source = app.state.store.root / "uploads" / f"{jid}.pdf"

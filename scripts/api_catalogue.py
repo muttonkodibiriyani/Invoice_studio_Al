@@ -90,8 +90,11 @@ ROUTES = {
              "found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt "
              "records them as open_holds. A duplicate is the same number from the same supplier site; with a site or "
              "number blank nothing can be called one, so the invoice exports. It gets the hold Possible Duplicate, "
-             "which a review confirm does not clear, when the same file or (a site missing on either side) the same "
-             "number was already exported. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed or a duplicate; an "
+             "listed first and naming the match, which a review confirm does not clear, when the same file or (a site "
+             "missing on either side) the same number was already exported: export anyway or delete. Until the "
+             "original exports the copy can read as approved. A held invoice records no receipt allocations, so a "
+             "false positive (a different supplier's same number) leaves its quantities uncounted in later receipt "
+             "checks. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed or a duplicate; an "
              "invoice already exported returns its existing export.", body={"revision": 1}),
     ("POST", "/api/jobs/{jid}/extraction-draft"): dict(area="edits", title="Unvalidated extraction workbook",
         text="Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated.",

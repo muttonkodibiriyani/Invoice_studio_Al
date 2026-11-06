@@ -95,3 +95,11 @@ def test_the_price_clue_stays_out_for_a_different_unit(tmp_path):
 def test_two_readers_agree_on_the_same_unit_in_another_spelling():
     assert engines._same("uom", "Units", "PCS")
     assert not engines._same("uom", "EA", "PCS")
+
+
+@pytest.mark.parametrize("invoice_unit", [None, ""])
+@pytest.mark.parametrize("po_unit", [None, ""])
+def test_a_blank_invoice_unit_fails_even_against_a_blank_po_unit(invoice_unit, po_unit, monkeypatch):
+    order_line = {**REFS["orders"][0]["lines"][0], "uom": po_unit}
+    monkeypatch.setitem(REFS["orders"][0], "lines", [order_line])
+    assert uom_issues(invoice_unit)

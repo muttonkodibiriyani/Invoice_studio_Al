@@ -517,10 +517,14 @@ def _ends_the_chain(invoice,missing):
 
 
 def _rows_ahead(candidate,best):
-    """How many more rows the candidate read than the best read, when both total zero and nothing else can tell:
-    lines of no value sum to a net of 0 however many of them were read. Otherwise 0, and the score decides."""
+    """How many more priced rows the candidate read than the best read, when both total zero and nothing else can
+    tell: lines of no value sum to a net of 0 however many of them were read. A row with no quantity or price is no
+    line, and more rows that lose the codes are no better. Otherwise 0, and the score decides."""
     if candidate is None or best is None or candidate.net!=0 or best.net!=0:return 0
-    return len(candidate.lines)-len(best.lines)
+    priced=lambda invoice:[l for l in invoice.lines if l.qty is not None and l.price is not None]
+    coded=lambda invoice:sum(1 for l in priced(invoice) if l.sku or l.gtin)
+    ahead=len(priced(candidate))-len(priced(best))
+    return 0 if ahead>0 and coded(candidate)<coded(best) else ahead
 
 
 def _same(field,mine,theirs):

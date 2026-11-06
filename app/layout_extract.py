@@ -41,23 +41,35 @@ _LABEL_GAP = r"\s*(?:[:#=-]\s*)?(?:[^\w\s]{1,2}\s*)?"
 _KNOWN_CURRENCY = "AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR"
 # What may follow a printed amount: its currency code, glued on or not ("1,234.50AED"), and then nothing that
 # would make the digits part of something longer. A plain \\b would stop inside "1,234.50AED", at "1,234".
-_AMOUNT_END = rf"\s*(?:{_KNOWN_CURRENCY})?(?![\w%]|[.,][0-9])"
-_EXCLUDING = r"(?:excl?|exl|excluding|exclusive|ex|before|without)"
-# The printed net, in the wordings that are not "net" or "subtotal". A gross or a line count never fits these.
+# A rate ("5 %"), a date ("12/03") or a count ("12 Items") is not an amount.
+_COUNT_WORDS = r"items?|lines?|pcs|pieces?|units?|nos?|qty|cartons?|ctns?|boxes|box|products?|articles?"
+_AMOUNT_END = rf"\s*(?:{_KNOWN_CURRENCY})?(?![\w%]|[.,][0-9]|\s*%|\s*[/-]\s*[0-9]|\s+(?:{_COUNT_WORDS})\b)"
+# The currency between a label and its figure, of any code: a three-letter label is the next row item, not a code.
+# How a figure's money can be marked, glued on or not: the codes and the short forms and signs printed for them.
+# A list, not any letters: "Tax NO30467" and "VAT INV1234.50" are references.
+_MONEY_MARK = (
+    rf"{_KNOWN_CURRENCY}|JPY|EGP|CNY|CHF|CAD|AUD|NZD|SGD|HKD|MYR|THB|IDR|PHP|PKR|LKR|BDT|JOD|LBP|IQD|TRY|ZAR|NGN|KES|MAD"
+    r"|TND|SEK|NOK|DKK|RO|KD|QR|SR|BD|DH|DHS|€|\$|£|¥"
+)
+_CODE_GAP = rf"(?:(?!(?:vat|tax|gst|net)\b)[A-Z]{{3}}\s+|(?:{_MONEY_MARK})\s*)?"
+_EXCLUDING = r"(?:excl?|exl|excluding|exclusive|ex|pre|before|without)"
+# The printed net, in the wordings that are not "net" or "subtotal". A gross or a line count never fits these,
+# and neither does a row that only contains one: "Non Taxable Value", "VAT on Taxable Amount".
 _NET_WORDING = (
+    r"(?<!\bnon\s)(?<!\bnon-)(?<!\bon\s)(?<!\bexempt\s)\b"
     r"(?:untaxed\s*amount|amount\s+untaxed|taxable\s+(?:amount|value)|(?:total|amount)\s+before\s+(?:vat|tax)"
-    rf"|\b{_EXCLUDING}\b[\s.]*(?:of\s+)?(?:vat|tax|gst)\s+(?:total|amount)"
-    rf"|\bamount\s+{_EXCLUDING}\b[\s.]*(?:of\s+)?(?:vat|tax|gst)\b)"
+    rf"|\b{_EXCLUDING}\b[\s.-]*(?:of\s+)?(?:vat|tax|gst)\s+(?:total|amount)"
+    rf"|\bamount\s+{_EXCLUDING}\b[\s.-]*(?:of\s+)?(?:vat|tax|gst)\b)"
 )
 # "Excl. Tax" is the net and "Incl. VAT" the gross: the tax word in them labels no tax figure.
 _TAX_ONLY_NAMED = re.compile(
-    rf"(?i)\b(?:{_EXCLUDING}|incl?|including|inclusive|after|with)\b[\s.]*(?:of\s+)?(?:vat|tax|gst)\b"
+    rf"(?i)\b(?:{_EXCLUDING}|incl?|including|inclusive|after|with)\b[\s.-]*(?:of\s+)?(?:vat|tax|gst)\b"
 )
 # A tax figure's label, in _normal form, and nothing but a figure after it: "Tax Invoice", "Tax Date", "VAT No" and
 # "GSTIN" are not it, and "VAT 100200300400003" or "Tax 2099" is a number beside the word, not an amount.
 _TAX_AMOUNT_LABEL = re.compile(
     r"^(?:sales\s+|total\s+)?(?:vat|tax|gst)(?!\s*[0-9]{4,}\s*$)\s*(?:amount|amt|total)?\s*"
-    rf"(?:(?:in\s+)?(?:{_KNOWN_CURRENCY.lower()})\s*)?[0-9]"
+    rf"(?:[^\x00-\x7f]+\s+)*(?:(?:in\s+)?(?:{_MONEY_MARK.lower()})\s*)?[0-9]"
 )
 
 
@@ -230,20 +242,20 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     currency = _extract_currency(lines) or _currency_under_label(rows)
     net_patterns = (
             re.compile(
-                r"(?i)^\s*net\s+total\s*(?::\s*)?(?:[A-Z]{3}\s*)?"
+                r"(?i)^\s*net\s+total\s*(?::\s*)?" + _CODE_GAP +
                 r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*$"
             ),
             re.compile(
-                r"(?i)^\s*net\s+amount\s*(?::\s*)?(?:[A-Z]{3}\s*)?"
+                r"(?i)^\s*net\s+amount\s*(?::\s*)?" + _CODE_GAP +
                 r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*$"
             ),
             re.compile(
-                r"(?i)^\s*sub\s*total\s*(?::\s*)?(?:[A-Z]{3}\s*)?"
-                r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END
+                r"(?i)^\s*sub\s*total\s*(?::\s*)?" + _CODE_GAP +
+                r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END + r"\s*$"
             ),
             # Ends with the row, so "Taxable Amount 100.00 VAT 5.00" is left to the word boxes.
             re.compile(
-                r"(?i)(?:^|\s)" + _NET_WORDING + r"\s*(?::\s*)?(?:[A-Z]{3}\s*)?"
+                r"(?i)(?:^|\s)" + _NET_WORDING + r"\s*(?::\s*)?" + _CODE_GAP +
                 r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END + r"\s*$"
             ),
         )
@@ -253,7 +265,7 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     tax_patterns = (
             re.compile(
                 r"(?i)(?:^|\s)(?:tax\s+amount|vat\s+(?:amount|amt\.?))\s*(?::\s*)?"
-                r"(?:[A-Z]{3}\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END
+                + _CODE_GAP + r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END
             ),
             re.compile(
                 r"(?i)^\s*tax\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*%\s*\)\s*:?[ \t]*"
@@ -261,17 +273,17 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
             ),
             # The rate ends in a % or a space: without one, "VAT 456.78" splits into a rate and an "8".
             re.compile(
-                r"(?i)^\s*(?:vat|tax)\s*[-:]?\s*[0-9]+(?:\.[0-9]+)?(?:\s*%\s*|\s+)"
-                r"(?:[A-Z]{3}\s*)?([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END + r"\s*$"
+                r"(?i)^\s*(?:vat|tax)\s*[-:]?\s*[0-9]{1,2}(?:\.[0-9]+)?(?:\s*%\s*|\s+(?![0-9]{3},[0-9]{1,2}\b))"
+                + _CODE_GAP + r"([0-9][0-9,]*(?:\.[0-9]+)?)" + _AMOUNT_END + r"\s*$"
             ),
             # "VAT 225.00" with no rate. The decimals tell the amount from a bare rate ("VAT 5").
             re.compile(
-                r"(?i)^\s*(?:vat|tax)\s*[-:]?\s*(?:[A-Z]{3}\s*)?"
+                r"(?i)^\s*(?:vat|tax)\s*[-:]?\s*" + _CODE_GAP +
                 r"([0-9][0-9,]*\.[0-9]{2,3})" + _AMOUNT_END + r"\s*$"
             ),
             # "VAT Total 118.75" on its own row, whatever the scan printed in front of it.
             re.compile(
-                r"(?i)(?:^|\s)(?:vat|tax|gst)\s+total\s*(?::\s*)?(?:[A-Z]{3}\s*)?"
+                r"(?i)(?:^|\s)(?:vat|tax|gst)\s+total\s*(?::\s*)?" + _CODE_GAP +
                 r"([0-9][0-9,.]*)\s*$"
             ),
         )
@@ -1006,6 +1018,13 @@ _COMPANY_FORM = re.compile(
 )
 
 
+_NOTICE_WORDS = re.compile(r"\b(?:copy|confidential|thank|thanks|duplicate|document|page|signature|stamp)\b")
+_ADDRESS_HINT = re.compile(
+    r"(?i)\b(?:p\.?\s*o\.?\s*box|address|tel(?:ephone)?|phone|fax|e-?mail|www|street|road|building|floor|trn"
+    r"|vat\s*(?:no|reg)|tax\s*(?:no|reg))\b|@|[·•|].*[·•|]"
+)
+
+
 def _letterhead_supplier(rows: list[tuple[int, list[_Word]]]) -> str | None:
     """The supplier read from the letterhead, for an invoice where no label names it.
 
@@ -1032,22 +1051,37 @@ def _letterhead_supplier(rows: list[tuple[int, list[_Word]]]) -> str | None:
 def _footer_repeated_letterhead(rows: list[tuple[int, list[_Word]]], buyer_name: str | None) -> str | None:
     """The issuer's name with no company form: it opens the page's top row and is a whole row at its foot.
 
-    A name alone at the head proves little, as any title or tagline can sit there. Printed at both ends of the
-    page it is the page's own letterhead and footer. A title or the buyer's name is never taken for it.
+    A name at both ends of the page proves little alone: a notice or an unlabelled buyer can repeat too. So it also
+    has to carry a company form or have an address under it at either end. A title, a notice or the buyer's name is
+    never taken for it.
     """
+
+    def address_under(row: list[_Word], page: int, depth: float) -> bool:
+        return any(
+            below_page == page and _row_y(row) < _row_y(below) <= _row_y(row) + depth
+            and _ADDRESS_HINT.search(_row_text(below))
+            for below_page, below in rows
+        )
 
     buyer = _normal(buyer_name or "")
     for page, foot in rows:
         if not foot or _row_y(foot) < foot[0].page_height * 0.75:
             continue
         name = _normal(_row_text(foot))
-        if len(name.split()) < 2 or re.search(r"[0-9]", name) or name == buyer or _has_invoice_heading(name):
+        if (
+            len(name.split()) < 2 or re.search(r"[0-9]", name) or name == buyer or _has_invoice_heading(name)
+            or _NOTICE_WORDS.search(name)
+        ):
             continue
         for head_page, head in rows:
             if head_page != page or _row_y(head) > head[0].page_height * 0.2:
                 continue
             for end in range(2, len(head) + 1):
-                if _normal(_row_text(head[:end])) == name:
+                if _normal(_row_text(head[:end])) == name and (
+                    _COMPANY_FORM.search(_row_text(head[:end]))
+                    or address_under(head, page, head[0].page_height * 0.15)
+                    or address_under(foot, page, foot[0].page_height * 0.05)
+                ):
                     return _clean_party_name(_join_words(head[:end]))
     return None
 
@@ -1335,8 +1369,9 @@ def _month_number(value: str) -> int:
 def _extract_currency(lines: list[str]) -> str | None:
     values: list[str] = []
     patterns = (
-        re.compile(r"(?i)\bcurrency\s*:\s*([A-Z]{3})\b"),
-        re.compile(rf"(?i)\bcurrency\s+({_KNOWN_CURRENCY})\b"),
+        # An account's, a bank's or a base currency is not the invoice's.
+        re.compile(r"(?i)(?<!account\s)(?<!base\s)(?<!bank\s)\bcurrency\s*:\s*([A-Z]{3})\b"),
+        re.compile(rf"(?i)^\s*currency\s+({_KNOWN_CURRENCY})\b"),
         re.compile(r"(?i)\btotal\s+in\s+([A-Z]{3})\b"),
         re.compile(r"(?i)^\s*total\s+([A-Z]{3})\s+[0-9][0-9,.]*\s*$"),
         re.compile(r"(?i)\bamount\s+(AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR)\b"),
@@ -1376,6 +1411,9 @@ def _currency_under_label(rows: list[tuple[int, list[_Word]]]) -> str | None:
     for index, (page, row) in enumerate(rows):
         for label in row:
             if _normal(label.text) != "currency":
+                continue
+            before = [word for word in row if word.x < label.x]
+            if before and _normal(max(before, key=lambda word: word.x).text) in {"account", "base", "bank"}:
                 continue
             for next_page, below in rows[index + 1 :]:
                 if next_page != page or _row_y(below) - _row_y(row) > label.height * 4:
@@ -1418,8 +1456,8 @@ def _parse_decimal(value: str) -> Decimal | None:
 # three words. Glued back together it is one printed amount; read apart, the last piece alone
 # would be a wrong total that looks perfectly plausible.
 _NUMBER_PIECE = re.compile(r"^(?:,|[0-9][0-9,.]*)$")
-# A reader can also glue the currency code to the figure: "234.50AED", "AED234.50".
-_GLUED_CODE = re.compile(rf"^(?:{_KNOWN_CURRENCY})?([0-9][0-9,.]*)(?:{_KNOWN_CURRENCY})?$")
+# A reader can also glue the money mark to the figure: "234.50AED", "AED234.50", "RO30,467.184".
+_GLUED_CODE = re.compile(rf"^(?:{_MONEY_MARK})?([0-9][0-9,.]*)(?:{_MONEY_MARK})?$")
 # "Total amount (excl. VAT)" is the printed net. The same words with "incl." are the gross,
 # and OCR drops a letter often enough that the abbreviation is matched loosely. The label has
 # to open the row: the same words inside a column heading are not a total.
@@ -1449,48 +1487,75 @@ def _row_numbers(row: list[_Word]) -> list[Decimal]:
     return [value for text in joined if (value := _parse_decimal(text)) is not None]
 
 
-def _labelled_net(row: list[_Word]) -> Decimal | None:
-    """The amount right after a net wording in the row, up to the next word that is no amount or code.
+def _figure_run(words: list[_Word]) -> list[Decimal]:
+    """The first run of figures in the words, in reading order.
 
-    The wording can stand late in a row ("Payment Communication: ... Untaxed Amount 1,234.50"), and another
-    label can follow its amount ("Taxable Amount 100.00 VAT 5.00").
+    A run that is a date or a count is no figures, and neither is one that can read as thousands spaced apart:
+    "1 593 361,82" is one amount, whose last piece alone looks perfectly plausible, and "10 500.00" may be one too.
+    """
+
+    run: list[_Word] = []
+    for word in sorted(words, key=lambda item: item.x):
+        text = word.text.strip()
+        if _GLUED_CODE.match(text) or _NUMBER_PIECE.match(text):
+            run.append(word)
+        elif run:
+            if "/" in text or text == "-" or re.fullmatch(_COUNT_WORDS, _normal(text)):
+                return []
+            break
+    pieces = [word.text.strip() for word in run]
+    if len(pieces) > 1 and re.fullmatch(r"[0-9]{1,3}", pieces[0]) and all(
+        re.fullmatch(r"[0-9]{3}(?:[.,][0-9]+)?", piece) for piece in pieces[1:]
+    ):
+        return []
+    return _row_numbers(run)
+
+
+def _labelled_net(row: list[_Word]) -> Decimal | None:
+    """The amount right after a net label in the row, never a figure of the labels around it.
+
+    The label can stand late in a row ("Payment Communication: ... Untaxed Amount 1,234.50"), and another label can
+    follow its amount ("Taxable Amount 100.00 VAT 5.00", "Net Amount 4,500 VAT 225"). Of several figures the last with
+    decimals is the amount ("Sub Total 10 1,500.00"); whole numbers in a row can as well be a date ("12 03 2099").
     """
 
     ordered = sorted(row, key=lambda item: item.x)
     for end in range(1, len(ordered) + 1):
-        if re.search(_NET_WORDING, _normal(_row_text(ordered[:end]))):
+        normal = _normal(_row_text(ordered[:end]))
+        if (
+            re.search(_NET_WORDING, normal)
+            or re.search(r"\b(?:sub\s*total|subtotal|net amount)\b", normal)
+            or _NET_TOTAL_LABEL.match(normal)
+        ):
             break
     else:
         return None
-    amount: list[_Word] = []
-    for word in ordered[end:]:
-        text = word.text.strip()
-        if re.fullmatch(_KNOWN_CURRENCY, text) and not amount:
-            continue
-        if not _GLUED_CODE.match(text) and not _NUMBER_PIECE.match(text):
-            break
-        amount.append(word)
-    numbers = _row_numbers(amount)
-    return numbers[0] if len(numbers) == 1 else None
+    figures = [word for word in ordered[end:] if _GLUED_CODE.match(word.text.strip()) or _NUMBER_PIECE.match(word.text.strip())]
+    first = ordered.index(figures[0]) if figures else len(ordered)
+    # "Net Amount VAT 225" prints no net: what stands before the figure belongs to another label.
+    between = _TAX_ONLY_NAMED.sub(" ", _row_text(ordered[end:first]))
+    if re.search(r"(?i)\b(?:vat|tax|gst|discount)\b", between):
+        return None
+    numbers = _figure_run(ordered[end:])
+    if len(numbers) > 1 and numbers[-1].as_tuple().exponent == 0:
+        return None
+    return numbers[-1] if numbers else None
 
 
 def _tax_row_amount(row: list[_Word]) -> Decimal | None:
-    """A tax row's amount: its last figure once the rate is set aside ("VAT 5 % 225.00"); a rate alone is none."""
+    """A tax row's amount: its last figure once the rate is set aside ("VAT 5 % 225.00", "VAT @ 5.00 225.00").
+
+    A rate alone is none, and the figures stop at the next label: "VAT 225.00 Total 4,725.00" has no tax of 4,725.
+    """
 
     ordered = sorted(row, key=lambda item: item.x)
     kept = [
         word for index, word in enumerate(ordered)
-        if not word.text.strip().endswith("%")
-        and not (index + 1 < len(ordered) and ordered[index + 1].text.strip() == "%")
+        if "%" not in word.text and "@" not in word.text
+        and not (index + 1 < len(ordered) and ordered[index + 1].text.strip().startswith("%"))
+        and not (index > 0 and ordered[index - 1].text.strip() == "@")
     ]
-    # The figures stop at the next label: "VAT 225.00 Total 4,725.00" has no tax of 4,725.
-    start = next((index for index, word in enumerate(kept) if _GLUED_CODE.match(word.text.strip())), len(kept))
-    end = next(
-        (index for index in range(start, len(kept))
-         if re.search(r"[A-Za-z]", kept[index].text) and not _GLUED_CODE.match(kept[index].text.strip())),
-        len(kept),
-    )
-    numbers = _row_numbers(kept[:end])
+    numbers = _figure_run(kept)
     if not numbers:
         return None
     # "VAT 5" is a rate printed without its sign, not five of anything.
@@ -1515,27 +1580,76 @@ def _summary_figures(row: list[_Word]) -> list[tuple[Decimal, float, float]]:
     return [(numbers[0], group[0].x0, group[-1].x1) for group in groups if len(numbers := _row_numbers(group)) == 1]
 
 
+def _summary_columns(row: list[_Word]) -> list[tuple[float, float]] | None:
+    """The spans of the Taxable, tax amount and Total columns of a heading row, in that order, or None.
+
+    A tax word followed by a rate, number, code or date heads no amount: "VAT %", "Tax Rate", "VAT No", "Tax Date".
+    """
+
+    ordered = sorted(row, key=lambda item: item.x)
+    names = [_normal(word.text) for word in ordered]
+
+    def span(index: int) -> tuple[float, float]:
+        amount = index + 1 < len(names) and names[index + 1] in {"amount", "amt", "value"}
+        return ordered[index].x0, ordered[index + (1 if amount else 0)].x1
+
+    def is_taxable(index: int) -> bool:
+        return (
+            re.fullmatch(r"taxable(?: amount| value)?", names[index]) is not None
+            and (index == 0 or names[index - 1] not in {"non", "exempt"})
+        )
+
+    def is_tax(index: int) -> bool:
+        following = names[index + 1] if index + 1 < len(names) else ""
+        return (
+            re.fullmatch(r"(?:vat|tax|gst)(?: amount| amt)?", names[index]) is not None
+            and "%" not in ordered[index].text
+            and not (index + 1 < len(ordered) and "%" in ordered[index + 1].text)
+            and following not in {"rate", "no", "number", "code", "id", "date", "percent", "pct", "type", "reg"}
+        )
+
+    found: list[tuple[float, float]] = []
+    start = 0
+    for heading in (is_taxable, is_tax, lambda index: names[index].startswith("total")):
+        index = next((index for index in range(start, len(names)) if heading(index)), None)
+        if index is None:
+            return None
+        found.append(span(index))
+        start = index + 1
+    return found
+
+
 def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Decimal | None]:
     """Net and tax under a "Rate | Taxable | VAT | Total" heading, whose figures' row prints no label of its own.
 
-    Only with one row of figures under both headings: more are line columns or several rates.
+    A row of figures counts only with one figure under each heading and taxable + tax == total. One such row is the
+    summary. Several are line rows or several rates, and one rate's figures are not the invoice's: only a last row
+    printed as the Total, and equal to the sum of those above it, is read then.
     """
 
-    def under(heading: _Word, row: list[_Word]) -> Decimal | None:
-        over = [value for value, left, right in _summary_figures(row) if left < heading.x1 and right > heading.x0]
-        return over[0] if len(over) == 1 else None
-
     for index, row in enumerate(rows):
-        taxable = next((word for word in row if _normal(word.text) == "taxable"), None)
-        tax = next((word for word in row if _normal(word.text) in {"vat", "tax", "gst"}), None)
-        if taxable is None or tax is None or tax.x <= taxable.x or index + 1 == len(rows):
+        columns = _summary_columns(row)
+        if columns is None:
             continue
-        net_value, tax_value = under(taxable, rows[index + 1]), under(tax, rows[index + 1])
-        if net_value is None or tax_value is None:
-            continue
-        following = rows[index + 2] if index + 2 < len(rows) else []
-        if under(taxable, following) is None and under(tax, following) is None:
-            return net_value, tax_value
+        found: list[tuple[list[Decimal], list[_Word]]] = []
+        for below in rows[index + 1 :]:
+            figures = _summary_figures(below)
+            cells = [[value for value, left, right in figures if left < x1 and right > x0] for x0, x1 in columns]
+            if not cells[0] and not cells[1]:
+                continue
+            if any(len(cell) != 1 for cell in cells) or cells[0][0] + cells[1][0] != cells[2][0]:
+                found = []
+                break
+            found.append(([cell[0] for cell in cells], below))
+        if len(found) > 1:
+            (last, last_row), above = found[-1], [values for values, _ in found[:-1]]
+            printed_total = re.search(r"\btotal\b", _normal(_row_text(last_row)))
+            if not printed_total or any(last[n] != sum(values[n] for values in above) for n in range(3)):
+                found = []
+            else:
+                found = found[-1:]
+        if found:
+            return found[0][0][0], found[0][0][1]
     return None, None
 
 
@@ -1551,12 +1665,7 @@ def _extract_spatial_totals(words: list[_Word]) -> tuple[Decimal | None, Decimal
             continue
         for row in rows:
             normal = _normal(_row_text(row))
-            numbers = _row_numbers(row)
-            if not numbers:
-                continue
-            if re.search(r"\b(?:sub\s*total|subtotal|net amount)\b", normal) or _NET_TOTAL_LABEL.match(normal):
-                nets.append(numbers[-1])
-            elif (labelled := _labelled_net(row)) is not None:
+            if (labelled := _labelled_net(row)) is not None:
                 nets.append(labelled)
             # A scan's reader returns the label as one word: "VATAMOUNT @5% 1,028.80". "VAT5%" is a label too.
             if _TAX_AMOUNT_LABEL.match(normal) and (amount := _tax_row_amount(row)) is not None:

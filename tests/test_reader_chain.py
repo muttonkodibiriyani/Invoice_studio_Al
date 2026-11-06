@@ -243,3 +243,49 @@ def test_a_later_zero_value_read_with_fewer_rows_does_not_take_over(chain):
     result, _ = chain("invoice-scan.png", reads={"paddleocr": full, "docling": short}, ai_fallback=False)
     assert result["selected_engine"] == "paddleocr"
     assert len(result["invoice"]["lines"]) == rows
+
+
+def _junk_row(read):
+    return {**read, "lines": [*read["lines"], {"description": "Total lines", "qty": None, "price": None}]}
+
+
+def _no_codes(read):
+    return {**read, "lines": [{**line, "sku": None, "gtin": None} for line in read["lines"]]}
+
+
+def test_a_later_read_with_one_extra_junk_row_does_not_take_over(chain):
+    full = _zero_value(INVOICE, len(INVOICE["lines"]))
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": full, "docling": _junk_row(full)}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"
+    assert len(result["invoice"]["lines"]) == len(full["lines"])
+
+
+def test_a_junk_row_in_the_first_read_does_not_block_a_better_later_read(chain):
+    rows = len(INVOICE["lines"])
+    short, full = _junk_row(_zero_value(INVOICE, rows - 1)), {**_zero_value(INVOICE, rows), "date": None}
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": short, "docling": full}, ai_fallback=False)
+    assert result["selected_engine"] == "docling"
+
+
+def test_more_priced_rows_do_not_win_when_they_lose_the_codes(chain):
+    rows = len(INVOICE["lines"])
+    short, full = _zero_value(INVOICE, rows - 1), {**_no_codes(_zero_value(INVOICE, rows)), "date": None}
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": short, "docling": full}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"
+
+
+def test_the_count_of_rows_decides_only_between_two_zero_value_reads():
+    from decimal import Decimal
+    from app.engines import _rows_ahead
+    from app.models import Invoice
+
+    def invoice(net, rows):
+        return Invoice.model_validate({**INVOICE, "net": net, "tax": "0", "lines": [
+            {**INVOICE["lines"][0], "price": "0" if net == "0" else "1", "net_amount": None} for _ in range(rows)]})
+
+    assert _rows_ahead(invoice("0", 3), invoice("0", 2)) == 1
+    assert _rows_ahead(invoice("0", 2), invoice("0", 3)) == -1
+    assert _rows_ahead(invoice("5", 3), invoice("0", 2)) == 0
+    assert _rows_ahead(invoice("0", 3), invoice("5", 2)) == 0
+    assert _rows_ahead(invoice("5", 3), invoice("5", 2)) == 0
+    assert Decimal("0") == invoice("0", 1).net

@@ -3,6 +3,8 @@
 Every invoice here is synthetic. The shapes come from a scan-vs-truth run on real invoices: an ERP export that prints
 "Total Untaxed Amount" and "VAT" with no rate, a figure with its currency code glued on ("1,234.50AED"), the currency
 as a value under a "Currency" column heading, and a letterhead name with no company form that the footer repeats."""
+import json
+import sys
 from decimal import Decimal
 
 import pytest
@@ -323,3 +325,258 @@ def test_figures_on_many_rows_under_those_headings_are_no_summary():
     second = (900, (530, "5%"), (640, "1,000.00"), (770, "50.00"), (890, "1,050.00"))
     invoice = totals(SUMMARY_HEADING, SUMMARY_FIGURES, second)
     assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def summary(heading, *figures):
+    """A heading row and rows of figures below it, each a list of (x, word); the rows sit 15 apart."""
+    return totals((870, *heading), *((885 + 15 * n, *row) for n, row in enumerate(figures)))
+
+
+RATE_THEN_AMOUNT = [(450, "Taxable"), (540, "VAT"), (580, "%"), (650, "VAT"), (690, "Amount"), (820, "Total")]
+RATE_FIGURES = [(450, "4,500.00"), (550, "5"), (660, "225.00"), (820, "4,725.00")]
+
+
+@pytest.mark.parametrize("heading, figures, net, tax", [
+    # The rate has a tax word over it; the amount is the column that makes the row add up.
+    (RATE_THEN_AMOUNT, RATE_FIGURES, "4500.00", "225.00"),
+    ([(450, "Taxable"), (540, "Tax"), (580, "Rate"), (650, "Tax"), (690, "Amount"), (820, "Total")], RATE_FIGURES,
+     "4500.00", "225.00"),
+    # Taxable + VAT is not this Total: the row says more than these two columns do.
+    ([(330, "Non"), (370, "Taxable"), (450, "Taxable"), (650, "VAT"), (820, "Total")],
+     [(340, "100.00"), (450, "4,500.00"), (650, "225.00"), (820, "4,825.00")], None, None),
+    ([(450, "Taxable"), (650, "VAT"), (690, "No"), (820, "Total")],
+     [(450, "4,500.00"), (650, "100123456700003"), (820, "4,725.00")], None, None),
+    ([(450, "Taxable"), (650, "Tax"), (690, "Code"), (820, "Total")],
+     [(450, "4,500.00"), (650, "15"), (820, "4,725.00")], None, None),
+    ([(450, "Taxable"), (650, "Tax"), (690, "Id"), (820, "Total")],
+     [(450, "1"), (650, "4407"), (820, "4,725.00")], None, None),
+    ([(450, "Taxable"), (650, "Tax"), (690, "Date"), (820, "Total")],
+     [(450, "4,500.00"), (650, "2099"), (820, "6,599.00")], None, None),
+    # No Total column, nothing proves the row.
+    ([(450, "Taxable"), (650, "VAT")], [(450, "4,500.00"), (650, "225.00")], None, None),
+    ([(100, "only"), (150, "taxable"), (300, "goods"), (400, "bear"), (450, "tax")], [(150, "2099"), (450, "5")], None, None),
+    # A Total column that does not add up.
+    ([(450, "Taxable"), (650, "VAT"), (820, "Total")], [(450, "4,500.00"), (650, "999.00"), (820, "4,725.00")], None, None),
+    ([(450, "Taxable"), (650, "VAT"), (820, "Total")], [(450, "5"), (650, "4,500.00"), (820, "4,725.00")], None, None),
+    # Exempt and non-taxable columns are not the taxable column.
+    ([(450, "Exempt"), (500, "Taxable"), (650, "VAT"), (820, "Total")],
+     [(500, "4,500.00"), (650, "225.00"), (820, "4,725.00")], None, None),
+    ([(450, "Non-Taxable"), (650, "VAT"), (820, "Total")], [(450, "4,500.00"), (650, "225.00"), (820, "4,725.00")], None, None),
+    # The columns in another order, or with no tax column right of Taxable.
+    ([(450, "VAT"), (650, "Taxable"), (820, "Total")], [(450, "225.00"), (650, "4,500.00"), (820, "4,725.00")], None, None),
+    ([(450, "Taxable"), (650, "Total"), (820, "VAT")], [(450, "4,500.00"), (650, "4,725.00"), (820, "225.00")], None, None),
+    # Two figures under one heading: which is the column's is not known.
+    ([(450, "Taxable"), (650, "VAT"), (820, "Total")],
+     [(450, "4,500.00"), (600, "225.00"), (660, "225.00"), (820, "4,725.00")], None, None),
+])
+def test_a_summary_table_reads_only_a_row_that_adds_up_under_real_headings(heading, figures, net, tax):
+    invoice = summary(heading, figures)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (net, tax)
+
+
+FIVE = [(450, "1,000.00"), (650, "50.00"), (820, "1,050.00")]
+FIFTEEN = [(450, "3,500.00"), (650, "525.00"), (820, "4,025.00")]
+LABEL_ROW = [(100, "Standard"), (180, "rated"), (250, "goods")]
+PLAIN_HEADING = [(450, "Taxable"), (650, "VAT"), (820, "Total")]
+
+
+@pytest.mark.parametrize("rows", [
+    (FIVE, FIFTEEN),
+    (FIVE, LABEL_ROW, FIFTEEN),
+    (FIVE, LABEL_ROW, LABEL_ROW, LABEL_ROW, FIFTEEN),
+    # A line table with a wrapped description and no totals row: the first line is not the invoice.
+    ([(450, "50.00"), (650, "2.50"), (820, "52.50")], [(100, "wrapped"), (180, "description")],
+     [(450, "70.00"), (650, "3.50"), (820, "73.50")]),
+    # A stray figure under one heading further down.
+    (FIVE, [(650, "7.00")]),
+])
+def test_several_rows_of_figures_never_give_one_rows_figures(rows):
+    invoice = summary(PLAIN_HEADING, *rows)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_printed_total_row_under_several_rates_is_the_summary():
+    total_row = [(100, "Total"), (450, "4,500.00"), (650, "575.00"), (820, "5,075.00")]
+    invoice = summary(PLAIN_HEADING, FIVE, FIFTEEN, total_row)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("4500.00", "575.00")
+
+
+def test_a_total_row_that_is_not_the_sum_of_the_rates_is_no_summary():
+    total_row = [(100, "Total"), (450, "9,000.00"), (650, "1,000.00"), (820, "10,000.00")]
+    invoice = summary(PLAIN_HEADING, FIVE, FIFTEEN, total_row)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+@pytest.mark.parametrize("label", [
+    ("Non", "Taxable", "Amount"), ("Non-Taxable", "Amount"), ("Nontaxable", "Amount"), ("Non", "Taxable", "Value"),
+    ("Exempt", "Taxable", "Amount"), ("VAT", "on", "Taxable", "Amount"),
+])
+def test_wording_that_only_contains_the_net_wording_is_not_the_net(label):
+    assert figure(totals(row_of(880, *label, "50.00")), "net") is None
+
+
+@pytest.mark.parametrize("words", [
+    ("Non", "Taxable", "Amount", "50.00"), ("Non-Taxable", "Amount", "50.00"), ("Nontaxable", "Amount", "50.00"),
+])
+def test_a_non_taxable_row_leaves_the_subtotal_alone(words):
+    assert figure(totals(row_of(860, "Subtotal", "4,500.00"), row_of(880, *words)), "net") == "4500.00"
+
+
+@pytest.mark.parametrize("words", [
+    ("Taxable", "Amount", "3", "items"), ("Sub", "Total", "12", "Items"), ("Subtotal", "12", "lines"),
+    ("Net", "Amount", "12", "Pcs"), ("Subtotal", "12/03/2099"), ("Sub", "Total", "12", "/", "03", "/", "2099"),
+    ("Subtotal", "12-03-2099"),
+])
+def test_a_count_or_a_date_beside_a_net_label_is_no_amount(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+@pytest.mark.parametrize("words, net", [
+    (("Net", "Amount", "4,500.00", "VAT", "225.00"), "4500.00"),
+    (("Net", "Amount", "4,500", "VAT", "225"), "4500"),
+    (("Subtotal", "4,500.00", "Discount", "100.00"), "4500.00"),
+    (("Taxable", "Amount", "100.00", "VAT", "5.00"), "100.00"),
+    (("Pay", "by", "30", "days", "Untaxed", "Amount", "1,234.50"), "1234.50"),
+    (("Sub", "Total", "10", "1,500.00"), "1500.00"),
+    (("Net", "Amount", "EGP461785.19"), "461785.19"),
+    (("Total", "Excluding", "VAT", "JPY67861417"), "67861417"),
+    (("Sub", "Total", "AED", "1", ",", "028.80"), "1028.80"),
+])
+def test_a_net_label_reads_its_own_figure_not_the_neighbours(words, net):
+    assert figure(totals(row_of(880, *words)), "net") == net
+
+
+@pytest.mark.parametrize("words, tax", [
+    (("VAT", "Amount", "5", "%", "225.00"), "225.00"),
+    (("VAT", "5", "%", "225.00"), "225.00"),
+    (("VAT", "5%", "225.00"), "225.00"),
+    (("VAT", "@", "5.00"), None),
+    (("VAT", "@5.00"), None),
+    (("VAT", "@", "5.00", "225.00"), "225.00"),
+    (("VAT", "@", "5"), None),
+    (("Pre", "Tax", "Amount", "4,500.00"), None),
+    (("Pre-Tax", "Amount", "4,500.00"), None),
+    (("Pre", "Tax", "Total", "4,500.00"), None),
+])
+def test_a_tax_row_reads_its_amount_and_never_its_rate(words, tax):
+    assert figure(totals(row_of(880, *words)), "tax") == tax
+
+
+@pytest.mark.parametrize("words", [("Pre", "Tax", "Amount", "4,500.00"), ("Pre-Tax", "Amount", "4,500.00")])
+def test_a_pre_tax_amount_is_the_net(words):
+    assert figure(totals(row_of(880, *words)), "net") == "4500.00"
+
+
+@pytest.mark.parametrize("words, tax", [
+    (("VAT", "Amount", "(15%)", "€266.698,43"), "266698.43"), (("VAT", "Amount(16%)", "JPY", "10857827"), "10857827"), (("VAT", "Amount", "(", "16", "%)", "JPY", "10857827"), "10857827"),
+    (("Tax", "Total", "EGP69267.78"), "69267.78"), (("Tax", "RO30,467.184"), "30467.184"), (("Tax", "RO", "30,467.184"), "30467.184"),
+    (("Tax", "ضريبة", "KD7,024.817"), "7024.817"), (("VAT", "QR1,250.00"), "1250.00"), (("VAT", "SR1,250.00"), "1250.00"),
+])
+def test_a_tax_figure_with_a_short_money_mark_reads(words, tax):
+    assert figure(totals(row_of(880, *words)), "tax") == tax
+
+
+@pytest.mark.parametrize("words", [("VAT", "33", "825,39"), ("VAT", "254", "937,89", "EGP"), ("VAT", "254", "937,89"), ("Tax", "NO30467"), ("VAT", "ID1234.50"), ("Tax", "REG1234.50"), ("VAT", "INV1234.50")])
+def test_letters_that_are_no_money_mark_leave_the_tax_blank(words):
+    assert figure(totals(row_of(880, *words)), "tax") is None
+
+
+@pytest.mark.parametrize("words", [
+    ("Account", "Currency", "USD"), ("Base", "Currency", "USD"), ("Bank", "Currency", "USD"), ("Account", "Currency:", "USD"),
+    ("Base", "Currency:", "USD"), ("Bank", "Account", "Currency", "USD"), ("IBAN", "AE01", "Currency", "USD"),
+])
+def test_a_bank_or_base_currency_is_not_the_invoices(words):
+    assert read(TITLE, NUMBER, row_of(900, *words))["currency"] is None
+
+
+def test_a_currency_label_starting_its_row_still_reads():
+    assert read(TITLE, NUMBER, row_of(300, "Currency", "USD"))["currency"] == "USD"
+    assert read(TITLE, NUMBER, row_of(300, "Currency:", "USD"))["currency"] == "USD"
+
+
+@pytest.mark.parametrize("label", ["Account", "Base", "Bank"])
+def test_a_bank_currency_column_is_not_the_invoices(label):
+    rows = (TITLE, NUMBER, (440, (580, label), (670, "Currency")), (465, (690, "USD")))
+    assert read(*rows)["currency"] is None
+
+
+def footer_repeat(*head, foot, below_head=(), below_foot=()):
+    rows = ((110, *head, *NUMBER[1:]), TITLE)
+    if below_head:
+        rows += ((140, *below_head),)
+    rows += ((1230, *foot),)
+    if below_foot:
+        rows += ((1250, *below_foot),)
+    return read(*rows)
+
+
+NAME, NAME_AT_FOOT = ((70, "Harbour"), (240, "Lane")), ((90, "Harbour"), (180, "Lane"))
+ADDRESS_LINE = ((70, "Quay"), (120, "·"), (140, "Marina"), (200, "·"), (220, "Dubai"))
+FOOT_ADDRESS = ((90, "12"), (120, "Quay"), (170, "Road"))
+
+
+@pytest.mark.parametrize("below_head, below_foot", [
+    (ADDRESS_LINE, ()), ((), FOOT_ADDRESS), ((), ((90, "TRN"), (130, ":"), (150, "100123456700003"))),
+    (((70, "P.O."), (110, "Box"), (150, "1234")), ()), (((70, "Tel"), (110, "+971"), (160, "4000000")), ()),
+])
+def test_a_repeated_name_with_an_address_is_the_letterhead(below_head, below_foot):
+    assert footer_repeat(*NAME, foot=NAME_AT_FOOT, below_head=below_head, below_foot=below_foot)["supplier_name"] == "Harbour Lane"
+
+
+def test_repetition_alone_is_not_a_supplier():
+    assert footer_repeat(*NAME, foot=NAME_AT_FOOT)["supplier_name"] is None
+
+
+@pytest.mark.parametrize("words", [("Original", "Copy"), ("Confidential", "Document"), ("Thank", "You"), ("Customer", "Copy")])
+@pytest.mark.parametrize("below_head, below_foot", [((), ()), (ADDRESS_LINE, FOOT_ADDRESS)])
+def test_a_repeated_notice_is_not_a_supplier_even_beside_an_address(words, below_head, below_foot):
+    head = ((70, words[0]), (240, words[1]))
+    foot = ((90, words[0]), (180, words[1]))
+    assert footer_repeat(*head, foot=foot, below_head=below_head, below_foot=below_foot)["supplier_name"] is None
+
+
+def test_an_unlabelled_buyer_with_no_address_is_not_a_supplier():
+    head, foot = ((70, "Retail"), (240, "Stores")), ((90, "Retail"), (180, "Stores"))
+    assert footer_repeat(*head, foot=foot)["supplier_name"] is None
+
+
+@pytest.mark.parametrize("words", [
+    ("Net", "Amount", "VAT", "225.00"), ("Subtotal", "Discount", "100.00"), ("Subtotal", "VAT", "225.00"),
+    ("Sub", "Total", "Tax", "225.00"),
+    ("Sub", "Total", "12", "03", "2099"), ("Sub", "Total", "10", "500"), ("Sub", "Total", "10", "500.00"),
+    ("Excl.", "Tax", "Total", "1", "593", "361,82", "EGP"),
+])
+def test_a_net_label_with_no_figure_of_its_own_stays_blank(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+def test_a_net_label_reads_across_its_excluding_wording():
+    assert figure(totals(row_of(880, "Sub", "Total", "Excl.", "VAT", "4,500.00")), "net") == "4500.00"
+
+
+@pytest.mark.parametrize("engine, restored", [("paddleocr", True), ("docling", True), ("invoice2data", False)])
+def test_only_a_reader_that_looks_at_glyphs_restores_the_capital_i(engine, restored, tmp_path, monkeypatch):
+    read_as, printed = "Sl/2099/0007", "SI/2099/0007"
+    monkeypatch.setattr(ocr_worker, "paddle", lambda *_: ("text", []))
+    monkeypatch.setattr(ocr_worker, "docling", lambda *_: ("text", [], []))
+    monkeypatch.setattr(ocr_worker, "digital", lambda *_, **__: ("text", []))
+    monkeypatch.setattr(ocr_worker, "structured_extract", lambda *_: ({"number": read_as}, "layout"))
+    monkeypatch.setattr(ocr_worker, "maybe_recover_paddle", lambda _f, _l, _t, text, boxes, parsed, method, *_: (text, boxes, parsed, method, None))
+    output = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv", ["ocr_worker", "--engine", engine, "--file", str(tmp_path / "page.png"), "--output", str(output)])
+    ocr_worker.main()
+    assert json.loads(output.read_text())["invoice"]["number"] == (printed if restored else read_as)
+
+
+def test_one_rate_with_its_printed_total_row_is_the_summary():
+    invoice = summary(PLAIN_HEADING, FIVE, [(100, "Total"), *FIVE])
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("1000.00", "50.00")
+
+
+@pytest.mark.parametrize("value, printed, same", [
+    ("2099-08-13", "08/13/2099", True), ("2099-08-13", "08-13-2099", True), ("2099-08-13", "13/08/2099", True),
+    # Either way round is a real date: read day-first, and a month-first value stays for a reviewer.
+    ("2099-03-04", "04/03/2099", True), ("2099-04-03", "04/03/2099", False), ("2099-08-14", "08/13/2099", False),
+])
+def test_a_month_first_date_is_the_same_only_when_the_day_cannot_be_a_month(value, printed, same):
+    assert tc.same(value, printed) is same

@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 import re
 from .item_rules import RulesError, rules as default_rules
-from .models import Invoice, Policy
+from .models import Invoice, Policy, uom_code
 from .references import decimal as D
 
 
@@ -89,7 +89,7 @@ def validate(i: Invoice, refs, policy: Policy, ledger=(), reviewed=False):
         if len(pls)!=1:
             fail("PO_LINE","Cannot select one PO line for this item","Buyer",n); continue
         pl=pls[0]; allocation=f"{p['id']}|{pl['id']}"
-        if l.uom!=pl["uom"]: fail("UOM","Unit differs; an approved conversion is required","Buyer",n)
+        if not uom_code(l.uom) or uom_code(l.uom)!=uom_code(pl["uom"]): fail("UOM","Unit differs; an approved conversion is required","Buyer",n)
         if l.price is not None and abs(l.price-D(pl["price"]))>policy.price_tolerance: fail("PRICE","Unit price differs from the PO beyond tolerance","Buyer",n)
         received=sum((D(r["qty"]) for r in refs.get("receipts",[]) if str(r["po"])==str(p["id"]) and str(r["line"])==str(pl["id"]) and r["status"]=="accepted"),Decimal(0))
         available=received-D(pl["invoiced"])-used[allocation]

@@ -3,7 +3,7 @@ only when exactly one master name is that close; otherwise the supplier stays no
 Synthetic data only."""
 import pytest
 
-from app.fine_rules import RowsSource, RulesConfig, run_invoice
+from app.fine_rules import RowsSource, RulesConfig, run_invoice, supplier_candidates
 from app.fine_rules_source import LookupRulesSource
 from app.models import Invoice, Line
 from tests.test_latest_master import activate
@@ -128,3 +128,28 @@ def test_r1_a_short_shared_stem_crosses_into_no_lux_family_name(printed):
 def test_r1_each_lux_family_name_finds_only_its_own(printed, site):
     result = run(printed, master(*LUX_FAMILY))
     assert result["header"]["Supplier Site"] == site and not not_found(result)
+
+
+OWNER = {"buyer_name": "Orchid Retail LLC"}
+
+
+@pytest.mark.parametrize("printed", ["Orchid Retail", "ORCHID RETAIL LLC", "Orchid Retail L.L.C."])
+def test_the_configured_buyer_is_never_the_supplier(printed):
+    # The reader has no config, so a footer name or an unlabelled buyer it took for the issuer stops here.
+    result = run(printed, master(printed, "Other Co"), RulesConfig.from_dict(OWNER))
+    assert result["header"]["Supplier Site"] == "" and not result["supplier_candidates"]
+
+
+@pytest.mark.parametrize("printed", ["Orchid Retail FZE", "Orchid Retail Trading LLC"])
+def test_a_group_company_of_the_buyer_stays_a_supplier(printed):
+    result = run(printed, master(printed, "Other Co"), RulesConfig.from_dict(OWNER))
+    assert result["header"]["Supplier Site"] == "101"
+
+
+def test_with_no_configured_buyer_the_printed_name_stands():
+    assert run("Orchid Retail", master("Orchid Retail", "Other Co"))["header"]["Supplier Site"] == "101"
+
+
+def test_the_configured_buyer_on_a_line_of_the_page_is_no_candidate():
+    candidates = supplier_candidates({"pages": {1: "Orchid Retail LLC\nHarbour Lane LLC"}}, owner_name="Orchid Retail LLC")
+    assert [candidate["name"] for candidate in candidates] == ["Harbour Lane LLC"]

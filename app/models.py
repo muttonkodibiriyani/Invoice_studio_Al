@@ -3,6 +3,38 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+# docs/FIELD_RULES.md's unit-of-measure vocabulary: spelling, not meaning, so EA and PCS stay different codes.
+UOM_SPELLINGS = {
+    "PCS": ("pcs", "pc", "piece", "pieces", "unit", "units", "nos", "no"),
+    "EA": ("ea", "each"),
+    "BOX": ("box", "bx", "boxes"),
+    "CTN": ("ctn", "carton", "cartons", "cs", "case"),
+    "SET": ("set", "sets"),
+    "PKT": ("pkt", "packet", "pack", "pk"),
+    "BTL": ("btl", "bottle"),
+    "CAN": ("can", "tin"),
+    "BAG": ("bag",),
+    "ROL": ("rol", "roll"),
+    "KG": ("kg", "kgs", "kilo", "kilogram"),
+    "G": ("g", "gm", "gram"),
+    "L": ("l", "ltr", "litre", "liter"),
+    "ML": ("ml",),
+    "M": ("m", "mtr", "metre", "meter"),
+    "DZ": ("dz", "dzn", "dozen"),
+    "PR": ("pr", "pair"),
+}
+_UOM_CODES = {spelling: code for code, spellings in UOM_SPELLINGS.items() for spelling in spellings}
+
+
+def uom_code(value):
+    """The vocabulary code of a unit, for comparing two units. A read keeps the unit as printed, so its evidence
+    still points at the page. Case, a trailing '.' and a plural 's' do not count; a unit outside the vocabulary
+    is itself upper-cased, and a blank is None."""
+    text = " ".join(str(value or "").split()).rstrip(". ")
+    spelling = text.casefold()
+    return _UOM_CODES.get(spelling) or _UOM_CODES.get(spelling.removesuffix("s")) or text.upper() or None
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
 

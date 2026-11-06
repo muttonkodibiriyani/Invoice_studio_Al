@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from .models import Invoice
+from .models import Invoice, uom_code
 from .evidence import build as build_evidence
 from . import item_rules, item_search, rules_first, scan_guard
 from .fine_rules_source import LookupRulesSource
@@ -509,11 +509,32 @@ def _basic_checks(invoice,missing):
     return not any(x.startswith(UNRECONCILED) for x in missing)
 
 
+def _ends_the_chain(invoice,missing):
+    """A sound read that also prices every line. A line with no quantity or price is left out of the
+    reconciliation, so its sum proves nothing, least of all on a zero-value invoice: the next reader still runs."""
+    return (_basic_checks(invoice,missing) and invoice.net!=0
+            and all(l.qty is not None and l.price is not None for l in invoice.lines))
+
+
+def _rows_ahead(candidate,best):
+    """How many more priced rows the candidate read than the best read, when both total zero and nothing else can
+    tell: lines of no value sum to a net of 0 however many of them were read. A row with no quantity or price is no
+    line, and once the best read has codes only a row with a code counts. Fewer priced rows never win on a tie of
+    coded rows: the rows it dropped are gone with no flag. Otherwise 0, and the score decides."""
+    if candidate is None or best is None or candidate.net!=0 or best.net!=0:return 0
+    priced=lambda invoice:[l for l in invoice.lines if l.qty is not None and l.price is not None]
+    coded=lambda invoice:[l for l in priced(invoice) if l.sku or l.gtin]
+    if len(priced(candidate))<len(priced(best)):return -1
+    rows=coded if coded(best) else priced
+    return len(rows(candidate))-len(rows(best))
+
+
 def _same(field,mine,theirs):
     """Two readers agree when amounts are numerically equal or text matches by digits and letters."""
     if field in AMOUNT_FIELDS:
         try:return Decimal(str(mine))==Decimal(str(theirs))
         except (InvalidOperation,ValueError):return False
+    if field=="uom":return uom_code(mine)==uom_code(theirs)
     fold=lambda v:re.sub(r"[^0-9a-z]","",str(v).casefold())
     return fold(mine)==fold(theirs)
 
@@ -1064,8 +1085,13 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 local_reads.append({"engine":engine,"invoice":result["invoice"],
                                     "boxes":result.get("boxes",[]),
                                     "source":"ocr" if engine=="paddleocr" else "native"})
-            if candidate is not None and (score>best_score or (
-                    score==best_score and engine==native_preflight_engine)):
+            # On a tied score a read that passes the basic checks beats one that does not: the gaps count the
+            # same, but a missing number or an unreconciled table is not the same as a missing date.
+            rows_ahead=_rows_ahead(candidate,best)
+            if candidate is not None and rows_ahead>=0 and (rows_ahead>0 or score>best_score or (
+                    score==best_score and (engine==native_preflight_engine or (
+                        _basic_checks(candidate,_open_gaps(candidate,missing))
+                        and not _basic_checks(best,_open_gaps(best,quality(best)[1])))))):
                 selected_read=len(local_reads)-1
                 best=candidate;best_score=score
                 selected=("native PDF text" if engine=="native_pdf_text" else
@@ -1107,11 +1133,11 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             # A read short of the basic checks (no net, or lines that do not sum to it: a table read short of
             # the printed rows) is not a stopping point: the next local reader still runs and the existing
             # score keeps the better read.
-            if options.engine in ("auto","ai") and engine=="paddleocr" and _basic_checks(candidate,_open_gaps(candidate,missing)):
+            if options.engine in ("auto","ai") and engine=="paddleocr" and _ends_the_chain(candidate,_open_gaps(candidate,missing)):
                 for remaining in chain[chain.index(engine)+1:]:
                     trace.append({"engine":remaining,"status":"skipped","reason":"Invoice fields were read. Remaining exceptions go to the selected AI or manual review."})
                 break
-            if not missing:break
+            if not missing and candidate.net!=0:break
         except Exception as e:
             could_not_download=is_download_failure(getattr(e,"kind",""))
             if could_not_download:

@@ -99,7 +99,9 @@ def test_a_check_past_the_time_limit_is_stopped_and_the_upload_is_refused(tmp_pa
     stall = "import time; import app.multi_invoice as m; m.pdf_pages = lambda *a, **k: time.sleep(10**6)"
     pid_file = tmp_path / "reader.pid"
     reader = tmp_path / "slow-reader"
-    reader.write_text(f"#!/bin/sh\n[ \"$2\" = app.ocr_worker ] || exec {sys.executable} \"$@\"\n"
+    # Only the split check is stubbed and recorded. The patched sys.executable is process-wide, so a reader an earlier
+    # test's job thread starts now comes through here too, and its pid is not the child this test expects stopped.
+    reader.write_text(f"#!/bin/sh\ncase \"$*\" in *--split-check*) ;; *) exec {sys.executable} \"$@\";; esac\n"
                       f"echo $$ > {pid_file}\nshift 2\n"
                       f"exec {sys.executable} -c \"{stall}; import runpy; "
                       f"runpy.run_module('app.ocr_worker', run_name='__main__', alter_sys=True)\" \"$@\"\n")

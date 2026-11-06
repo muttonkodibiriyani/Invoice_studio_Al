@@ -333,9 +333,17 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
             **({"supplier_site_candidates":result["supplier_site_candidates"]} if result.get("supplier_site_candidates") else {})}
 
 
-def rules_key(view):
+def duplicate_key(view):
+    """What makes two invoices the same one: the number from the same supplier site. None without both (D11 exports such
+    an invoice): no number leaves nothing to compare, and no site cannot tell one supplier's number from another's."""
     f=view["fields"]
-    return "|".join(["rules",f["site"]["value"] or "",(f["number"]["value"] or "").strip().upper()])
+    site,number=(f["site"]["value"] or "").strip(),(f["number"]["value"] or "").strip().upper()
+    return f"rules|{site}|{number}" if site and number else None
+
+
+def rules_key(view,job_id):
+    """exports.invoice_key is UNIQUE: an invoice with no duplicate key gets one only its own job can have."""
+    return duplicate_key(view) or f"rules-job|{job_id}"
 
 
 def accepted_ids(view):
@@ -360,7 +368,7 @@ def rules_validation(view,ledger=(),reviewed=False):
         issue={"level":"review" if issue.get("blocking") else "warning",**issue}
         if reviewed and issue["level"]=="review" and issue["blocking"]:issue.update(blocking=False,accepted=True)
         issues.append(issue)
-    if view["fields"]["number"]["value"] and any(x.get("invoice_key")==rules_key(view) for x in ledger):
+    if (duplicate:=duplicate_key(view)) and any(x.get("invoice_key")==duplicate for x in ledger):
         issues.append({"code":"Duplicate","message":"Invoice already exported for this supplier site","owner":"Accounts payable","line":None,
                        "blocking":True,"level":"hard"})
     if not reviewed:

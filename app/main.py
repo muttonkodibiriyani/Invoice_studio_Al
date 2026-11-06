@@ -1045,7 +1045,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 accepted=j["validation"].get("accepted",[])
                 content,evidence=rules_workbook([{**j["rules"],"owner_accepted":accepted}],target_upc(c),blanks=True)
                 content,target=target_checks(content,[j["rules"]],sheet=False)
-                receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"]),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
+                receipt={"id":eid,"job_id":jid,"invoice_key":rules_key(j["rules"],jid),"number":inv.number,"created_at":datetime.now(timezone.utc).isoformat(),
                          "source":"fine_rules","rules_signature":j["rules"]["signature"],"rules_revision":j["rules"]["revision"],
                          "rules_status":j["rules"]["status"],"owner_accepted":accepted,"owner_entries":j.get("owner_entries") or {},
                          "allocations":j["validation"].get("allocations",[]),"evidence":evidence.get(1,{}),"target_check":target[1],
@@ -1270,7 +1270,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         reasons=[(i["code"],i["message"]) for i in result["issues"] if i.get("blocking",True) and (demo_references or i["code"] in INTEGRITY)]
         if reasons:return j,result,reasons,[]
         holds=[] if demo_references else open_holds(result,refusal(coverage(j["rules"],item_rules().coverage_tiers())))
-        result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"])
+        result["invoice_key"]=key(inv) if demo_references else rules_key(j["rules"],j["id"])
         result["allocations"]=[m["allocation"] for m in result["matches"]] if demo_references else result.get("allocations",[])
         ledger.append({"invoice_key":result["invoice_key"],"allocations":result["allocations"]})
         return j,result,[],holds

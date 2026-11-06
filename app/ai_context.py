@@ -77,19 +77,41 @@ SUPPLIER = {"supplier_name": "SUPPLIER_NAME", "site": "SUPPLIER SITE"}
 ORDER = {"po": "RMS_ORDER_NO", "item_id": "RMS_ITEM_ID", "qty": "QTY_RECEIVED"}
 
 
-def _name_score(one, other):
-    """How many of two supplier names' words they share, 0 to 1."""
-    words, others = (set(re.findall(r"[^\W_]+", str(name or "").casefold())) for name in (one, other))
+# Words any supplier's name may carry: sharing them says nothing about being the same supplier.
+GENERIC_NAME_WORDS = frozenset({
+    "al", "el", "and", "of", "for", "the", "co", "company", "corp", "corporation", "dmcc", "enterprises", "est",
+    "establishment", "fz", "fzc", "fzco", "fze", "general", "gmbh", "group", "inc", "international", "intl", "limited",
+    "llc", "ltd", "plc", "private", "pvt", "services", "trade", "traders", "trading",
+    "شركة", "مؤسسة", "تجارة", "التجارة", "للتجارة", "العامة", "ذات", "مسؤولية", "المحدودة",
+})
+
+
+def _name_words(name):
+    return set(re.findall(r"[^\W_]+", str(name or "").casefold()))
+
+
+def _overlap(words, others):
     return len(words & others) / len(words | others) if words and others else 0
 
 
+def _name_score(one, other):
+    """How many of two supplier names' words they share, 0 to 1."""
+    return _overlap(_name_words(one), _name_words(other))
+
+
+def _distinctive(name):
+    return {word for word in _name_words(name) if len(word) > 1 and word not in GENERIC_NAME_WORDS}
+
+
 def close_names(one, other):
-    return _name_score(one, other) >= MIN_SIMILAR
+    """The same supplier, by the words that tell suppliers apart: Star Trading LLC is not Gulf Trading LLC. A name with no
+    such word is close to nothing, so its pick stays a suggestion."""
+    return _overlap(_distinctive(one), _distinctive(other)) >= MIN_SIMILAR
 
 
 def _similar_names(source, name):
     """Supplier names sharing most of their words with the printed one: the exact rule misses a differing spelling."""
-    scored = [(-_name_score(name, known), known) for known in source.supplier_names() if close_names(name, known)]
+    scored = [(-_name_score(name, known), known) for known in source.supplier_names() if _name_score(name, known) >= MIN_SIMILAR]
     return [known for _, known in sorted(scored)[:PER_SEARCH]]
 
 

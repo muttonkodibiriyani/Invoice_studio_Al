@@ -68,7 +68,7 @@ def _agent_reference(name):
 
 
 def _responses_text(result):
-    return "".join(c.get("text","") for item in result.get("output",[]) for c in item.get("content") or [] if c.get("type")=="output_text")
+    return "".join(c.get("text","") for item in result.get("output",[]) if item.get("type")=="message" for c in item.get("content") or [] if c.get("type")=="output_text")
 
 
 def _used_a_tool(result):

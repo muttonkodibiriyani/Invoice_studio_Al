@@ -389,6 +389,49 @@ def test_a_name_with_no_latin_letter_or_digit_keys_a_rule(store):
     assert ai_rules.all_rules(store)[0]["supplier_name"]
 
 
+@pytest.mark.parametrize(("one", "other", "close"), [
+    # Only generic words shared: different suppliers.
+    ("Star Trading LLC", "Gulf Trading LLC", False),
+    ("Al Noor LLC", "Al Fajr LLC", False),
+    ("Star General Trading LLC", "Moon General Trading LLC", False),
+    ("شركة النور للتجارة", "شركة الفجر للتجارة", False),
+    # Nothing distinctive left: close to nothing, itself included.
+    ("Trading LLC", "Trading LLC", False),
+    ("General Trading Co", "Trading Company", False),
+    ("Star Trading", "", False),
+    # The same supplier written differently.
+    ("Northwind Trading LLC", "Northwind Trading", True),
+    ("Northwind L.L.C", "Northwind LLC", True),
+    ("Al Noor Trading", "Noor General Trading LLC", True),
+    ("شركة النور للتجارة", "مؤسسة النور", True),
+    # Either side of the threshold, on distinctive words: 1/2 and 2/4 close, 2/5 and 1/3 not.
+    ("Northwind", "Northwind Foods", True),
+    ("Star Beauty Home", "Star Beauty Foods", True),
+    ("Star Beauty Supply", "Star Beauty Foods Home", False),
+    ("Star Beauty", "Star Foods", False),
+])
+def test_close_supplier_names_share_the_words_that_tell_suppliers_apart(one, other, close):
+    assert ai_context.close_names(one, other) is close
+    assert ai_context.close_names(other, one) is close
+
+
+@pytest.mark.parametrize(("printed", "row_supplier", "rule"), [
+    ("Star Trading LLC", "Gulf Trading LLC", False),
+    ("Northwind Trading", "Northwind Trading LLC", True),
+])
+def test_a_pick_from_accept_through_add_and_fill_follows_the_name_boundary(store, printed, row_supplier, rule):
+    rows = [{**ROWS[0], "SUPPLIER_NAME": row_supplier}]
+    source = Source(rows)
+    local = invoice(supplier_name=printed, lines=[line(sku="NEW-1")])
+    assert ai_rules.invoice_sites(source, local) == []
+    context = ai_context.build(source, local, site=None)
+    wanted = next(c for c in context["candidates"] if c["fields"].get("item_id") == "1001" and c["kind"] == "item")
+    picked, refused = ai_context.accept(context, {"suggestions": [{"candidate_id": wanted["id"], "field": "item_id", "why": "same item"}]})
+    assert refused == 0 and picked[0]["row_supplier"] == row_supplier
+    assert bool(ai_rules.add(store, local, picked, "agent", "x.pdf", [])) is rule
+    assert bool(ai_rules.fill(store, source, local)) is rule
+
+
 # AI lines standing in for local ones (Reality Checker, finding 1): no rule value goes back by position.
 
 SCAN_LINES = [{"description": "Lumena serum 30 ml", "sku": "NW-100", "qty": 10, "price": 60.0, "net_amount": 600.0},
@@ -429,6 +472,22 @@ def test_other_rows_from_the_ai_get_no_item_found_for_the_local_rows(read):
     result, _, _ = read(local=SCAN_LOCAL, ai=scan_ai(same_count), text=SCAN_TEXT + "Lumena oil 15 ml NW-301 10 40.00 400.00\n", master=by_code, sample="invoice-scan.png")
     assert [x["sku"] for x in result["invoice"]["lines"]] == ["NW-300", "NW-301"]
     assert not any(x.get("item_id") for x in result["invoice"]["lines"]), "the same line count must not bring position back"
+
+
+def test_rules_failing_on_the_ai_lines_leave_them_empty_and_bring_nothing_back_by_position(read, monkeypatch):
+    asked = []
+
+    def rules():
+        asked.append(1)
+        if len(asked) > 1:
+            raise engines.item_rules.RulesError("the workbook went away")
+        return RULES
+    monkeypatch.setattr(engines.item_rules, "rules", rules)
+    result, calls, _ = read(local=SCAN_LOCAL, ai=scan_ai(list(reversed(SCAN_LINES))), text=SCAN_TEXT, master=by_code, sample="invoice-scan.png")
+    assert calls == ["ai"] and len(asked) == 2
+    assert [x["sku"] for x in result["invoice"]["lines"]] == ["NW-200", "NW-100"]
+    assert not any(x.get("item_id") for x in result["invoice"]["lines"])
+    assert any("did not run on the AI's lines" in str(t.get("reason")) for t in result["trace"])
 
 
 def test_the_rule_receipt_counts_what_is_on_the_final_lines(read):

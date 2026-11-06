@@ -37,6 +37,12 @@ master. A rules workbook that cannot load is told on the `item_rules` trace entr
    `ai`. On a PDF the reason is "No local reader read this invoice, so the AI read the whole invoice". On a scan it
    goes through the weak-scan rule below, which says "read the whole invoice".
 
+## What the AI is not asked about
+
+A wrong header value that looks fine is not a gap, so nothing asks the AI about it: the AI is asked only for what is
+missing or fails the basic checks, and fills only empty fields (agreed design). Such a value stays until a person
+corrects it. Turning on `ai_cross_check` flags differences on complete invoices, and still overwrites nothing.
+
 ## The weak-scan rule
 
 It runs only in `fallback`, only on a scan, and only when `scan_guard.weak_read` finds the local read weak. A
@@ -89,10 +95,13 @@ and on later invoices from that supplier, with no approval step. It holds to the
   Suggestion result lets through only an item it already lists.
 - A row at a site other than the supplier's is not a rule. A printed name the master does not carry resolves to no
   site (owner, 6 Nov): then only a row whose supplier name is close to the printed one makes a rule, and any other pick
-  stays a suggestion. Item master `SUPPLIER_NAME` holds coded site names, so most such picks stay suggestions.
+  stays a suggestion. Close counts only the words that tell suppliers apart (`ai_context.GENERIC_NAME_WORDS` lists the
+  rest), so Star Trading LLC is not close to Gulf Trading LLC, and a name of only such words is close to nothing. Item
+  master `SUPPLIER_NAME` holds coded site names, so most such picks stay suggestions.
 - A rule is added only after the read passed its checks: a read that ends `not_read` adds none.
 - A spoofed name is not caught: an invoice printing a real supplier's name can plant a rule from that supplier's own
-  items under its name. It can only name that supplier's rows, and every fill is marked AI and removable.
+  items under its name. It can only name that supplier's rows, and every fill is marked AI and removable. A planted
+  rule fills genuine invoices with no AI call and blocks the correct rule until someone removes it.
 - Its item must still be in the item master each time it runs, or it fills nothing.
 - Each fill is marked `ai` in review, listed in `readers.ai.rules_applied`, and on the receipt.
 - Each rule keeps its source, reason, model and file, and counts the lines it filled. **Engines & AI** lists them

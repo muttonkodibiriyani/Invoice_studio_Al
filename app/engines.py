@@ -1354,9 +1354,6 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 final["lines"][fill["line"]]["item_id"]=fill["item_id"]
                 if fill["line"]<len(line_map):line_map[fill["line"]]["item_id"]="ai"
                 ai_rules_applied.append(fill)
-        # What the receipt and the rule's count say is what is on the final lines.
-        ai_rules_applied=[fill for fill in ai_rules_applied if fill["line"]<len(final["lines"]) and fill["line"]<len(line_map)
-                          and final["lines"][fill["line"]].get("item_id")==fill["item_id"] and line_map[fill["line"]].get("item_id")=="ai"]
         best=Invoice.model_validate(final);best_score=quality(best)[0];readers_maps=(header_map,line_map)
     # fields: the gaps that asked for the AI. It may fill any other empty field too; "filled" lists what it did fill.
     ai_record={"status":ai_status,"reason":ai_reason or AI_REASONS.get(ai_status,""),"calls":ai_calls,"need":need,

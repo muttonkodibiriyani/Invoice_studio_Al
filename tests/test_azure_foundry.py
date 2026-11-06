@@ -242,7 +242,7 @@ def test_an_incomplete_or_malformed_azure_answer_is_not_accepted(tmp_path, store
     path = tmp_path / "invoice.txt"
     path.write_text("visible")
     for payload, words in ((dict(completed(), status="incomplete"), "incomplete"),
-                           ({"status": "completed", "output": [{"content": [{"type": "output_text", "text": "{]"}]}]}, "invalid invoice structure")):
+                           ({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "{]"}]}]}, "invalid invoice structure")):
         monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: FakeClient(post=FakeResponse(payload)))
         with pytest.raises(ValueError, match=words):
             Providers(store, FakeChatGPT()).extract(path, "visible", options())
@@ -468,6 +468,20 @@ def test_an_agent_reply_holding_a_tool_call_is_refused_and_its_reasoning_is_not(
     assert providers.extract(Path(sample), "text", options(model="invoice-agent"))[0].number
 
 
+def test_an_answer_is_read_only_from_a_message_item(store, monkeypatch):
+    monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: "entra-token")
+    providers = Providers(store, FakeChatGPT())
+    providers.azure.save(providers.azure.prepare(PROJECT, None, "invoice-agent", "managed_identity"))
+    sample = Path(ROOT / "samples" / "invoice.pdf")
+    message = completed()["output"][0]
+    reasoning = {"type": "reasoning", "content": [{"type": "output_text", "text": json.dumps({"number": "FROM-REASONING"})}]}
+    connecting(monkeypatch, FakeResponse(dict(completed(), output=[reasoning])))
+    with pytest.raises(ValueError):
+        providers.extract(sample, "text", options(model="invoice-agent"))
+    connecting(monkeypatch, FakeResponse(dict(completed(), output=[reasoning, message])))
+    assert providers.extract(sample, "text", options(model="invoice-agent"))[0].number != "FROM-REASONING"
+
+
 def test_an_agent_that_used_a_tool_fails_the_connection_test_and_saves_nothing(client, owner, monkeypatch):
     monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: "entra-token")
     connecting(monkeypatch, FakeResponse(dict(said().json(), output=[TOOL_CALL, *said().json()["output"]])))
@@ -501,13 +515,17 @@ def test_an_address_port_or_path_is_no_gateway(host):
     assert not azure_module.valid_gateway(host)
 
 
-def test_a_new_connection_replaces_the_model_a_read_would_name(client, owner, monkeypatch):
+def test_a_new_connection_replaces_the_model_a_read_would_name(app, client, owner, monkeypatch):
     connecting(monkeypatch, said())
     connect = {"endpoint": ENDPOINT, "api_key": KEY}
     assert client.post("/api/connections/azure", headers=bearer(owner), json={**connect, "name": "reader"}).status_code == 200
     assert client.post("/api/settings", headers=bearer(owner), json={"provider": "azure", "model": "reader", "ai_fallback": True}).status_code == 200
     assert client.post("/api/connections/azure", headers=bearer(owner), json={**connect, "name": "reader-2"}).status_code == 200
     assert client.get("/api/state", headers=bearer(owner)).json()["settings"]["model"] == "reader-2"
+    with app.state.store.connection() as c:
+        changes = [json.loads(r[0]) for r in c.execute("SELECT payload FROM audit WHERE event='settings_changed'").fetchall()]
+    assert [(x["before"]["model"], x["after"]["model"]) for x in changes][-1] == ("reader", "reader-2")
+    assert changes[-1]["after"]["ai_fallback"] is True
 
 
 def test_a_key_refused_on_an_agent_names_managed_identity(client, owner, monkeypatch):

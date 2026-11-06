@@ -2150,13 +2150,13 @@ async function exportCurrentJob() {
   } finally {
     renderExportButton(app.currentJob);
   }
-  if (app.currentJob?.id !== job.id) {
+  if (app.currentJob?.id !== job.id || app.selectedJobId !== job.id) {
     notify("The selected invoice changed during the check. Nothing was exported; open the invoice and export again.", "error", 7000);
     return;
   }
   if (!warning) return writeExport(job);
   app.exportPending = job;
-  $("#export-confirm-text").textContent = `${warning} Export anyway?`;
+  $("#export-confirm-text").textContent = `${job.filename}: ${warning} Export anyway?`;
   $("#export-confirm-dialog").showModal();
 }
 
@@ -2170,7 +2170,7 @@ async function writeExport(job) {
     const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/export`, { method: "POST", body: { revision: job.revision } });
     await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
     await loadState();
-    if (app.currentJob) await selectJob(app.currentJob.id);
+    if (app.selectedJobId) await selectJob(app.selectedJobId);
     notify("Excel workbook prepared.");
   } catch (error) {
     notify(error.message, "error", 7000);

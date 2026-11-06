@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import engines  # noqa: E402
 from app.models import ProcessingOptions  # noqa: E402
+from tools.invoice_sim import ai, flow  # noqa: E402
 from tools.invoice_sim import run as sim  # noqa: E402
 from tools.invoice_sim.generator import SEED, build_corpus, render_pdf  # noqa: E402
 from tools.invoice_sim.master import parent_id  # noqa: E402
@@ -128,3 +129,47 @@ def test_a_generated_pdf_goes_through_the_real_reader_chain(corpus, tmp_path, mo
     scored = score_read(json.loads(json.dumps(invoice.truth, default=str)), result)
     assert set(scored["fields"]) == {"number", "supplier_name", "date", "po", "currency", "net", "tax"}
     assert all(v["verdict"] in ("correct", "blank", "WRONG") for v in scored["fields"].values())
+
+
+def test_the_flow_compare_reports_a_changed_cell_and_a_dropped_row(corpus):
+    truth = truth_of(corpus, "grid-classic-00")
+    item = parent_id(truth["lines"][0]["item_id"]) if truth["lines"][0]["item_id"] else None
+    header = {"Document": truth["number"], "Supplier Site": "S1", "Order No": truth["po"], "Location": flow.LOCATION, "Location Type": "Store (S)",
+              "Document Date": truth["date"], "Total Cost Ex Tax": truth["net"], "Tax Amount": truth["tax"]}
+    rows = [{"Item": parent_id(x["item_id"]) if x["item_id"] else None, "UPC": None, "Unit Cost": x["price"], "Quantity": x["qty"]} for x in truth["lines"]]
+    assert flow.compare({"Header": [header], "Details": rows}, truth, "S1")["wrong"] == []
+
+    changed = flow.compare({"Header": [{**header, "Tax Amount": "999999.99"}], "Details": rows[:-1]}, truth, "S1")["wrong"]
+    assert {(x["sheet"], x["column"]) for x in changed} == {("Header", "Tax Amount"), ("Details", "row count")}
+    assert flow.compare({"Header": [header], "Details": [{**rows[0], "Item": "999999999"}, *rows[1:]]}, truth, "S1")["wrong"][0]["truth"] == item
+
+
+def test_the_ai_mark_is_read_from_what_the_review_screen_uses():
+    job = {"readers": {"header": {"tax": "ai", "net": "regex"}, "lines": [{"price": "ai", "qty": "regex"}, {"qty": "regex"}, {"item_id": "rule:I1"}]}}
+    assert ai.mark(job, "Header", "Tax Amount") == "ai"
+    assert ai.mark(job, "Header", "Document") == "from ai"
+    assert ai.mark(job, "line 1", "Unit Cost") == "ai"
+    assert ai.mark(job, "line 1", "Item") == "from ai"
+    assert ai.mark(job, "line 2", "Unit Cost") == ""
+    assert ai.mark(job, "line 3", "Item") == ""
+    assert ai.mark({"readers": {"header": {"net": "regex"}}}, "Header", "Tax Amount") == ""
+
+
+def test_an_ai_failure_at_the_http_layer_reaches_the_user_and_nothing_else_is_called(corpus, tmp_path, monkeypatch):
+    import app.providers as providers
+
+    monkeypatch.setenv("INV_STUDIO_AZURE_ENDPOINT", f"https://{ai.HOST}")
+    monkeypatch.setenv("INV_STUDIO_AZURE_API_KEY", "sim-key-not-real")
+    monkeypatch.setenv("INV_STUDIO_AZURE_DEPLOYMENT", ai.MODEL)
+    monkeypatch.setattr(providers, "httpx", providers.httpx)  # restored after the test; install replaces it
+    foundry = ai.Foundry()
+    ai.install(foundry)
+    invoice = next(i for i in corpus.invoices if i.id == "grid-classic-00")
+    foundry.case, foundry.truth = "500", truth_of(corpus, invoice.id)
+    made = sim.RulesRig(corpus, tmp_path / "app")
+    try:
+        job = ai.upload(made, "doc.pdf", Path(render_pdf(invoice, tmp_path / "doc.pdf")).read_bytes(), ai.AI_ON)
+    finally:
+        made.close()
+    assert foundry.calls >= 1 and foundry.foreign == []
+    assert "HTTP 500" in str(ai.told(job))

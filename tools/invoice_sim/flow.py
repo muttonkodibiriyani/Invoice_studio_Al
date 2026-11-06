@@ -141,8 +141,21 @@ def typed_entries(truth, tax_code="SIMV5", items=True):
     return {"header": {"location": LOCATION, "location_type": "Store (S)", "taxCode": tax_code}, "lines": lines}
 
 
-def review_typed(api, job, truth, items=True):
-    return api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": _typed_invoice(truth), "revision": job["revision"], "confirm": True, "entries": typed_entries(truth, items=items)})
+def review_typed(api, job, truth, items=True, site=None):
+    """The reviewer's typed values. A name typed on its own does not resolve a supplier the rules could not find: that takes the site picker, so site is what picking sends."""
+    chosen = {"supplier_code": site["supplier_code"], "supplier_site": site["supplier_site"]} if site else {}
+    return api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": _typed_invoice(truth), "revision": job["revision"], "confirm": True, "entries": typed_entries(truth, items=items), **chosen})
+
+
+def review_with_pick(api, job, truth, invoice, items=True):
+    """Typed review, and a picked site if the app still has none after it. Returns the response and whether the pick was needed."""
+    response = review_typed(api, job, truth, items=items)
+    if response.status_code != 200:
+        return response, False
+    now = api.job(job["id"])
+    if ((now.get("rules") or {}).get("fields", {}).get("site") or {}).get("value"):
+        return response, False
+    return review_typed(api, now, truth, items=items, site=_site_row(invoice)), True
 
 
 def workbook_rows(content: bytes) -> dict:
@@ -227,7 +240,7 @@ def full_invoice(api, invoice, folder, note=None):
     if job.get("status") in ("error", "timed out"):
         return rec
     truth = json.loads(json.dumps(invoice.truth, default=str))
-    reviewed = review_typed(api, job, truth)
+    reviewed, rec["site_picked"] = review_with_pick(api, job, truth, invoice)
     rec["review"] = reviewed.status_code
     if reviewed.status_code != 200:
         rec["review_detail"] = reviewed.text[:400]
@@ -241,8 +254,12 @@ def full_invoice(api, invoice, folder, note=None):
     return rec
 
 
+def _site_row(invoice):
+    return site_of(invoice.truth["supplier_name"], invoice.style["totals_values"]["code"])
+
+
 def _site(invoice):
-    return site_of(invoice.truth["supplier_name"], invoice.style["totals_values"]["code"])["supplier_site"]
+    return _site_row(invoice)["supplier_site"]
 
 
 def app_items(api, invoice, folder, reviewed):
@@ -255,7 +272,7 @@ def app_items(api, invoice, folder, reviewed):
     if job.get("status") in ("error", "timed out"):
         return {"invoice": invoice.id, "status": job.get("status"), "error": job.get("error")}
     if reviewed:
-        response = review_typed(api, job, truth, items=False)
+        response, _ = review_with_pick(api, job, truth, invoice, items=False)
         if response.status_code != 200:
             return {"invoice": invoice.id, "review": response.status_code, "detail": response.text[:300]}
     made = export(api, job["id"])
@@ -263,6 +280,74 @@ def app_items(api, invoice, folder, reviewed):
         return {"invoice": invoice.id, "export": made["status"], "detail": made.get("detail")}
     sheets = workbook_rows(made["content"])
     return {"invoice": invoice.id, "rules_status": (api.job(job["id"]).get("rules") or {}).get("status"), **item_counts(api.job(job["id"]), sheets, truth)}
+
+
+def blank_keys(api, by, out):
+    """Exactly the steps a user takes: nothing typed, Export Excel on each. Then two invoices from one supplier whose numbers are blanked in review."""
+    from .files import LETTER, _pdf
+
+    def letter(extra):
+        def draw(page):
+            for n, line in enumerate([*LETTER, extra]):
+                page.drawString(72, 720 - 22 * n, line)
+            page.showPage()
+        return _pdf(draw)
+    result = {}
+    for n in (1, 2):
+        job = api.settle(api.upload(f"letter-{n}.pdf", letter(f"Reference note {n}")).json()["id"])
+        made = export(api, job["id"])
+        cells = workbook_rows(made["content"]) if made.get("content") else {}
+        result[f"letter {n}"] = {"status": job.get("status"), "rules": (job.get("rules") or {}).get("status"), "lines_read": len((job.get("invoice") or {}).get("lines") or []), "export": made["status"], "detail": made.get("detail"),
+                                 "details_rows": len(cells.get("Details") or []), "document": ((cells.get("Header") or [{}])[0]).get("Document")}
+    def forced(name, inv, number, site):
+        path = out / "pdfs" / f"{name}-{inv.id}.pdf"
+        path.parent.mkdir(exist_ok=True)
+        render_pdf(inv, path)
+        job = api.settle(api.upload(path.name, path.read_bytes()).json()["id"])
+        truth = json.loads(json.dumps(inv.truth, default=str))
+        truth["number"] = number
+        response = review_typed(api, job, truth, site=site)
+        now = api.job(job["id"])
+        fields = (now.get("rules") or {}).get("fields", {})
+        before = [i["message"] for i in (now.get("validation") or {}).get("issues", []) if i.get("code") == "Duplicate"]
+        made = export(api, job["id"])
+        result[f"{name}: {inv.id}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
+                                       "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail")}
+    readable = ("grid-classic", "ruled-zebra", "boxed-header", "inline-header")
+    groups = {}
+    for inv in by.values():
+        if inv.family in readable:
+            groups.setdefault((inv.truth["supplier_name"], inv.style["totals_values"]["code"]), []).append(inv)
+    pair = next((g[:2] for g in groups.values() if len(g) > 1), None)
+    # The same document uploaded twice shares a site however the supplier reads; two documents from one supplier are the case as a user meets it.
+    forced("no number, same document twice", by["grid-classic-03"], None, None)
+    forced("no number, same document twice", by["grid-classic-03"], None, None)
+    if pair:
+        forced("no number, two documents one supplier", pair[0], None, None)
+        forced("no number, two documents one supplier", pair[1], None, None)
+    else:
+        result["no number, two documents one supplier"] = "no such pair in the readable families"
+
+    def forced_letter(name, n, number):
+        def draw(page):
+            for k, line in enumerate([*LETTER, f"Note {name} {n}"]):
+                page.drawString(72, 720 - 22 * k, line)
+            page.showPage()
+        job = api.settle(api.upload(f"{name.replace(' ', '-')}-{n}.pdf", _pdf(draw)).json()["id"])
+        response = api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": {**job["invoice"], "number": number}, "revision": job["revision"], "confirm": True, "entries": {"header": {}, "lines": {}}})
+        now = api.job(job["id"])
+        fields = (now.get("rules") or {}).get("fields", {})
+        before = [i["message"] for i in (now.get("validation") or {}).get("issues", []) if i.get("code") == "Duplicate"]
+        made = export(api, job["id"])
+        result[f"{name}: letter {n}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
+                                         "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail")}
+    forced_letter("same number, no site", 1, "SIM-SAME-1")
+    forced_letter("same number, no site", 2, "SIM-SAME-1")
+    forced_letter("same number lower case, no site", 3, "sim-same-1")
+    forced("same number, no site, real invoice", by["buyer-first-01"], "SIM-SAME-1", None)
+    forced("control, same number, same document twice", by["ruled-zebra-03"], "SIM-CONTROL-1", None)
+    forced("control, same number, same document twice", by["ruled-zebra-03"], "SIM-CONTROL-1", None)
+    return result
 
 
 def main():
@@ -305,6 +390,9 @@ def drive(args, out, folder, c, by, server):
     api.http.post(f"/api/item-master/uploads/{upload.json()['upload_id']}/activate").raise_for_status()
     api.http.post("/api/fine-rules/config", json=rules_config(c)).raise_for_status()
 
+    if args.only == "blanks":
+        save("blank_keys", blank_keys(api, by, out))
+        return
     first = full_invoice(api, by["grid-classic-01"], folder)
     save("one_invoice", first)
     if args.only == "one":
@@ -315,9 +403,24 @@ def drive(args, out, folder, c, by, server):
         together = list(pool.map(lambda n: full_invoice(api, by[n], folder), names))
     mixed = [r["invoice"] for r in together if r.get("compare") and any(w["column"] in ("Document", "row count") for w in r["compare"]["wrong"])]
     save("six_at_once", {"results": together, "documents_crossed": mixed, "busy_answers": len(api.busy), "busy_message": sorted(set(api.busy))})
-    done = [r["job"] for r in together if r.get("export") == 200]
-    batch = api.http.post("/api/exports/batch", json={"job_ids": done})
-    save("batch_export", {"status": batch.status_code, "detail": batch.text[:200] if batch.status_code != 200 else "ok", "type": batch.headers.get("content-type")})
+    batch_of = [by["boxed-header-04"], by["ruled-zebra-02"]]
+    prepared = []
+    for inv in batch_of:
+        path = render_pdf(inv, folder / f"{inv.id}.pdf")
+        job = api.settle(api.upload(path.name, path.read_bytes()).json()["id"])
+        review_with_pick(api, job, json.loads(json.dumps(inv.truth, default=str)), inv)
+        prepared.append(api.job(job["id"]))
+    made = api.http.post("/api/exports/batch", json={"jobs": [{"id": j["id"], "revision": j["revision"]} for j in prepared]})
+    rec = {"status": made.status_code, "detail": made.text[:300] if made.status_code != 200 else None, "wrong": []}
+    if made.status_code == 200:
+        body = made.json()
+        file = api.http.get(body.get("url") or f"/api/exports/{body['id']}")
+        sheets = workbook_rows(file.content)
+        rec["header_rows"] = len(sheets.get("Header") or [])
+        for n, inv in enumerate(batch_of, 1):
+            one = {"Header": [r for r in sheets["Header"] if r["Transaction Number"] == n], "Details": [r for r in sheets["Details"] if r["Transaction Number"] == n]}
+            rec["wrong"] += [{"invoice": inv.id, **w} for w in compare(one, json.loads(json.dumps(inv.truth, default=str)), _site(inv))["wrong"]]
+    save("batch_export", rec)
 
     for reviewed, label in ((True, "items_lines_typed"), (False, "items_as_read")):
         chosen = ["grid-classic-00", "boxed-header-02", "ruled-zebra-00", "plain-whitespace-00"] if reviewed else ["grid-classic-02", "boxed-header-03", "ruled-zebra-01", "plain-whitespace-01"]
@@ -348,7 +451,7 @@ def drive(args, out, folder, c, by, server):
         job = api.settle(jid)
         rec = {"status": job.get("status"), "error": job.get("error"), "takeovers": job.get("takeovers"), "number": (job.get("invoice") or {}).get("number"), "seconds_after_restart": round(time.monotonic() - down)}
         if job.get("status") not in ("error", "timed out"):
-            rec["review"] = review_typed(api, job, truths[name]).status_code
+            rec["review"] = review_with_pick(api, job, truths[name], by[name])[0].status_code
             made = export(api, jid)
             rec["export"] = made["status"]
             if made["status"] == 200:

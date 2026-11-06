@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 import types
 from pathlib import Path
@@ -19,7 +20,7 @@ import openpyxl
 
 from .files import _join, _pdf
 from .generator import SEED, render_pdf
-from .master import parent_id
+from .master import parent_id, site_of
 from .run import RulesRig, corpus
 from .scan import scan_pdf
 
@@ -191,29 +192,54 @@ def _same(a, b):
         return str(a).strip() == str(b).strip()
 
 
-def _review_cell(job, where, column):
-    rules = job.get("rules") or {}
+HEADER_FIELD = {"Document": "number", "Order No": "po", "Tax Amount": "tax", "Total Cost Ex Tax": "net", "Document Date": "date", "Supplier Site": "supplier_name"}
+LINE_FIELD = {"Item": "item_id", "Unit Cost": "price", "Quantity": "qty", "UPC": "gtin"}
+LEFT_OUT = {"Transaction Number"}  # a counter the workbook writes, not a value anyone read
+
+
+def mark(job, where, column) -> str:
+    """How the review screen marks the value (job.readers drives its AI badge). "ai": this value. "from ai": its line or header holds an AI value it may
+    come from, such as an item found through a code the AI read. "": no AI badge in reach. The workbook's cells carry no mark at all."""
+    readers = job.get("readers") or {}
     if where == "Header":
-        return next((f for f in (rules.get("fields") or {}).values() if f.get("target") == column), {})
+        header = readers.get("header") or {}
+        if header.get(HEADER_FIELD.get(column)) == "ai":
+            return "ai"
+        return "from ai" if "ai" in header.values() else ""
+    lines = readers.get("lines") or []
     n = int(where.split()[1]) - 1
-    lines = rules.get("lines") or []
-    return (lines[n].get("cells") or {}).get(column, {}) if n < len(lines) else {}
+    row = lines[n] if n < len(lines) else {}
+    if row.get(LINE_FIELD.get(column)) == "ai":
+        return "ai"
+    return "from ai" if "ai" in row.values() else ""
 
 
-def marked(cell) -> bool:
-    """Marked for the reviewer: flagged, or its evidence names the AI as the source."""
-    return bool(cell.get("flagged")) or any("ai" == str(e.get("kind")).casefold() or "ai" == str(e.get("source")).casefold() or " ai" in f" {str(e.get('source')).casefold()}" for e in cell.get("evidence") or [])
+def truth_cell(truth, site, where, column):
+    if where == "Header":
+        return {"Document": truth["number"], "Order No": truth["po"], "Tax Amount": truth["tax"], "Total Cost Ex Tax": truth["net"], "Document Date": truth["date"], "Supplier Site": site}.get(column, "?")
+    n = int(where.split()[1]) - 1
+    if n >= len(truth["lines"]):
+        return None
+    line = truth["lines"][n]
+    return {"Item": parent_id(line["item_id"]) if line["item_id"] else None, "Unit Cost": line["price"], "Quantity": line["qty"]}.get(column, "?")
 
 
-def compare(job, book, base):
-    """Each cell that differs from the AI-off workbook: an overwrite if AI-off had a value, otherwise a fill. Either way, marked or not."""
+def compare(job, book, base, truth, site):
+    """Each cell that differs from the AI-off workbook: an overwrite if AI-off had a value, otherwise a fill; how it is marked; right or wrong."""
     changed, now, then = [], cells(book), cells(base)
     for key in sorted(set(now) | set(then), key=str):
-        if _same(now.get(key), then.get(key)):
+        if key[1] in LEFT_OUT or _same(now.get(key), then.get(key)):
             continue
-        cell = _review_cell(job, *key)
-        changed.append({"where": key[0], "column": key[1], "ai_off": then.get(key), "ai_on": now.get(key), "kind": "overwrite" if then.get(key) not in (None, "") else "fill", "marked": marked(cell), "reason": str(cell.get("reason"))[:120]})
+        want = truth_cell(truth, site, *key)
+        got = now.get(key)
+        got = str(got)[:10] if key[1] == "Document Date" and got else got
+        changed.append({"where": key[0], "column": key[1], "ai_off": then.get(key), "ai_on": got, "truth": want, "right": None if want == "?" else _same(got, want),
+                        "kind": "overwrite" if then.get(key) not in (None, "") else "fill", "mark": mark(job, *key)})
     return changed
+
+
+def _site(invoice):
+    return site_of(invoice.truth["supplier_name"], invoice.style["totals_values"]["code"])["supplier_site"]
 
 
 def told(job) -> dict:
@@ -235,57 +261,61 @@ def main():
     by = {i.id: i for i in c.invoices}
     foundry = Foundry()
     install(foundry)
-    rig = RulesRig(c, out / "app-data" / str(os.getpid()))
     native = render_pdf(by["grid-classic-00"], out / "native.pdf")
     scan, _ = scan_pdf(render_pdf(by["grid-classic-01"], out / "for-scan.pdf"), out / "scan.pdf", f"{c.seed}:ai", "office")
     documents = [("native", by["grid-classic-00"], Path(native).read_bytes()), ("scan", by["grid-classic-01"], Path(scan).read_bytes())]
     injected = {label: _join(content, _pdf(_injection)) for label, _, content in documents}
     wanted = [x for x in args.only.split(",") if x] or list(CASES)
     base, results = {}, []
+    rig = RulesRig(c, out / "app-data" / "baseline")
     for label, invoice, content in documents:
         job = upload(rig, f"off-{label}.pdf", content, AI_OFF)
         book, code, detail = sheets(rig, job)
         assert code == 200, detail
         base[label] = book
         print("baseline", label, told(job)["status"], "cells", len(cells(book)), flush=True)
+    rig.close()
+    shutil.rmtree(out / "app-data" / "baseline", ignore_errors=True)
     for case in wanted:
         for label, invoice, content in documents:
-            foundry.case, foundry.truth, foundry.calls = case, json.loads(json.dumps(invoice.truth, default=str)), 0
+            # A new app each time: an invoice can be exported once, and rules from one case must not reach the next.
+            folder = out / "app-data" / "case"
+            rig = RulesRig(c, folder)
+            truth = json.loads(json.dumps(invoice.truth, default=str))
+            foundry.case, foundry.truth, foundry.calls = case, truth, 0
             sent = len(foundry.sent)
             job = upload(rig, f"{case.replace(' ', '-')}-{label}.pdf", injected[label] if case in INJECTED else content, AI_ON)
             rec = {"case": case, "document": label, "calls": foundry.calls, **told(job)}
             if job["status"] not in ("error", "timed out"):
-                book, code, detail = sheets(rig, rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json())
+                job = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json()
+                book, code, detail = sheets(rig, job)
                 rec["export"] = code
                 if code == 200:
-                    rec["changed"] = compare(job, book, base[label])
-                    rec["unmarked"] = [x for x in rec["changed"] if not x["marked"]]
+                    rec["changed"] = compare(job, book, base[label], truth, _site(invoice))
+                    rec["no_mark"] = [x for x in rec["changed"] if not x["mark"]]
                     rec["overwrites"] = [x for x in rec["changed"] if x["kind"] == "overwrite"]
-                    rec["document_cell"] = (book.get("Header") or [{}])[0].get("Document")
-                    rec["net_cell"] = (book.get("Header") or [{}])[0].get("Total Cost Ex Tax")
-                    rec["items"] = [row.get("Item") for row in book.get("Details") or []][:40]
+                    rec["wrong_changed"] = [x for x in rec["changed"] if x["right"] is False]
+                    receipt = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json().get("export_id")
+                    rec["export_id"] = receipt
                 else:
                     rec["export_detail"] = detail
             asked = foundry.sent[sent:]
             rec["injection_reached_model_as_data"] = None if case not in INJECTED else any(INJECTION in _document_text(s) for s in asked)
             rules = rig.client.get("/api/ai-rules", headers=rig.headers).json()["rules"]
-            rec["rules_added"] = [{k: r.get(k) for k in ("supplier", "item_id", "printed", "lines", "source")} for r in rules]
+            rec["rules_added"] = rules
             if rules and case in PICKS:
-                # A rule the AI added runs on the next invoice from this supplier, even with the AI itself failing.
+                # A rule the AI added runs on the next invoice from this supplier, even with the AI itself failing. Read only: this document is already exported.
                 foundry.case = "500"
                 later = upload(rig, f"after-{case.replace(' ', '-')}-{label}.pdf", content, AI_ON)
-                book, code, _ = sheets(rig, rig.client.get(f"/api/jobs/{later['id']}", headers=rig.headers).json())
-                truth = invoice.truth["lines"]
-                rows = (book or {}).get("Details") or []
-                wrong = [{"line": n, "item": row.get("Item"), "truth": parent_id(truth[n - 1]["item_id"]) if n <= len(truth) and truth[n - 1]["item_id"] else None, "marked": marked(_review_cell(later, f"line {n}", "Item"))}
-                         for n, row in enumerate(rows, 1) if row.get("Item") and not (n <= len(truth) and truth[n - 1]["item_id"] and str(row["Item"]) == parent_id(truth[n - 1]["item_id"]))]
-                rec["next_invoice"] = {"export": code, "items": [r.get("Item") for r in rows], "wrong_items": wrong}
-            for rule in rules:
-                rig.client.delete(f"/api/ai-rules/{rule['id']}", headers=rig.headers)
+                found = [(x.get("cells") or {}).get("Item", {}).get("value") for x in (later.get("rules") or {}).get("lines") or []]
+                truth_items = [parent_id(x["item_id"]) if x["item_id"] else None for x in truth["lines"]]
+                rec["next_invoice"] = {"items": found, "wrong": [{"line": n + 1, "item": v, "truth": truth_items[n] if n < len(truth_items) else None, "reader": ((later.get("readers") or {}).get("lines") or [{}] * (n + 1))[n].get("item_id")}
+                                                                 for n, v in enumerate(found) if v and not (n < len(truth_items) and v == truth_items[n])]}
             results.append(rec)
             (out / "ai.json").write_text(json.dumps(results, indent=1, default=str))
-            print(json.dumps({k: v for k, v in rec.items() if k not in ("changed", "items", "sent_to_ai")}, default=str)[:900], "| changed", len(rec.get("changed") or []), flush=True)
-    rig.close()
+            print(json.dumps({k: v for k, v in rec.items() if k not in ("changed", "ai_reader", "ai_trace", "rules_added")}, default=str)[:700], "| changed", len(rec.get("changed") or []), flush=True)
+            rig.close()
+            shutil.rmtree(folder, ignore_errors=True)
     (out / "foreign.json").write_text(json.dumps(foundry.foreign))
     print("calls to anywhere else:", foundry.foreign, flush=True)
 

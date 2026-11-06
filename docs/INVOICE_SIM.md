@@ -28,6 +28,24 @@ falls back to a jittered oblique font. Either way a real pen is harder: read tho
 
 `tests/test_invoice_sim.py` is the part CI runs: no OCR models, with the real generator, text-layer read, rule chain and workbook.
 
+## File cases, the full flow and AI faults
+
+These need a throwaway PostgreSQL and Azurite of your own, named in `INV_STUDIO_DATABASE_URL`, `INV_STUDIO_BUCKET` and
+`INV_STUDIO_AZURE_STORAGE_CONNECTION_STRING`. Never point them at a database anyone else uses.
+
+    python -m tools.invoice_sim.run files --out /some/scratch/sim
+    python -m tools.invoice_sim.flow --out /some/scratch/flow --port 36850
+    python -m tools.invoice_sim.ai   --out /some/scratch/ai
+
+- `files.py`: images, several invoices in one PDF, mixed and blank pages, locked, corrupt, oversized and non-invoice files, through the
+  real upload route. Each must end in a clear message or a correct workbook, never a crash or an empty success.
+- `flow.py`: a real server process on PostgreSQL. Upload, process, review with typed values, export, open the workbook, compare cells to
+  the truth. Also several invoices at once, a kill mid-job, duplicates, re-export after lock. `--only blanks` runs the blank key cases.
+- `ai.py`: the real app with the AI service replaced at the HTTP transport, so the provider code, parsing and every check still run. Any
+  call to another host is recorded in `foreign.json`; it must stay empty. Cases: timeouts, 401, 403, 429, 500, invalid JSON, wrong
+  totals, invented values, a wrong item pick and injected invoice text. Excel cells carry no mark, so "marked" means the app's review
+  screen shows the AI mark for that cell.
+
 ## How to read the numbers
 
 - **WRONG no flag** is the number that matters: a value that differs from the truth with nothing telling the reviewer about that field.

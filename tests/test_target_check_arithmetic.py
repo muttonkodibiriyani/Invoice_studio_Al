@@ -480,6 +480,9 @@ HEADING = "Description Quantity Unit Price Disc % VAT Amount"
     # OCR glues the percent to the next word; a bracketed long code on the row is not a percent.
     (("Disc.", "Rose red 2.00 100.00 45.00VAT5% 110.00"), {}),
     ((HEADING, "Rose red 2 Units 80.00 100.00 VAT 5% 0.00"), {"price": "80.00", "amount": "0.00"}),
+    # A percent equal to the quantity or the price is printed again in its own column.
+    ((HEADING, "Rose red 45.00 Units 10.00 45.00 VAT 5% 247.50"), {"qty": "45.00", "price": "10.00", "amount": "247.50"}),
+    ((HEADING, "Rose red 2.00 Units 100.00 100.00 VAT 5% 0.00"), {"amount": "0.00"}),
 ])
 def test_a_percent_printed_on_the_lines_own_row_explains_its_amount(rows, kwargs):
     found, result = discount_exceptions(*rows, **kwargs)
@@ -495,6 +498,8 @@ def test_a_percent_printed_on_the_lines_own_row_explains_its_amount(rows, kwargs
     # A misread quantity or price is not on the row, so the row proves nothing.
     ((HEADING, "Rose red 2 Units 100.00 45.00 VAT 5% 110.00"), {"qty": "3", "amount": "165.00"}),
     ((HEADING, "Rose red 2 Units 100.00 45.00 VAT 5% 110.00"), {"price": "10000.00", "amount": "11000.00"}),
+    # The amount itself is not a percent: 50.00 of 100.00 is no 50% discount when only the amount prints 50.
+    ((HEADING, "Rose red 1 Units 100.00 VAT 5% 50.00"), {"qty": "1", "amount": "50.00"}),
     # Quantity, price and percent on different rows are no proof.
     ((HEADING, "Rose red 2 Units 100.00", "Other 7 Units 3.00 45.00 VAT 5% 110.00"), {}),
     # The quantity or the price itself is not a percent: 50 x 1.00 at "50%" would be 25.00.

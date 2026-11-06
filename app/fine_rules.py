@@ -9,7 +9,7 @@ nothing is inferred from a supplier's country or name suffix.
 
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -1875,21 +1875,22 @@ def invoice_discount(invoice, scan):
     return (total - net, page) if page else None
 
 
-def printed_line_discount(line, scan, allowed):
+def printed_line_discount(line, printed_text, allowed):
     """A line discount the page proves: under a printed discount heading, one text row holds the line's quantity, its
     unit cost and a percent that gives its amount (FIELD_RULES: price is the list price, net_amount after the discount).
-    The percent is never read off the difference, so a wrong quantity or price does not explain itself."""
-    if not any(_DISCOUNT_HEADING.search(value) for value in scan["pages"].values()):
+    The percent is never read off the difference, so a wrong quantity or price does not explain itself. A percent equal
+    to the quantity, the price or the amount must be printed again: one figure on the row is not two columns."""
+    if not _DISCOUNT_HEADING.search(printed_text):
         return False
-    for value in scan["pages"].values():
-        for row in value.splitlines():
-            printed = {Decimal(t.replace(",", "")) for t in _NUMBER.findall(row)}
-            if line.qty not in printed or line.price not in printed:
-                continue
-            for percent in printed - {line.qty, line.price}:
-                if 0 < percent <= 100 and abs((line.qty * line.price * (100 - percent) / 100).quantize(
-                        line.net_amount, rounding=ROUND_HALF_UP) - line.net_amount) <= allowed:
-                    return True
+    for row in printed_text.splitlines():
+        printed = Counter(Decimal(t.replace(",", "")) for t in _NUMBER.findall(row))
+        if not printed[line.qty] or not printed[line.price]:
+            continue
+        printed.subtract((line.qty, line.price, line.net_amount))
+        for percent, count in printed.items():
+            if count > 0 and 0 < percent <= 100 and abs((line.qty * line.price * (100 - percent) / 100).quantize(
+                    line.net_amount, rounding=ROUND_HALF_UP) - line.net_amount) <= allowed:
+                return True
     return False
 
 
@@ -2164,7 +2165,8 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
             # A printed invoice-level discount explains a line amount below quantity x unit cost.
             if abs(computed - line.net_amount) > allowed and not (discount and 0 <= line.net_amount <= computed):
                 step = max(Decimal(1).scaleb(line.net_amount.as_tuple().exponent), line_tolerance)
-                if printed_line_discount(line, scan, step):
+                # The reader's rows and the scan's: on a tilted page either can split a printed row.
+                if printed_line_discount(line, "\n".join((text_value, *scan["pages"].values())), step):
                     line_discounts = True
                 else:
                     line_ok = False

@@ -2,6 +2,7 @@
 message or a reviewable invoice: never a crash, never an empty success."""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import openpyxl
 import pypdfium2
 from PIL import Image
 from reportlab.lib.pdfencrypt import StandardEncryption
@@ -58,29 +60,30 @@ def cases(c, folder: Path) -> list[dict]:
     rng = random.Random(c.seed)
     folder.mkdir(parents=True, exist_ok=True)
     base = [i for i in c.invoices if i.family == "grid-classic"]
-    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:3]]
+    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:4]]
     scan_path, _ = scan_pdf(folder / f"{base[1].id}.pdf", folder / f"{base[1].id}.scan.pdf", f"{c.seed}:files", "office")
     scanned = Path(scan_path).read_bytes()
     blank = _pdf(lambda p: p.showPage())
     noise = np.random.default_rng(c.seed).integers(0, 255, (2200, 1700, 3), dtype=np.uint8)
     noise_out = io.BytesIO()
     Image.fromarray(noise).save(noise_out, "PNG")
-    numbers = {"first": base[0].truth["number"], "second": base[1].truth["number"], "third": base[2].truth["number"]}
-    first = numbers["first"]
+    numbers = {"first": base[0].truth["number"], "second": base[1].truth["number"], "third": base[2].truth["number"], "fourth": base[3].truth["number"]}
+    first, second = numbers["first"], numbers["second"]
     heavy = np.random.default_rng(c.seed + 1).integers(0, 255, (1950, 1800, 3), dtype=np.uint8)
     heavy_out = io.BytesIO()
     Image.fromarray(heavy).save(heavy_out, "PNG")
     pad = bytes(rng.getrandbits(8) for _ in range(1024)) * 1024 * 13
     return [
-        {"case": "JPG", "name": "invoice.jpg", "content": _image(native[0], "JPEG"), "number": first},
-        {"case": "PNG", "name": "invoice.png", "content": _image(native[0], "PNG"), "number": first},
-        {"case": "TIFF", "name": "invoice.tiff", "content": _image(native[0], "TIFF"), "number": first},
-        {"case": "WEBP", "name": "invoice.webp", "content": _image(native[0], "WEBP"), "number": first},
+        {"case": "JPG", "name": "invoice.jpg", "content": _image(native[1], "JPEG"), "number": second},
+        {"case": "PNG", "name": "invoice.png", "content": _image(native[1], "PNG"), "number": second},
+        {"case": "TIFF", "name": "invoice.tiff", "content": _image(native[1], "TIFF"), "number": second},
+        {"case": "WEBP", "name": "invoice.webp", "content": _image(native[1], "WEBP"), "number": second},
         {"case": "HEIC (name and header only, no encoder here)", "name": "invoice.heic", "content": b"\x00\x00\x00\x18ftypheic" + b"\x00" * 2000},
-        {"case": "three invoices in one PDF", "name": "three.pdf", "content": _join(*native), "numbers": list(numbers.values())},
+        {"case": "three invoices in one PDF", "name": "three.pdf", "content": _join(*native[:3]), "numbers": [numbers[k] for k in ("first", "second", "third")]},
+        {"case": "two invoices in one PDF, both numbers readable alone", "name": "two.pdf", "content": _join(native[1], native[3]), "numbers": [second, numbers["fourth"]]},
         {"case": "native and scanned pages mixed", "name": "mixed.pdf", "content": _join(native[0], scanned), "numbers": [first, numbers["second"]]},
         {"case": "blank PDF", "name": "blank.pdf", "content": blank},
-        {"case": "invoice then a blank page", "name": "trailing-blank.pdf", "content": _join(native[0], blank), "number": first},
+        {"case": "invoice then a blank page", "name": "trailing-blank.pdf", "content": _join(native[1], blank), "number": second},
         {"case": "password-protected PDF", "name": "locked.pdf", "content": _pdf(_letter, encrypt=StandardEncryption("sim-secret", canPrint=0))},
         {"case": "corrupt PDF, garbage after the header", "name": "corrupt.pdf", "content": b"%PDF-1.7\n" + bytes(rng.getrandbits(8) for _ in range(4000))},
         {"case": "truncated PDF", "name": "truncated.pdf", "content": native[0][: len(native[0]) // 2]},
@@ -107,10 +110,10 @@ def verdict(rec: dict) -> str:
         return "STUCK"
     if all(j["status"] == "error" for j in outcomes):
         return "failed with message" if all(j.get("error") for j in outcomes) else "FAILED WITH NO MESSAGE"
-    for j in outcomes:
-        if not j.get("number") and not j.get("lines") and not j.get("told"):
-            return "EMPTY SUCCESS"
-    return "read, review"
+    empty = [j for j in outcomes if not j.get("number") and not j.get("lines")]
+    if any(not j.get("told") for j in empty):
+        return "EMPTY SUCCESS"
+    return "nothing read, told so" if empty else "read, review"
 
 
 def settle(rig, jid, deadline):
@@ -135,8 +138,12 @@ def summary(job: dict) -> dict:
 
 
 def exported(rig, jid) -> dict:
-    response = rig.client.post(f"/api/jobs/{jid}/export", headers=rig.headers)
-    return {"status": response.status_code, "detail": (response.json().get("detail") if response.status_code != 200 else "workbook made")}
+    job = rig.client.get(f"/api/jobs/{jid}", headers=rig.headers).json()
+    response = rig.client.post(f"/api/jobs/{jid}/export", headers=rig.headers, json={"revision": job["revision"]})
+    if response.status_code != 200:
+        return {"status": response.status_code, "detail": response.json().get("detail")}
+    book = openpyxl.load_workbook(io.BytesIO(rig.client.get(f"/api/exports/{response.json()['id']}", headers=rig.headers).content))
+    return {"status": 200, "details_rows": book["Details"].max_row - 1, "document": book["Header"]["B2"].value}
 
 
 def files(args):
@@ -163,7 +170,11 @@ def files(args):
             if response.status_code != 200:
                 rec["message"] = body.get("detail") or response.text[:200]
             else:
-                ids = [j["id"] for j in body.get("jobs", [])] or [body.get("id")]
+                # An upload the app splits answers with one part; the others are found by the upload they came from.
+                sha = hashlib.sha256(content).hexdigest()
+                listed = rig.client.get("/api/state", headers=rig.headers).json()["jobs"]
+                parts = [j["id"] for j in listed if (j.get("split") or {}).get("source_sha256") == sha]
+                ids = parts or [j["id"] for j in body.get("jobs", [])] or [body.get("id")]
                 deadline = time.monotonic() + 900
                 jobs = [settle(rig, jid, deadline) for jid in ids]
                 rec["jobs"] = [summary(j) for j in jobs]

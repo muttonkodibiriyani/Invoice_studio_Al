@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from rapidfuzz import fuzz, process
 
+from .models import uom_code
 from .reference_lookup import normalize_identifier, normalize_name
 
 
@@ -187,7 +188,7 @@ class ProductCandidates:
         for record in records[:50]:
             contexts=context_map.get(record["id"],[])
             clues=[];price_scores=[];qty_scores=[]
-            same_uom=bool(uom) and normalize_name(uom) in {normalize_name(v) for v in record["candidate_fields"].get("uom",[])}
+            same_uom=bool(uom_code(uom)) and uom_code(uom) in {uom_code(v) for v in record["candidate_fields"].get("uom",[])}
             for source in contexts[:20]:
                 data=source["data"];ref_price=numeric(data.get("UNIT_COST"));ref_currency=str(data.get("CURRENCY_CODE") or "").strip().upper()
                 role_conflicts=[]

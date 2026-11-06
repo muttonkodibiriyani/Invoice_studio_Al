@@ -622,3 +622,14 @@ def test_a_side_panel_beside_the_table_is_not_part_of_the_rows():
     )
 
     assert [line.description for line in lines] == ["Brass hinge 40mm", "Tile adhesive"]
+
+
+def test_the_tax_is_not_taken_for_the_amount_when_net_tax_and_gross_are_all_printed():
+    lines = read(
+        ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "328", "42.03", "13,785.84", ("d", "1,378.58"), ("e", "15,164.42")),
+        row("TL-221 Tile adhesive", "235", "11.12", "2,613.20", ("d", "261.32"), ("e", "2,874.52")),
+    )
+
+    assert [line.net_amount for line in lines] == [Decimal("13785.84"), Decimal("2613.20")]
+    assert [line.tax_amount for line in lines] == [Decimal("1378.58"), Decimal("261.32")]

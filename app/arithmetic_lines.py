@@ -308,7 +308,7 @@ def _settled(product: _Product, numbers: list[_Number]) -> tuple[_Number, Decima
                 continue
             base = abs(amount.value)
             step = base * change.value / 100 if change.percent else change.value
-            if after.value < base and _agrees(base - step, after, amount, change):
+            if after.value < base and step < base and _agrees(base - step, after, amount, change):
                 return after, None
     for change in rest:
         if change.percent:

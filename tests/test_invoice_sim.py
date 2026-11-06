@@ -214,3 +214,47 @@ def test_an_ai_failure_at_the_http_layer_reaches_the_user_and_nothing_else_is_ca
         made.close()
     assert foundry.calls >= 1 and foundry.foreign == []
     assert "HTTP 500" in str(ai.told(job))
+
+
+def test_pick_document_offers_a_wrong_pick_the_old_documents_never_did(corpus):
+    """Two pick cases once passed having picked nothing: the local lines held their items, or held nothing a rule could use."""
+    made = copy.deepcopy(corpus)
+    invoice, planted = ai.pick_document(made)
+    assert planted == {0: "same supplier", 1: "another supplier"}
+    for n in planted:
+        line = invoice.truth["lines"][n]
+        assert not line["item_id"] and not line["sku"] and not line["gtin"] and line["description"]
+    spare = next(r for r in made.master if r["item_id"] == "SIM99001")
+    assert spare["supplier"] == invoice.truth["supplier_name"]
+    request = {"input": [{"content": [{"text": "<item_master_data>" + json.dumps([{"id": "c1", "line": 0, "fields": {"item_id": ai.parent_id(spare["item_id"])}}]) + "</item_master_data>"}]}]}
+    truth = json.loads(json.dumps(invoice.truth, default=str))
+    assert ai._wrong_pick(request, truth) == [{"candidate_id": "c1", "field": "item_id", "why": "looks closest"}]
+
+
+def _view(header=None, lines=None, disputes=(), status="partial", why=""):
+    return {"status": status, "label": status, "why": why, "counts": {}, "header": header or {}, "lines": lines or [], "disputes": [{"key": k} for k in disputes]}
+
+
+def test_marks_are_judged_against_the_reads_not_the_apps_record():
+    truth = {"number": "A1", "net": "100", "lines": [{"qty": "2"}]}
+    local = {"number": "A1", "net": None, "lines": [{"qty": "2"}]}
+    answer = {"number": "A1", "net": "100", "lines": [{"qty": "2"}]}
+    invoice = {"number": "A1", "net": "100", "lines": [{"qty": "2"}]}
+    honest = _view({"number": "confirmed", "net": "filled"}, [{"qty": "confirmed"}])
+    assert ai.check_marks(honest, invoice, local, answer, truth, [])["false_marks"] == []
+    # A blank local cell called confirmed, and a dispute nobody raised.
+    lying = _view({"number": "confirmed", "net": "confirmed"}, [{"qty": "confirmed"}])
+    assert [x["field"] for x in ai.check_marks(lying, invoice, local, answer, truth, [])["false_marks"]] == ["net"]
+    differs = {**answer, "number": "A9"}
+    silent = ai.check_marks(honest, invoice, local, differs, truth, [])
+    assert [x["field"] for x in silent["false_marks"]] == ["number"]
+    assert silent["wrong_ai"][0]["stopped"] is False
+    stopped = ai.check_marks(_view({"net": "filled"}, [{"qty": "confirmed"}], ["number"]), invoice, local, differs, truth, [])
+    assert stopped["false_marks"] == [] and stopped["wrong_ai"][0]["stopped"] is True
+    # A failed AI read: anything but "not confirmed, and why" is a false mark.
+    assert ai.check_marks(_view(status="not_confirmed", why="the AI read failed"), invoice, local, None, truth, [])["false_marks"] == []
+    assert ai.check_marks(_view({"number": "confirmed"}, status="partial"), invoice, local, None, truth, [])["false_marks"]
+    # The workbook's own comment against the view.
+    mark = {"sheet": "Header", "row": 2, "column": 8, "says": "AI confirmed", "value": 100}
+    assert ai.check_marks(honest, invoice, local, answer, truth, [mark])["book_false"][0]["view"] == "filled"
+

@@ -46,6 +46,11 @@ These need a throwaway PostgreSQL and Azurite of your own, named in `INV_STUDIO_
   totals, invented values, a wrong item pick and injected invoice text. Excel cells carry no mark, so "marked" means the app's review
   screen shows the AI mark for that cell. Each OCR engine really reads each file once and every case reuses that read, so a cell that
   changes was changed by the AI path, not by OCR timing out under load.
+- A third document, `pick`, holds rows no code matches, because the other two offer the AI nothing wrong to pick: check `picks_made` before
+  reading a pick case as a pass. `--document native,scan,pick` picks which run. After a pick case the same supplier's next invoice is read
+  with the AI failing and exported once a reviewer confirms the site, since items wait for the supplier and an export locks the invoice.
+- Lines are compared by position, so rows the AI returns in another order count as wrong cells. Read the cells before calling that a wrong value.
+- On a head that has the AI check, `ai_check` judges each mark against the two reads, not the app's own record, and `after_settling` settles every dispute the local way.
 
 ## How to read the numbers
 

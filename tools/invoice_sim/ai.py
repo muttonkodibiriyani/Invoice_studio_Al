@@ -6,6 +6,7 @@ is ever contacted. Each case's workbook is compared with the same document's AI-
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import io
 import json
@@ -70,7 +71,33 @@ def _wrong_pick(request, truth):
     return picks
 
 
+def pick_document(c, base="three-decimals-00"):
+    """A wrong pick on offer: an invoice whose local read keeps its supplier and descriptions, with two lines the master has no item for, each
+    printing a description close to a real item's. One is close to a spare item of this supplier, added to c.master, the other to a rival's.
+    Without it the local lines hold their items or lack what a rule needs, and the pick cases pick nothing. Returns the invoice and {line: which}."""
+    source = next(i for i in c.invoices if i.id == base)
+    supplier = source.truth["supplier_name"]
+    spare = {"item_id": "SIM99001", "supplier": supplier, "supplier_code": None, "barcode": "4000000990019", "description": "Threaded coupling steel 20mm",
+             "uom": "PCS", "pack": "1", "category": "Hardware"}
+    c.master.append(spare)
+    source.truth["lines"][0]["item_wrong_if_picked"] = [*source.truth["lines"][0]["item_wrong_if_picked"], spare["item_id"]]  # puts it at this supplier's site
+    rival = next(r for r in c.master if r["supplier"] != supplier)
+    invoice = copy.deepcopy(source)
+    planted = {}
+    for n, text, label in ((0, "Threaded coupling steel 25mm", "same supplier"), (1, f"{rival['description']} large", "another supplier")):
+        for line in (invoice.truth["lines"][n], invoice.style["internal_lines"][n]):
+            line.update(description=text, sku=None, gtin=None, item_id=None)
+        invoice.truth["lines"][n]["item_class"] = "not_in_master"
+        planted[n] = label
+    invoice.id, invoice.truth["number"] = f"pick-{base}", f"{invoice.truth['number']}7"  # its own number: the base document may be exported too
+    return invoice, planted
+
+
+LAST_ANSWER = {}  # What the fake service last answered as a read, to judge the app's marks against without asking the app.
+
+
 def envelope(answer) -> httpx.Response:
+    LAST_ANSWER["read"] = answer if isinstance(answer, dict) and isinstance(answer.get("lines"), list) else None
     text = answer if isinstance(answer, str) else json.dumps(answer)
     return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 10, "output_tokens": 10}, "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]})
 
@@ -104,6 +131,8 @@ CASES = {
     "disagrees with the scan": _answer(lambda t, _r: {**_read(t, number=str(t["number"]) + "9", po=str(t["po"] or "1") + "9", net=float(t["net"]) * 2),
                                                       "lines": [{**x, "qty": (x["qty"] or 1) + 1, "price": (x["price"] or 1) * 3, "net_amount": 1.0} for x in _read(t)["lines"]]}),
     "extra and missing rows": _answer(lambda t, _r: {**_read(t), "lines": _read(t)["lines"][1:] + [{**_read(t)["lines"][0], "description": "Invented row", "sku": "INVENTED-1"}]}),
+    "swaps quantity and price": _answer(lambda t, _r: {**_read(t), "lines": [{**x, "qty": x["price"], "price": x["qty"]} for x in _read(t)["lines"]]}),
+    "replaces a row keeping the total":_answer(lambda t, _r: {**_read(t), "lines": [{**_read(t)["lines"][0], "qty": 1, "price": (_read(t)["lines"][0]["qty"] or 1) * (_read(t)["lines"][0]["price"] or 1)}, *_read(t)["lines"][1:]]}),
     "wrong item pick": _answer(lambda t, r: _read(t, suggestions=_wrong_pick(r, t))),
     "picks a candidate that does not exist": _answer(lambda t, _r: _read(t, suggestions=[{"candidate_id": "c99999", "field": "item_id", "why": "trust me"}])),
     "obeys injected text": _answer(lambda t, r: _read(t, net=1.0, tax=0.0, suggestions=_wrong_pick(r, t))),
@@ -183,10 +212,12 @@ def sheets(rig, job):
         return None, made.status_code, made.text[:300]
     file = rig.client.get(f"/api/exports/{made.json()['id']}", headers=rig.headers)
     book = openpyxl.load_workbook(io.BytesIO(file.content))
-    out = {}
+    out = {"_marks": []}
     for sheet in book:
         rows = [[c.value for c in row] for row in sheet.iter_rows()]
         out[sheet.title] = [dict(zip(rows[0], row)) for row in rows[1:]] if rows else []
+        out["_marks"] += [{"sheet": sheet.title, "row": c.row, "column": c.column, "says": c.comment.text.split(":")[0], "value": c.value}
+                          for row in sheet.iter_rows() for c in row if c.comment]
     return out, 200, ""
 
 
@@ -258,10 +289,118 @@ def _site(invoice):
     return site_of(invoice.truth["supplier_name"], invoice.style["totals_values"]["code"])["supplier_site"]
 
 
+def _issues(job) -> list:
+    rules, validation = job.get("rules") or {}, job.get("validation") or {}
+    return [f'{i.get("code")}: {i.get("message")}' for i in (rules.get("issues") or validation.get("issues") or [])]
+
+
 def told(job) -> dict:
     readers = (job.get("readers") or {}).get("ai") or {}
     return {"status": job.get("status"), "error": job.get("error"), "rules_status": (job.get("rules") or {}).get("status"), "ai_reader": {k: readers.get(k) for k in ("reason", "status", "filled", "flagged", "rules_applied", "suggestions", "error") if k in readers},
             "ai_trace": [{k: t.get(k) for k in ("engine", "status", "reason")} for t in job.get("trace") or [] if "ai" in str(t.get("engine")) or "azure" in str(t.get("engine"))][:6]}
+
+
+SAYS = {"AI confirmed": "confirmed", "AI filled": "filled", "In dispute": "disputed", "A person settled": "settled"}
+HEADER_CHECK = ("number", "supplier_name", "buyer_name", "po", "date", "currency", "net", "tax")
+LINE_CHECK = ("sku", "gtin", "qty", "uom", "price", "net_amount")
+BOOK_CELLS = {("Header", 2): "number", ("Header", 4): "po", ("Header", 7): "date", ("Header", 8): "net", ("Header", 9): "tax", ("Details", 3): "gtin", ("Details", 4): "price", ("Details", 5): "qty"}
+
+
+def _expected(local, ai, now):
+    """The mark a cell should carry, worked out from the AI-off read and the answer the fake service gave, never from the app's own record."""
+    if local in (None, ""):
+        return "filled" if ai not in (None, "") and now not in (None, "") and _same(now, ai) else None
+    if ai in (None, ""):
+        return "unchecked"
+    return "confirmed" if _same(local, ai) else "disputed"
+
+
+def check_marks(view, invoice, local, answer, truth, marks) -> dict | None:
+    """Does each mark tell the truth? ``view`` is the app's AI check; ``local`` the same document's AI-off read; ``answer`` what the service said, or None."""
+    if view is None:
+        return None
+    found = {"status": view.get("status"), "label": view.get("label"), "why": view.get("why"), "counts": view.get("counts"), "disputes": [x["key"] for x in view.get("disputes") or []],
+             "false_marks": [], "wrong_ai": [], "book_false": []}
+    if answer is None:
+        marked = [*view.get("header", {}).values(), *(x for row in view.get("lines", []) for x in row.values())]
+        if view.get("status") != "not_confirmed" or marked or not view.get("why"):
+            found["false_marks"].append({"where": "invoice", "state": view.get("status"), "expected": "not_confirmed, with the reason", "marked": len(marked)})
+        return found
+
+    def one(where, field, mine, theirs, now, state, want, key):
+        expected = _expected(mine, theirs, now)
+        if state != expected and key not in found["disputes"]:
+            found["false_marks"].append({"where": where, "field": field, "state": state, "expected": expected, "local": mine, "ai": theirs, "now": now})
+        if theirs not in (None, "") and not _same(theirs, want):
+            stopped = key in found["disputes"]
+            found["wrong_ai"].append({"where": where, "field": field, "ai": theirs, "truth": want, "local": mine, "state": "disputed" if stopped else state, "stopped": stopped})
+
+    for field in HEADER_CHECK:
+        one("Header", field, local.get(field), answer.get(field), invoice.get(field), view.get("header", {}).get(field), truth.get(field), field)
+    mine, theirs, now = [list(x.get("lines") or []) for x in (local, answer, invoice)]
+    if mine and len(mine) != len(theirs):
+        found["line_counts"] = {"local": len(mine), "ai": len(theirs), "disputed": "lines" in found["disputes"]}
+        if "lines" not in found["disputes"]:
+            found["false_marks"].append({"where": "lines", "state": None, "expected": "disputed", "local": len(mine), "ai": len(theirs)})
+    else:
+        states = view.get("lines") or []
+        for n, row in enumerate(theirs):
+            have = mine[n] if n < len(mine) else {}
+            cell = now[n] if n < len(now) else {}
+            want = truth["lines"][n] if n < len(truth["lines"]) else {}
+            for field in LINE_CHECK:
+                one(f"line {n + 1}", field, have.get(field), row.get(field), cell.get(field), (states[n] if n < len(states) else {}).get(field), want.get(field), f"line {n + 1} {field}")
+    for mark in marks or []:
+        field, state = BOOK_CELLS.get((mark["sheet"], mark["column"])), next((v for k, v in SAYS.items() if mark["says"].startswith(k)), None)
+        if not field or not state:
+            continue
+        held = view.get("header", {}).get(field) if mark["sheet"] == "Header" else (view.get("lines") or [{}] * mark["row"])[mark["row"] - 2].get(field) if mark["row"] - 2 < len(view.get("lines") or []) else None
+        if held != state:
+            found["book_false"].append({**mark, "view": held, "field": field})
+    return found
+
+
+def settle_as_local(rig, job):
+    """A reviewer picks the local value in every dispute, then exports: no AI value may be left where a dispute stood."""
+    view = (job.get("rules") or {}).get("ai_check") or {}
+    picks = {x["key"]: "local" for x in view.get("disputes") or []}
+    made = rig.client.post(f"/api/jobs/{job['id']}/review", headers=rig.headers, json={"invoice": job["invoice"], "revision": job["revision"], "settled": picks})
+    if made.status_code != 200:
+        return {"review": made.status_code, "detail": made.text[:300]}
+    after = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json()
+    book, code, detail = sheets(rig, after)
+    return {"review": 200, "export": code, "detail": detail, "open": len(((after.get("rules") or {}).get("ai_check") or {}).get("disputes") or []), "book": book}
+
+
+def next_invoice(rig, invoice, label, case, out, site):
+    """The same supplier's next invoice, a new number, exported: what the rule the AI added puts in the workbook and what the reviewer is shown for it."""
+    later = copy.deepcopy(invoice)
+    later.truth["number"] = f"{later.truth['number']}8"
+    name = f"after-{case.replace(' ', '-')}-{label}.pdf"
+    job = upload(rig, name, Path(render_pdf(later, out / name)).read_bytes(), AI_ON)
+    job = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json()
+
+    def look(job):
+        book, code, detail = sheets(rig, job)
+        now = cells(book) if code == 200 else {}
+        filled = []
+        for n, line in enumerate(later.truth["lines"]):
+            want = parent_id(line["item_id"]) if line["item_id"] else None
+            got = now.get((f"line {n + 1}", "Item"))
+            if got not in (None, ""):
+                row = ((job.get("rules") or {}).get("lines") or [{}] * (n + 1))[n]
+                filled.append({"line": n + 1, "item": got, "truth": want, "right": _same(got, want), "mark": mark(job, f"line {n + 1}", "Item"),
+                               "item_status": (row.get("cells") or {}).get("Item", {}).get("status"), "issues": row.get("issues")})
+        return {"status": (job.get("rules") or {}).get("status"), "export": code, "export_detail": detail, "filled": filled, "issues": _issues(job)}
+
+    # Items wait for the supplier, so the rule's item can only reach the workbook once a reviewer has confirmed the site, and an export locks the invoice: confirm first.
+    before = {"status": (job.get("rules") or {}).get("status"), "issues": _issues(job)}
+    offered = [o for o in (job.get("rules") or {}).get("supplier_site_candidates") or [] if str(o.get("supplier_site")) == str(site)]
+    chosen = {"supplier_code": offered[0]["supplier_code"], "supplier_site": site} if offered else {}
+    entries = {} if offered else {"entries": {"header": {"site": site}}}
+    made = rig.client.post(f"/api/jobs/{job['id']}/review", headers=rig.headers, json={"invoice": job["invoice"], "revision": job["revision"], "confirm": True, **entries, **chosen})
+    job = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json()
+    return {**before, "rules_applied":((job.get("readers") or {}).get("ai") or {}).get("rules_applied"), "site_confirmed": {"review": made.status_code, "review_detail": "" if made.is_success else made.text[:300], **look(job)}}
 
 
 def main():
@@ -270,6 +409,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="")
+    p.add_argument("--document", default="", help="native, scan, pick: the default is all three")
     p.add_argument("--seed", type=int, default=SEED)
     args = p.parse_args()
     out = Path(args.out)
@@ -286,31 +426,46 @@ def main():
     scan, _ = scan_pdf(render_pdf(by["grid-classic-01"], out / "for-scan.pdf"), out / "scan.pdf", f"{c.seed}:ai", "office")
     documents = [("native", by["grid-classic-00"], Path(native).read_bytes()), ("scan", by["grid-classic-01"], Path(scan).read_bytes())]
     injected = {label: _join(content, _pdf(_injection)) for label, _, content in documents}
+    pick_invoice, planted = pick_document(c)
+    pick_bytes = Path(render_pdf(pick_invoice, out / "pick.pdf")).read_bytes()
+    documents.append(("pick", pick_invoice, pick_bytes))
+    injected["pick"] = _join(pick_bytes, _pdf(_injection))
+    documents = [d for d in documents if not args.document or d[0] in args.document.split(",")]
     wanted = [x for x in args.only.split(",") if x] or list(CASES)
-    base, results = {}, []
+    base, local_reads, results = {}, {}, []
     rig = RulesRig(c, out / "app-data" / "baseline")
     for label, invoice, content in documents:
         job = upload(rig, f"off-{label}.pdf", content, AI_OFF)
         book, code, detail = sheets(rig, job)
         assert code == 200, detail
         base[label] = book
+        local_reads[label] = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json().get("invoice") or {}
         print("baseline", label, told(job)["status"], "cells", len(cells(book)), flush=True)
     rig.close()
     shutil.rmtree(out / "app-data" / "baseline", ignore_errors=True)
     for case in wanted:
         for label, invoice, content in documents:
+            if label == "pick" and case not in PICKS:
+                continue
             # A new app each time: an invoice can be exported once, and rules from one case must not reach the next.
             folder = out / "app-data" / "case"
             rig = RulesRig(c, folder)
             truth = json.loads(json.dumps(invoice.truth, default=str))
             foundry.case, foundry.truth, foundry.calls = case, truth, 0
+            LAST_ANSWER["read"] = None
             sent = len(foundry.sent)
             job = upload(rig, f"{case.replace(' ', '-')}-{label}.pdf", injected[label] if case in INJECTED else content, AI_ON)
             rec = {"case": case, "document": label, "calls": foundry.calls, **told(job)}
             if job["status"] not in ("error", "timed out"):
                 job = rig.client.get(f"/api/jobs/{job['id']}", headers=rig.headers).json()
+                rec["issues"] = _issues(job)
                 book, code, detail = sheets(rig, job)
                 rec["export"] = code
+                rec["ai_check"] = check_marks((job.get("rules") or {}).get("ai_check"), job.get("invoice") or {}, local_reads[label], LAST_ANSWER["read"], truth, (book or {}).get("_marks"))
+                if code != 200 and (rec["ai_check"] or {}).get("disputes"):
+                    settled = settle_as_local(rig, job)
+                    book, code = settled.pop("book", None), settled.get("export")
+                    rec["after_settling"] = settled
                 if code == 200:
                     rec["changed"] = compare(job, book, base[label], truth, _site(invoice))
                     rec["no_mark"] = [x for x in rec["changed"] if not x["mark"]]
@@ -324,14 +479,14 @@ def main():
             rec["injection_reached_model_as_data"] = None if case not in INJECTED else any(INJECTION in _document_text(s) for s in asked)
             rules = rig.client.get("/api/ai-rules", headers=rig.headers).json()["rules"]
             rec["rules_added"] = rules
+            if case in PICKS:
+                # A pick case that picks nothing has tested nothing, so it says so instead of passing.
+                rec["picks_made"] = sum(len(_wrong_pick(s, truth)) for s in asked)
+                rec["planted"] = planted if label == "pick" else {}
             if rules and case in PICKS:
-                # A rule the AI added runs on the next invoice from this supplier, even with the AI itself failing. Read only: this document is already exported.
+                # A rule the AI added runs on the next invoice from this supplier, even with the AI itself failing.
                 foundry.case = "500"
-                later = upload(rig, f"after-{case.replace(' ', '-')}-{label}.pdf", content, AI_ON)
-                found = [(x.get("cells") or {}).get("Item", {}).get("value") for x in (later.get("rules") or {}).get("lines") or []]
-                truth_items = [parent_id(x["item_id"]) if x["item_id"] else None for x in truth["lines"]]
-                rec["next_invoice"] = {"items": found, "wrong": [{"line": n + 1, "item": v, "truth": truth_items[n] if n < len(truth_items) else None, "reader": ((later.get("readers") or {}).get("lines") or [{}] * (n + 1))[n].get("item_id")}
-                                                                 for n, v in enumerate(found) if v and not (n < len(truth_items) and v == truth_items[n])]}
+                rec["next_invoice"] = next_invoice(rig, invoice, label, case, out, _site(invoice))
             results.append(rec)
             (out / "ai.json").write_text(json.dumps(results, indent=1, default=str))
             print(json.dumps({k: v for k, v in rec.items() if k not in ("changed", "ai_reader", "ai_trace", "rules_added")}, default=str)[:700], "| changed", len(rec.get("changed") or []), flush=True)

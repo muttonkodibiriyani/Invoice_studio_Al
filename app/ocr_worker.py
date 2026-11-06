@@ -714,7 +714,7 @@ def main():
         if args.split_check:
             from .multi_invoice import analyse_pdf
             outcome=analyse_pdf(args.file.read_bytes())
-            args.output.write_text(json.dumps({"split":{"numbers":outcome.numbers,"refusal":outcome.refusal,
+            args.output.write_text(json.dumps({"split":{"numbers":outcome.numbers,"refusal":outcome.refusal,"hold_pages":outcome.hold_pages,
                 "segments":[{"number":s.number,"pages":s.pages} for s in outcome.segments]}}),encoding="utf-8")
             return
         if args.verify_evidence:

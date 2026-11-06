@@ -179,7 +179,8 @@ Review edits, retry, approve and export one invoice.
 |---|---|---|---|
 | `POST` | `/api/jobs/{jid}/review` | Member | **Save review edits.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409. |
 | `POST` | `/api/jobs/{jid}/retry` | Member | **Read again.** Reads the invoice again under a new confirmed plan. |
-| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an invoice already exported returns its existing export. |
+| `POST` | `/api/jobs/{jid}/one-invoice` | Member | **Release a several-invoices hold.** A person checked a file held as possibly binding several invoices and says it is one. Audited. 409 when there is no such hold. |
+| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. 409 only if it is still processing, not read, changed, a duplicate, or a file held as possibly binding several invoices; an invoice already exported returns its existing export. |
 | `POST` | `/api/jobs/{jid}/extraction-draft` | Member | **Unvalidated extraction workbook.** Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated. |
 | `POST` | `/api/jobs/{jid}/draft` | Member | **Manual draft workbook.** Builds a target workbook from hand-entered Header, Tax_Breakdown and Details. Never approves. |
 

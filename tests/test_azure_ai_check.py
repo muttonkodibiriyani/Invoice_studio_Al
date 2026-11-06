@@ -77,7 +77,7 @@ def configure(monkeypatch, endpoint=ENDPOINT, key=KEY, deployment=DEPLOYMENT):
 def answer(invoice=None):
     """A completed Responses answer carrying an invoice: what a deployment that read the sample returns."""
     text = json.dumps(sample_invoice() if invoice is None else invoice)
-    return FakeResponse({"status": "completed", "output": [{"content": [{"type": "output_text", "text": text}]}],
+    return FakeResponse({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
                          "usage": {"input_tokens": 1800, "output_tokens": 400}})
 
 
@@ -342,7 +342,7 @@ def test_a_deployment_that_answers_but_cannot_read_a_document_fails_the_file_ste
 
 def test_an_incomplete_or_schema_breaking_answer_fails_the_read(monkeypatch, foundry, no_env_file, capsys):
     configure(monkeypatch)
-    broken = FakeResponse({"status": "completed", "output": [{"content": [{"type": "output_text", "text": "{]"}]}]})
+    broken = FakeResponse({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "{]"}]}]})
     foundry(text=FakeResponse({"status": "incomplete"}), pdf=broken)
     assert check.main(["--env-file", no_env_file]) == 1
     report = capsys.readouterr().out

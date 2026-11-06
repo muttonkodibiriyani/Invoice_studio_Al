@@ -47,7 +47,7 @@ ROUTES = (("/api/rules-assistant/search", {"query": "rose cream"}),
 def completed(answer):
     text = answer if isinstance(answer, str) else json.dumps(answer)
     return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 900, "output_tokens": 40},
-                                     "output": [{"content": [{"type": "output_text", "text": text}]}]})
+                                     "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]})
 
 
 class Foundry:

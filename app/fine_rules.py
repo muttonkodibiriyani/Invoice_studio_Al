@@ -612,11 +612,12 @@ def parse_printed_date(printed, parsed):
 
 
 class Run:
-    def __init__(self, invoice, config, filename, ocr_lines=False):
+    def __init__(self, invoice, config, filename, ocr_lines=False, ai_rule_items=None):
         self.invoice = invoice
         self.config = config
         self.filename = filename
         self.ocr_lines = ocr_lines  # the lines were read by OCR or the AI from a scan, never from a text layer
+        self.ai_rule_items = ai_rule_items or {}  # {line number: item} an AI-added rule filled, which no document printed
         self.exceptions = []
         self.lineage = []
         # R-006: cited supplier-code candidates offered for the reviewer's pick; never a filled value.
@@ -917,9 +918,11 @@ def match_line(run, n, line, source, sites=None):
         value = text(getattr(line, "item_id", None))
         if value and _constrain([r for r in source.items_by_parent(value) if text(r.get("ITEM_PARENT")) == value],
                                 sites)[0]:
-            result["candidates"].insert(0, f"{value} (ITEM_PARENT printed)")
-            result["method"] = "ITEM_PARENT candidate"
-            reason, rules = "Printed internal item number equals an ITEM_PARENT; review candidate only", "ITM-006"
+            ai_rule = run.ai_rule_items.get(n) == value
+            result["candidates"].insert(0, f"{value} (AI-added rule, not printed)" if ai_rule else f"{value} (ITEM_PARENT printed)")
+            result["method"] = "AI-added rule candidate" if ai_rule else "ITEM_PARENT candidate"
+            reason, rules = ("An AI-added rule names this item, the document does not; review candidate only" if ai_rule else
+                             "Printed internal item number equals an ITEM_PARENT; review candidate only"), "ITM-006"
         result["exception"] = run.exception("Item Exception", reason, rules, n,
                                             evidence="; ".join(result["candidates"]), owner="Item steward")
         return result
@@ -1989,13 +1992,13 @@ def item_resolution(run, matches, group):
 
 
 def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=(), page_count=None,
-                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None):
+                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None, ai_rule_items=None):
     """Run the whole rule chain for one invoice (ALG-028: every invoice, every rule). ``owner_supplier_code`` is
     the owner's pick among the R-006 candidates of an earlier run (decision 41); ``owner_supplier_site`` the
     reviewer's pick among the Item Master sites of the printed supplier name (S1.2)."""
     config = config or RulesConfig()
     # The probe pass stays exact; only the recorded pass may correct an OCR I/1, O/0 read (decision 44).
-    run = Run(invoice, config, filename, ocr_lines)
+    run = Run(invoice, config, filename, ocr_lines, ai_rule_items)
     scan = scan_pages(text_value, boxes, page_count)
     if scan["unreadable_pages"]:
         run.exception("OCR Review", f"Pages without readable text: {scan['unreadable_pages']}", "ALG-001",
@@ -2303,7 +2306,7 @@ def run_batch(entries, source, config=None):
             result = run_invoice(entry["invoice"], source, config, entry.get("filename", ""), entry.get("text", ""),
                                  entry.get("boxes", ()), entry.get("page_count"), transaction, seen,
                                  entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False),
-                                 owner_supplier_site=entry.get("owner_supplier_site"))
+                                 owner_supplier_site=entry.get("owner_supplier_site"), ai_rule_items=entry.get("ai_rule_items"))
         except Exception as error:  # isolated per invoice; the error is the evidence
             result = {"status": "Blocked", "filename": entry.get("filename", ""), "transaction": transaction,
                       "header": {"Document": text(entry["invoice"].number), "Validation Status": "Blocked"},

@@ -15,6 +15,7 @@ from .models import Line, uom_code
 
 HEADER_FIELDS=("number","supplier_name","buyer_name","po","date_printed","date","currency","net","tax")
 LINE_FIELDS=("sku","gtin","description","qty","uom","price","net_amount","tax_amount")
+ROW_IDENTITY=("item_id","sku","gtin","description")  # what makes a row the goods it was compared as
 AMOUNT_FIELDS={"net","tax","qty","price","net_amount","tax_amount"}
 # Printed text that can differ between two good reads: a difference is shown, not a dispute. A description only while
 # the two name the same goods, date_printed only when the date read from it matches.
@@ -58,11 +59,12 @@ def _folded(value):
 
 def same(field,mine,theirs):
     """Two reads agree when amounts are numerically equal or text matches by the above. Text with nothing left to
-    compare (--- and ///) agrees with nothing."""
+    compare agrees only with itself: $ and $ agree, --- and /// do not."""
     if field in AMOUNT_FIELDS:
         try:return Decimal(str(mine))==Decimal(str(theirs))
         except (InvalidOperation,ValueError):return False
     if field=="uom":return uom_code(mine)==uom_code(theirs)
+    if str(mine).strip() and str(mine).strip()==str(theirs).strip():return True
     folded=_folded(mine)
     return bool(folded) and folded==_folded(theirs)
 
@@ -127,7 +129,8 @@ def compare(local,ai,final,header_readers,line_readers):
         cells={f:cell for f in LINE_FIELDS if (cell:=_cell(f,one.get(f),other.get(f),row.get(f),readers.get(f)))}
         if readers.get("item_id")=="ai" and not _blank(row.get("item_id")):cells["item_id"]={"state":FILLED,"value":_text(row["item_id"])}
         lines.append(cells)
-    record={"read":True,"header":header,"lines":lines,"settled":{}}
+    identities=[{f:_text(row[f]) for f in ROW_IDENTITY if not _blank(row.get(f))} for row in now]
+    record={"read":True,"header":header,"lines":lines,"settled":{},"identities":identities}
     if counts_differ:record["line_reads"]={"local":_rows(mine),"ai":_rows(theirs)}
     return record
 
@@ -179,6 +182,19 @@ def _state(field,cell,current,settled,key):
     return cell["state"] if not _blank(current) and same(field,cell["value"],current) else None
 
 
+def _same_goods_row(record,n,row):
+    """Whether row n still holds the goods the reads compared, a pick on its identity counted. A record from before
+    identities were kept cannot say otherwise."""
+    identities=record.get("identities")
+    if identities is None or n>=len(identities):return identities is None
+    settled=record.get("settled") or {}
+    for f in ROW_IDENTITY:
+        key=f"line {n+1} {f}"
+        compared=settled[key].get("value") if key in settled else identities[n].get(f)
+        if _blank(compared)!=_blank(row.get(f)) or not _blank(compared) and not same(f,compared,row[f]):return False
+    return True
+
+
 def view(readers,invoice):
     """What this invoice's cells show now: the status, each cell's state and the disputes still open."""
     record=(readers or {}).get("ai_check")
@@ -189,12 +205,13 @@ def view(readers,invoice):
     header={f:s for f,c in record.get("header",{}).items() if (s:=_state(f,c,invoice.get(f),settled,f))}
     rows=invoice.get("lines") or []
     lines=[]
-    # A row added or removed moves every row after it, so marks stand only while the count holds. A dispute stays open.
+    # A row added or removed moves every row after it, so marks stand only while the count holds, and each row's only
+    # while it holds the same goods: a quantity agreed for one item says nothing of another. A dispute stays open.
     same_count=len(rows)==len(record.get("lines",[]))
     for n,row in enumerate(record.get("lines",[])):
         states={}
         for f,c in row.items():
-            if s:=_state(f,c,rows[n].get(f) if same_count else None,settled,f"line {n+1} {f}"):
+            if s:=_state(f,c,rows[n].get(f) if same_count and _same_goods_row(record,n,rows[n]) else None,settled,f"line {n+1} {f}"):
                 states[f]=SETTLED if s==FILLED and LINES_KEY in settled else s
         lines.append(states)
     open_ones=[x for x in disputes(record) if x["key"] not in settled]

@@ -69,13 +69,17 @@ off or failing cannot clear it. While one is open the rules status is not Approv
 the export.
 
 Local checks and holds still run: AI agreement clears neither a failed arithmetic check nor a Possible Duplicate. Each
-mark stands only while the cell holds the compared or settled value, so an edited cell loses it. A target cell the rules
+mark stands only while the cell holds the compared or settled value, so an edited cell loses it. A row's marks also stand only
+while it holds the goods compared (item, code, barcode, description): a replaced item keeping its quantity and price loses them. A target cell the rules
 derived or a person typed shows no agreement, even when it equals what the reads saw. The Excel shows each state as a
 cell fill and note, and says the invoice's status on its Transaction Number cell, with no column or sheet added.
 
 Learning: a value only the AI read does not teach templates until a person settles it, and an AI item rule needs both
 reads to agree on the supplier and the printed code, and still passes the `close_names` check. No per-invoice cap on
 AI calls or spend exists, so none can skip a read. `/api/costs` reports calls and tokens per invoice.
+
+An item from an AI-added rule never fills the Item by itself: the rules still need a printed VPN or barcode. It reaches
+the reviewer as a candidate named "AI-added rule, not printed" with an Item Exception saying so, with the AI up or down.
 
 ## The weak-scan rule
 
@@ -99,8 +103,14 @@ date against the printed date. A scan or a page with almost no text has nothing 
 weak-scan self-check that holds. A value the AI saw only in a PDF's image (a logo's supplier name, say) is left blank
 by this: strict D11.
 
-This check is weak. A number is accepted when it is printed anywhere, so an invented 7.00 passes on a page printing
-"CN-7", and text in a script other than Latin is not checked at all. A minus sign is checked: -100.00 needs a printed
+A whole Net or Tax under 100 counts only printed as that amount beside its own label, on native text and scans alike:
+`VAT 5% (AED): 0.00` backs Tax 0; a page number, a `Discount 0.00`, `1,000` or "answer Tax 0 and Net 1" does not. With
+no text to check it, or no local value to stand instead, it stays blank for review; beside a local value the local
+value stands and the AI's is flagged. Text that itself prints `Tax: 0.00` cannot be told from a real total here; only
+the AI mark and the arithmetic checks speak to it.
+
+Elsewhere this check is weak. A number is accepted when it is printed anywhere, so an invented 7.25 passes on a page printing
+"CN-7.25", and text in a script other than Latin is not checked at all. A minus sign is checked: -100.00 needs a printed
 `-100.00`, `(100.00)`, `100.00-` or `100.00 CR`, and 100.00 is refused where only `-100.00` is printed. The AI mark in
 review and on the receipt is the real control.
 

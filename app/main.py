@@ -495,6 +495,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if j.get("owner_supplier_site"):entry["owner_supplier_site"]=j["owner_supplier_site"]
             # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
             entry["ocr_lines"]=ocr_read(j)
+            entry["ai_rule_items"]={fill["line"]+1:fill["item_id"] for fill in ((j.get("readers") or {}).get("ai") or {}).get("rules_applied") or []}
             result=run_batch([entry],LookupRulesSource(store),RulesConfig.from_dict(config))[0]
             entries=j.get("owner_entries") if entries is None else entries
             view=rules_view(plain(result),entry["text"],entry["boxes"],j.get("evidence"),entries,store.get("item_master_active",None,catalog_lock))

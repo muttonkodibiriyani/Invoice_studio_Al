@@ -418,10 +418,17 @@ BOUNDARY_PAIRS = [
     ("Al Noor Trading", "Noor General Trading LLC", False),
     ("شركة النور للتجارة", "مؤسسة النور", False),
     ("General Trading Co", "Trading Company", False),
-    # Digits tell branches apart; a single letter is what L.L.C prints as.
+    # A single letter or digit tells companies apart; only a dotted abbreviation collapses, into one word.
     ("Store 1", "Store 2", False),
     ("Store 1 LLC", "Store 1", True),
+    ("Star A", "Star B", False),
+    ("Star A", "Star", False),
+    ("Star A LLC", "Star A", True),
     ("Northwind L.L.C", "Northwind LLC", True),
+    ("Northwind L.L.C.", "Northwind", True),
+    ("A.B Trading", "AB Trading", True),
+    ("A.B Trading", "A Trading", False),
+    ("Store 1.2", "Store 12", False),
     # Only legal forms and articles, or nothing: close to nothing, itself included.
     ("LLC", "LLC", False),
     ("The Co", "Al Company", False),
@@ -443,6 +450,7 @@ def test_close_supplier_names_differ_only_by_legal_form_or_article(one, other, c
     ("Star Trading LLC", "Gulf Trading LLC", False),
     *BOUNDARY_PAIRS,
     ("Store 1", "Store 2", False),
+    ("Star A", "Star B", False),
     ("Northwind Trading", "Northwind Trading LLC", True),
     ("Northwind L.L.C", "Northwind LLC", True),
     ("Gulf Trading LLC", "Gulf Trading Co", True),

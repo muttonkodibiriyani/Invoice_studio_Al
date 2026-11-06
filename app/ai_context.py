@@ -95,8 +95,13 @@ def _name_score(one, other):
 
 
 def _company_words(name):
-    """The name without legal forms, articles or single letters, the pieces L.L.C prints as. Digits stay: Store 1 is not Store 2."""
-    return {word for word in _name_words(name) if word not in LEGAL_NAME_WORDS and (len(word) > 1 or not word.isalpha())}
+    """The name without legal forms or articles. A dotted abbreviation is one word, so L.L.C reads as LLC; any other single
+    letter or digit stays: Star A is not Star B, and Store 1 is not Store 2."""
+    words = set()
+    for token in re.findall(r"[^\W_]+(?:\.[^\W_]+)*", str(name or "").casefold()):
+        parts = token.split(".")
+        words.update(["".join(parts)] if len(parts) > 1 and all(len(part) == 1 and part.isalpha() for part in parts) else parts)
+    return words - LEGAL_NAME_WORDS
 
 
 def close_names(one, other):

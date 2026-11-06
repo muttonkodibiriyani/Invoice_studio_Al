@@ -1283,8 +1283,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(MEMBER)
     def check_batch(body:Batch):
         """Before 'Export selected' (owner decision A): the selected invoices a real export would take now, in
-        transaction order, each with the holds still open on it (information only, D11), its rules status and the blank
-        fields its row in the workbook would hold, and the blocked ones with every
+        transaction order, each with the holds still open on it (information only, D11), its rules status, the blank
+        fields its row in the workbook would hold and its line count, and the blocked ones with every
         reason. Exports nothing; blocked invoices stay as they are."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:
@@ -1298,7 +1298,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 if reasons:blocked.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
                 else:
                     # What Export Excel asks about first (D11: it asks, it never refuses); read from the writer's own sheets.
-                    counted={} if demo_references else {"status":j["rules"]["status"],"blank_fields":blank_fields(j["rules"],target_upc(c))}
+                    counted={} if demo_references else {"status":j["rules"]["status"],"blank_fields":blank_fields(j["rules"],target_upc(c)),"line_count":len(j["rules"]["lines"])}
                     ready.append({**item,"transaction_number":len(ready)+1,"attention":holds,**counted})
         return {"ready":ready,"blocked":blocked}
 

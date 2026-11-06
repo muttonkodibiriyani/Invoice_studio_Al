@@ -742,6 +742,7 @@ function savedNativeTextPreference() {
 const initialNativeTextPreference = savedNativeTextPreference();
 
 const app = {
+  exportPending: null,
   state: null,
   currentJob: null,
   selectedJobId: null,
@@ -2030,9 +2031,7 @@ function renderReviewActions(job) {
   $("#save-review").disabled = busy || exported || job.status === "error";
   $("#export-extraction-draft").hidden = busy || !hasStructuredInvoiceData(job);
   $("#export-extraction-draft").disabled = busy;
-  // Owner decision D11: open holds no longer stop the export; the server refuses only integrity problems.
-  $("#export-job").disabled = busy && !exported;
-  $("#export-job").textContent = exported ? "Download Excel" : "Export Excel";
+  renderExportButton(job);
 }
 
 function collectInvoice() {
@@ -2114,15 +2113,29 @@ function replaceJobSummary(job) {
 // blanks on the sheets the writer fills, so this is what the file will hold, not the inbox's cell scores.
 function exportWarning(item) {
   const blank = Number(item?.blank_fields || 0);
-  if (item?.status !== "Blocked" && !blank) return "";
-  const status = item.status === "Review" ? "in Review" : item.status;
-  return `This invoice is ${status} and has ${blank} blank field${blank === 1 ? "" : "s"}.`;
+  const noLines = item?.line_count === 0;
+  const parts = [];
+  if (item?.status === "Blocked" || blank || noLines) {
+    const status = item.status === "Review" ? "in Review" : item.status;
+    const has = [...(blank || !noLines ? [`${blank} blank field${blank === 1 ? "" : "s"}`] : []), ...(noLines ? ["no line items"] : [])];
+    parts.push(`This invoice is ${status} and has ${has.join(" and ")}.`);
+  }
+  if (item?.attention?.some((hold) => hold.code === "Possible Duplicate")) parts.push(parts.length ? "It may already be exported." : "This invoice may already be exported.");
+  return parts.join(" ");
+}
+
+function renderExportButton(job) {
+  const busy = ["queued", "processing"].includes(job?.status);
+  const exported = job?.status === "exported" || Boolean(job?.export_id);
+  // Owner decision D11: open holds no longer stop the export; the server refuses only integrity problems.
+  $("#export-job").disabled = busy && !exported;
+  $("#export-job").textContent = exported ? "Download Excel" : "Export Excel";
 }
 
 async function exportCurrentJob() {
   const job = app.currentJob;
   if (!job) return;
-  if (job.export_id) return writeCurrentExport();
+  if (job.export_id) return writeExport(job);
   const button = $("#export-job");
   button.disabled = true;
   button.textContent = "Checking…";
@@ -2135,31 +2148,34 @@ async function exportCurrentJob() {
     notify(error.message, "error", 7000);
     return;
   } finally {
-    button.textContent = "Export Excel";
-    button.disabled = false;
+    renderExportButton(app.currentJob);
   }
-  if (!warning) return writeCurrentExport();
+  if (app.currentJob?.id !== job.id) {
+    notify("The selected invoice changed during the check. Nothing was exported; open the invoice and export again.", "error", 7000);
+    return;
+  }
+  if (!warning) return writeExport(job);
+  app.exportPending = job;
   $("#export-confirm-text").textContent = `${warning} Export anyway?`;
   $("#export-confirm-dialog").showModal();
 }
 
-async function writeCurrentExport() {
+async function writeExport(job) {
   $("#export-confirm-dialog").close();
-  if (!app.currentJob) return;
+  if (!job) return;
   const button = $("#export-job");
   button.disabled = true;
   button.textContent = "Preparing…";
   try {
-    const result = await api(`/api/jobs/${encodeURIComponent(app.currentJob.id)}/export`, { method: "POST", body: { revision: app.currentJob.revision } });
+    const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/export`, { method: "POST", body: { revision: job.revision } });
     await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
     await loadState();
-    await selectJob(app.currentJob.id);
+    if (app.currentJob) await selectJob(app.currentJob.id);
     notify("Excel workbook prepared.");
   } catch (error) {
     notify(error.message, "error", 7000);
   } finally {
-    button.textContent = "Export Excel";
-    button.disabled = false;
+    renderExportButton(app.currentJob);
   }
 }
 
@@ -3921,7 +3937,7 @@ function bindEvents() {
   $("#save-review").addEventListener("click", () => submitReview());
   $("#update-item-master").addEventListener("click", updateItemMaster);
   $("#export-job").addEventListener("click", exportCurrentJob);
-  $("#confirm-export-anyway").addEventListener("click", writeCurrentExport);
+  $("#confirm-export-anyway").addEventListener("click", () => writeExport(app.exportPending));
   $("#batch-review").addEventListener("click", openBatchReview);
   $("#confirm-batch-review").addEventListener("click", downloadBatchReview);
   $("#batch-export").addEventListener("click", exportBatch);

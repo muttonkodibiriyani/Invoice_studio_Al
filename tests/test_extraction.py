@@ -12,10 +12,12 @@ photograph is read by the OCR engine, with no text layer to try first.
 import json
 import os
 import re
+import sys
 from datetime import date, timedelta
 from itertools import groupby
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1132,7 +1134,14 @@ def test_a_printed_lone_i_before_a_spaced_neighbour_is_kept():
     assert lines[0][0]["text"] == "Class I"
 
 
-def test_a_page_read_at_the_wrong_turn_is_read_again_turned(monkeypatch, tmp_path):
+@pytest.fixture
+def page_array(monkeypatch):
+    # The turn logic needs only the page's shape; CI installs the OCR stack, numpy with it, on no job.
+    monkeypatch.setitem(sys.modules, "numpy", SimpleNamespace(
+        array=lambda image: SimpleNamespace(shape=(image.height, image.width))))
+
+
+def test_a_page_read_at_the_wrong_turn_is_read_again_turned(monkeypatch, tmp_path, page_array):
     from PIL import Image
     from app import ocr_worker
 
@@ -1164,7 +1173,7 @@ def test_a_page_read_at_the_wrong_turn_is_read_again_turned(monkeypatch, tmp_pat
     assert boxes[0]["size"] == [100, 200]
 
 
-def test_a_sideways_page_that_scores_well_is_still_read_turned(monkeypatch, tmp_path):
+def test_a_sideways_page_that_scores_well_is_still_read_turned(monkeypatch, tmp_path, page_array):
     from PIL import Image
     from app import ocr_worker
 
@@ -1190,7 +1199,7 @@ def test_a_sideways_page_that_scores_well_is_still_read_turned(monkeypatch, tmp_
     assert {box["confidence"] for box in boxes} == {0.96}
 
 
-def test_a_page_read_well_is_read_once(monkeypatch, tmp_path):
+def test_a_page_read_well_is_read_once(monkeypatch, tmp_path, page_array):
     from PIL import Image
     from app import ocr_worker
 

@@ -57,6 +57,12 @@ def storable(value):
     return [storable(x) for x in value] if isinstance(value, (list, tuple)) else value
 
 
+def known_uom(value):
+    """Whether a printed word is a unit in the vocabulary."""
+    spelling = " ".join(str(value or "").split()).rstrip(". ").casefold()
+    return spelling in _UOM_CODES or spelling.removesuffix("s") in _UOM_CODES
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
 

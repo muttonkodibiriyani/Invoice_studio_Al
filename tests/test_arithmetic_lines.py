@@ -544,3 +544,81 @@ def test_group_marks_a_scan_read_as_points_before_two_decimals_are_one_number():
     )
 
     assert [line.net_amount for line in lines] == [Decimal("510663.14"), Decimal("53743.68")]
+
+
+def _table(*cells_per_row, heading=("Ref", "Goods")):
+    """Rows whose text cells start at fixed places: (x, word) pairs, then qty, price and amount."""
+    boxes = []
+    for x, word in zip((30, 110), heading):
+        boxes.append(_box(word, x, 100, x + 6 * len(word), 1))
+    for edge, word in zip((330, 400, 470), ("Lifted", "Each", "Sum")):
+        boxes.append(_box(word, edge - 6 * len(word), 100, edge, 1))
+    for n, (cells, figures) in enumerate(cells_per_row, start=1):
+        y = 100 + n * 18
+        for x, text in cells:
+            for word in text.split():
+                boxes.append(_box(word, x, y, x + 6 * len(word), 1))
+                x += 6 * len(word) + 6
+        for edge, figure in zip((330, 400, 470), figures):
+            boxes.append(_box(figure, edge - 6 * len(figure), y, edge, 1))
+    return read_lines(_normalise_words(boxes))
+
+
+def test_batch_and_expiry_columns_beside_the_row_are_not_its_description():
+    lines = _table(
+        (((30, "BR-104"), (90, "Brass hinge 40mm"), (210, "L7741"), (250, "03/2028")), ("12", "4.50", "54.00")),
+        (((30, "TL-221"), (90, "Tile adhesive"), (210, "L7802"), (250, "11/2027")), ("3", "19.25", "57.75")),
+        (((30, "PX-330"), (90, "Pipe clip small"), (210, "L7911"), (250, "01/2029")), ("10", "1.25", "12.50")),
+    )
+
+    assert [line.description for line in lines] == ["Brass hinge 40mm", "Tile adhesive", "Pipe clip small"]
+
+
+def test_a_code_printed_to_the_right_of_the_description_is_still_the_code():
+    lines = _table(
+        (((30, "Brass hinge 40mm"), (170, "BR-104")), ("12", "4.50", "54.00")),
+        (((30, "Tile adhesive"), (170, "TL-221")), ("3", "19.25", "57.75")),
+    )
+
+    assert [(line.sku, line.description) for line in lines] == [("BR-104", "Brass hinge 40mm"), ("TL-221", "Tile adhesive")]
+
+
+def test_a_barcode_column_is_not_taken_for_the_code():
+    lines = _table(
+        (((30, "4006381333931"), (120, "BR-104"), (180, "Brass hinge")), ("12", "4.50", "54.00")),
+        (((30, "4006381333948"), (120, "TL-221"), (180, "Tile adhesive")), ("3", "19.25", "57.75")),
+    )
+
+    assert [line.sku for line in lines] == ["BR-104", "TL-221"]
+    assert [line.description for line in lines] == ["Brass hinge", "Tile adhesive"]
+
+
+@pytest.mark.parametrize("units", [("DOZ", "PKT"), ("BOX", "BOX")])
+def test_a_unit_column_stays_when_most_of_its_cells_are_units(units):
+    lines = _table(
+        (((30, "BR-104"), (90, "Brass hinge"), (210, units[0])), ("12", "4.50", "54.00")),
+        (((30, "TL-221"), (90, "Tile adhesive"), (210, units[1])), ("3", "19.25", "57.75")),
+    )
+
+    assert [line.uom for line in lines] == list(units)
+    assert [line.description for line in lines] == ["Brass hinge", "Tile adhesive"]
+
+
+def test_codes_with_a_slash_are_codes_not_dates():
+    lines = _table(
+        (((30, "5361/6"), (110, "Brass hinge 40mm")), ("12", "4.50", "54.00")),
+        (((30, "67350/3"), (110, "Tile adhesive 2kg")), ("3", "19.25", "57.75")),
+        (((30, "588108"), (110, "Pipe clip small")), ("10", "1.25", "12.50")),
+    )
+
+    assert [line.sku for line in lines] == ["5361/6", "67350/3", "588108"]
+    assert lines[0].description == "Brass hinge 40mm"
+
+
+def test_a_side_panel_beside_the_table_is_not_part_of_the_rows():
+    lines = _table(
+        (((30, "Brass hinge 40mm"), (230, "Thank you for")), ("12", "4.50", "54.00")),
+        (((30, "Tile adhesive"), (230, "your business")), ("3", "19.25", "57.75")),
+    )
+
+    assert [line.description for line in lines] == ["Brass hinge 40mm", "Tile adhesive"]

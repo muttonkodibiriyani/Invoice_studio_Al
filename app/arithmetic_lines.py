@@ -29,7 +29,7 @@ from .layout_extract import (
     _SAFE_IDENTIFIER,
     _Word,
 )
-from .models import Line, uom_code
+from .models import Line, known_uom, uom_code
 from .numbers import parse_number
 
 # Two columns are one when an edge or the centre of their figures lines up, as a share of the page width.
@@ -60,6 +60,7 @@ _CREDIT_TITLE = re.compile(
 _UOM_SHAPE = re.compile(r"[A-Z]{1,5}\.?")
 # A share of the rows that must agree before a text column is read as codes or units.
 _COLUMN_VOTE = 0.6
+_ROW_SIGNS = {"x", "X", "@", "×", "|", ":", "CR"}
 _ROUNDING_SHARE = Decimal("0.005")
 _PRESENTATION_FORM = re.compile("[\ufb50-\ufdff\ufe70-\ufeff]")
 _FIGURE_END = re.compile(r"^\d[\d,]*\.\d+$")
@@ -508,7 +509,7 @@ def _text_of(row: _Row, used: set[int]) -> _Text:
             segments.append([])
         elif re.fullmatch(r"[0-9]{8,14}", text) and gtin is None:
             gtin = text
-        elif text.endswith("%") or _CURRENCY_WORD.fullmatch(text) or text in {"x", "X", "@", "×", "|", ":", "CR"}:
+        elif text.endswith("%") or _CURRENCY_WORD.fullmatch(text) or text in _ROW_SIGNS:
             continue
         else:
             segments[-1].append(text)
@@ -565,6 +566,98 @@ def _logical_order(words: list[str]) -> list[str]:
     if not words or not all(_PRESENTATION_FORM.search(word) or word.isdigit() for word in words):
         return words
     return [unicodedata.normalize("NFKC", word) for word in reversed(words)]
+
+
+def _is_date(word: str) -> bool:
+    return bool(re.fullmatch(r"[0-9]{1,2}[/.-][0-9]{1,2}[/.-][0-9]{2,4}|(?:19|20)[0-9]{2}[/.-][0-9]{1,2}(?:[/.-][0-9]{1,2})?|(?:0?[1-9]|1[0-2])[/.-](?:19|20)?[0-9]{2}", word))
+
+
+def _text_words(row: _Row, used: set[int]) -> list[_Word]:
+    """The row's words other than its figures and what _text_of sets aside: its barcode, signs and currency."""
+    words, gtin = [], False
+    for index, word in enumerate(row.words):
+        text = word.text.strip()
+        if index in used or not text or text.endswith("%") or _CURRENCY_WORD.fullmatch(text) or text in _ROW_SIGNS:
+            continue
+        if not gtin and re.fullmatch(r"[0-9]{8,14}", text):
+            gtin = True
+            continue
+        words.append(word)
+    return words
+
+
+def _text_columns(rows: list[tuple[_Row, set[int]]]) -> list[tuple[float, float]]:
+    """The spans of the page the rows' text keeps to. Words two characters apart or more, on every row, are two columns."""
+    words = sorted((word for row, used in rows for word in _text_words(row, used)), key=lambda word: word.x0)
+    if len(rows) < 2 or not words:
+        return []
+    widths = sorted((word.x1 - word.x0) / len(word.text.strip()) for word in words)
+    gap = 2 * widths[len(widths) // 2]
+    columns = [[words[0].x0, words[0].x1]]
+    for word in words[1:]:
+        if word.x0 - columns[-1][1] > gap:
+            columns.append([word.x0, word.x1])
+        else:
+            columns[-1][1] = max(columns[-1][1], word.x1)
+    return [(x0, x1) for x0, x1 in columns]
+
+
+def _column_role(rows: list[_Row], table: list[_Row], span: tuple[float, float]) -> str | None:
+    width = table[0].words[0].page_width
+    return _heading_role(rows, table, _Number(Decimal(0), 0, (), span[0] / width, span[1] / width))
+
+
+def _column_kind(cells: list[str], role: str | None) -> str:
+    """What a column of text holds, from its heading when that names it and otherwise from most of its cells."""
+    filled = [cell for cell in cells if cell]
+    def most(test) -> bool:
+        return sum(map(test, filled)) / max(1, len(filled)) >= _COLUMN_VOTE
+    # A heading is only believed when the cells can be what it names.
+    if role == "description" and any(_LETTER.search(cell) for cell in filled):
+        return role
+    if role == "sku" and most(lambda cell: " " not in cell and _is_code(cell)):
+        return role
+    if role == "uom" and most(lambda cell: " " not in cell and _is_unit(cell)):
+        return role
+    if not any(_LETTER.search(cell) for cell in filled) and most(lambda cell: _parse(cell) is not None or _is_date(cell)) \
+            and not all(len(cell) >= 4 and not re.search(r"[.,]", cell) and not _is_date(cell) for cell in filled):
+        return "other"
+    if most(_is_date):
+        return "other"
+    if most(lambda cell: " " not in cell and _is_code(cell)):
+        return "code"
+    if most(lambda cell: " " not in cell and _is_unit(cell)) and any(map(known_uom, filled)):
+        return "uom"
+    return "text"
+
+
+def _kept_columns(texts: list[_Text], rows: list[_Row], table: list[_Row], priced: list[tuple[_Row, set[int]]]) -> list[_Text]:
+    """Each row's text by the table's columns, and only the columns that are its code, unit or description: a batch,
+    a date, a weight or a side panel beside the row is not the description. A table with no clear columns stays as read."""
+    spans = _text_columns(priced)
+    if len(spans) < 2:
+        return texts
+    cells = [[[] for _ in spans] for _ in priced]
+    for row_cells, (row, used) in zip(cells, priced):
+        for word in _text_words(row, used):
+            next(cell for cell, span in zip(row_cells, spans) if span[0] <= word.x0 <= span[1]).extend(word.text.split())
+    columns = [[" ".join(row_cells[n]) for row_cells in cells] for n in range(len(spans))]
+    kinds = [_column_kind(column, _column_role(rows, table, span)) for column, span in zip(columns, spans)]
+    letters = [sum(len(_LETTER.findall(cell)) for cell in column) if kind in ("text", "description") else 0
+               for column, kind in zip(columns, kinds)]
+    if not any(letters):
+        return texts
+    main = kinds.index("description") if "description" in kinds else letters.index(max(letters))
+    # A code sits beside the description: the one named by its heading, else the nearest, the left one first.
+    named = [n for n, kind in enumerate(kinds) if kind == "sku"]
+    codes = named or sorted((n for n, kind in enumerate(kinds) if kind == "code"), key=lambda n: (abs(n - main), n))
+    keep = {main} | set(codes[:1]) | {n for n, kind in enumerate(kinds) if kind == "uom"}
+    kept = []
+    for text, row_cells in zip(texts, cells):
+        # The description first: on a tie of words it is the row's main text, whichever side the code is printed.
+        segments = [row_cells[n] for n in sorted(keep, key=lambda n: n != main) if row_cells[n]]
+        kept.append(_Text(segments, text.gtin))
+    return kept
 
 
 def _describe(texts: list[_Text]) -> list[dict[str, str | None]]:
@@ -681,6 +774,11 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
         _text_of(row, product.used if product else {i for n in row.numbers if n is _amount_of(row, shape) for i in n.words})
         for row, product in priced
     ]
+    if not all(_letter_words(text) <= 1 for text in texts):
+        texts = _kept_columns(texts, rows, table, [
+            (row, product.used if product else {i for n in row.numbers if n is _amount_of(row, shape) for i in n.words})
+            for row, product in priced
+        ])
     if all(_letter_words(text) <= 1 for text in texts):
         # Figures only on every row: each row's text is the row printed above it.
         texts = [_with_row_above(rows, row, text) for (row, _), text in zip(priced, texts)]

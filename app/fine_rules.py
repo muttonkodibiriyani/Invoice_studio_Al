@@ -1964,6 +1964,22 @@ def trace_totals(run, scan):
     return gross
 
 
+def check_lines_total(run, scan):
+    """A row may be missing when the printed line amounts add up to neither the printed net nor any figure on the
+    invoice. Nothing is changed; the reviewer sees the flag. A row with no amount has its own flag."""
+    invoice = run.invoice
+    amounts = [line.net_amount for line in invoice.lines]
+    if not amounts or None in amounts:
+        return
+    total = sum(amounts, Decimal(0))
+    if invoice.net is not None and abs(abs(total) - abs(invoice.net)) <= scan_guard.rounding_tolerance(len(amounts)):
+        return
+    if _printed_page(scan, abs(total)) is None:
+        against = f"the printed net {invoice.net}" if invoice.net is not None else "any printed total"
+        run.exception("Totals Audit", f"The {len(amounts)} lines read add up to {total}, which does not agree with "
+                      f"{against}; a line may be missing", "TGT-001", owner="Accounts payable")
+
+
 def item_resolution(run, matches, group):
     """Owner form 01a10c4f item-line check: lines with one ITEM_PARENT whose quantity agrees with the accepted
     PO/GRN rows of that item (C-11), over all lines. Below 95 % the owner validates."""
@@ -2212,6 +2228,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
                       owner="Tax reviewer")
 
     gross = trace_totals(run, scan)
+    check_lines_total(run, scan)
     buyer = resolve_buyer(run, scan, buyer_page, buyer_rows)
     resolution = item_resolution(run, matches, group)
 

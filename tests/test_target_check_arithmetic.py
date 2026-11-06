@@ -462,6 +462,9 @@ def test_with_no_proof_the_missing_lines_are_an_estimate():
 
 
 def discount_exceptions(*rows, qty="2", price="100.00", amount="110.00"):
+
+
+def lines_total_flags(net, text_value, amounts=("100.00", "50.00")):
     from app.fine_rules import RowsSource, RulesConfig, run_invoice
     from app.models import Invoice, Line
     source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
@@ -527,3 +530,29 @@ def test_lines_proved_by_their_printed_discounts_make_the_net_and_keep_it_verifi
 def test_a_printed_line_discount_does_not_pass_a_net_the_lines_do_not_make(v):
     result = check(v, HEADING, "Rose red 2 100.00 45.00 5% 5.50 110.00", "Net 110.00", "VAT 5.50", "Total 115.50")
     assert status_of(result, "lines_to_net") == tc.FAIL
+
+
+    invoice = Invoice(supplier_name="Synthetic Co", currency="AED", net=net, lines=[
+        Line(sku="VPN-1", description="Rose red", qty="1", price=amount, net_amount=amount) for amount in amounts])
+    result = run_invoice(invoice, source, RulesConfig(), text_value=text_value)
+    return [e for e in result["exceptions"] if "a line may be missing" in e["Description"]], result
+
+
+def test_a_short_read_carries_a_flag_whether_or_not_the_net_was_read():
+    assert lines_total_flags("250.00", "INVOICE\nNet 250.00")[0]
+    assert lines_total_flags(None, "INVOICE\nNet 250.00")[0]
+
+
+def test_lines_that_add_up_or_whose_sum_is_printed_carry_no_flag():
+    assert not lines_total_flags("150.00", "INVOICE\nNet 150.00")[0]
+    assert not lines_total_flags("150.01", "INVOICE\nNet 150.01")[0]
+    assert not lines_total_flags(None, "INVOICE\nTotal 150.00")[0]
+    assert not lines_total_flags("140.00", "INVOICE\nSubtotal 150.00\nDiscount 10.00\nNet 140.00")[0]
+    # A credit note prints its total with or without the minus its rows carry.
+    assert not lines_total_flags("150.00", "CREDIT NOTE\nNet 150.00", amounts=("-100.00", "-50.00"))[0]
+    assert not lines_total_flags(None, "CREDIT NOTE\nTotal 150.00", amounts=("-100.00", "-50.00"))[0]
+
+
+def test_the_short_read_flag_does_not_block_on_its_own():
+    flags, _ = lines_total_flags("250.00", "INVOICE\nNet 250.00")
+    assert not flags[0]["blocking"]

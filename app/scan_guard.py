@@ -222,6 +222,16 @@ def printed_totals(text):
     return out
 
 
+def rounding_tolerance(count:int):
+    """How far a sum of printed line amounts may sit from the printed total.
+
+    Each line amount is rounded to the minor unit on its own, so a page of them can differ
+    from the total it is printed under by a minor unit a line. The allowance is capped so a
+    long invoice cannot drift far enough to hide a misread figure.
+    """
+    return Decimal("0.01")*max(1,min(count,25))
+
+
 def header_count(invoice):
     return sum(invoice.get(field) not in (None,"") for field in KEY_HEADER)
 

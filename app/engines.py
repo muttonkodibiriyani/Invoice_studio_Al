@@ -14,6 +14,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from .models import Invoice
 from .evidence import build as build_evidence
 from . import ai_check, ai_context, ai_rules, item_rules, item_search, layout_extract, matching, rules_first, scan_guard
+from .scan_guard import rounding_tolerance
 from .fine_rules_source import LookupRulesSource
 from .numbers import to_decimal
 
@@ -160,16 +161,6 @@ def quality(i:Invoice | None):
         if abs(net-i.net)>rounding_tolerance(len(i.lines)):missing.append("line amounts do not reconcile with net total")
     total=6+4*len(i.lines)
     return min(0.99 if missing else 1.0,round(max(0,1-len(missing)/total),2)),missing
-
-
-def rounding_tolerance(count:int):
-    """How far a sum of printed line amounts may sit from the printed total.
-
-    Each line amount is rounded to the minor unit on its own, so a page of them can differ
-    from the total it is printed under by a minor unit a line. The allowance is capped so a
-    long invoice cannot drift far enough to hide a misread figure.
-    """
-    return Decimal("0.01")*max(1,min(count,25))
 
 
 def _native_reconciliation(i:Invoice,text):

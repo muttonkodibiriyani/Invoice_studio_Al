@@ -2170,7 +2170,8 @@ async function writeExport(job) {
     const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/export`, { method: "POST", body: { revision: job.revision } });
     await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
     await loadState();
-    if (app.selectedJobId) await selectJob(app.selectedJobId);
+    // Unsaved edits on another invoice stay; the exported invoice itself always reloads, so it shows as locked.
+    if (app.selectedJobId && (app.selectedJobId === job.id || !app.reviewDirty)) await selectJob(app.selectedJobId);
     notify("Excel workbook prepared.");
   } catch (error) {
     notify(error.message, "error", 7000);

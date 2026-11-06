@@ -904,6 +904,8 @@ def guard_figures(invoice,evidence,header_readers,source,text):
         reason=("the printed total does not equal the net plus the tax, so it needs checking" if blank else
                 "neither the printed total, the lines nor a tax rate prove this figure, so it needs checking")
         blank_it=blank or whole(amount)
+        # A value that stays keeps the AI's flag: it names the other reading, which a person needs beside this one.
+        if not blank_it and (header.get(field) or {}).get("review"):return
         header[field]=_review(header.get(field),None,source,reason,value,"contradicted" if blank else "unproven")
         if blank_it:invoice[field]=None;header_readers.pop(field,None)
     settle("net",net,adds_up or ((lines_prove or rate_ties) and not disagrees),short or (contradicted and not lines_prove))

@@ -160,3 +160,19 @@ def test_a_whole_figure_printed_with_a_separator_is_only_flagged(printed):
 @pytest.mark.parametrize("printed", ["Net Payable 102,941,278", "Net Due 102,941,278"])
 def test_a_net_payable_is_a_printed_total(printed):
     assert run("98860673", "4080605", printed) == ("98860673", "4080605", {})
+
+
+def test_a_figure_that_stays_keeps_the_flag_the_ai_already_put_on_it():
+    review = {"reason": "the AI read this differently", "other_value": "800"}
+    invoice = {"net": "812.50", "tax": None, "lines": []}
+    evidence = {"header": {"net": {"quote": "", "page": 1, "source": "ocr", "review": review}}}
+    guard_figures(invoice, evidence, {}, "ocr", "")
+    assert invoice["net"] == "812.50" and evidence["header"]["net"]["review"] == review
+
+
+def test_a_figure_that_goes_blank_says_why_even_if_the_ai_flagged_it():
+    review = {"reason": "the AI read this differently", "other_value": "800"}
+    invoice = {"net": "812.50", "tax": "81.25", "lines": []}
+    evidence = {"header": {"net": {"quote": "", "page": 1, "source": "ocr", "review": review}}}
+    guard_figures(invoice, evidence, {}, "ocr", "Grand Total 5,000.00")
+    assert invoice["net"] is None and evidence["header"]["net"]["review"]["code"] == "contradicted"

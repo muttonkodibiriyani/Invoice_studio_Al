@@ -465,3 +465,16 @@ def test_a_turned_page_is_still_seen_when_a_scanned_row_lost_its_arithmetic():
             for word in reversed(upright)]
 
     assert turn_pages(over) is not None
+
+
+def test_a_page_on_its_side_turns_on_a_total_with_the_currency_touching_it():
+    from app.page_turn import _turned, turn_pages
+    upright = page(
+        ["Remittance", "note", "for", "goods", "lifted"],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Grand total", ("c", "EGP111.75")],
+    )
+    sideways = [{**_turned(word, 1), "geometry": "word"} for word in upright]
+
+    assert read_lines(_normalise_words(turn_pages(sideways)))[0].sku == "BR-104"

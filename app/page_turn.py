@@ -47,7 +47,7 @@ def _closing_rows(rows: list[_Row]) -> tuple[list[_Row], list[_Row]]:
     table = _table_rows(rows, shape) if shape else []
     if not table:
         return [], []
-    closing = [row for row in rows if row.closes and row.numbers]
+    closing = [row for row in rows if row.closes and (row.numbers or any(_MONEY.search(word.text) for word in row.words))]
     return [row for row in closing if row.y < table[0].y], [row for row in closing if row.y > table[-1].y]
 
 

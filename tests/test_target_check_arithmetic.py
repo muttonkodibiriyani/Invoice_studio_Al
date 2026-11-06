@@ -356,3 +356,73 @@ def test_r016_is_exact_for_a_currency_without_a_tolerance():
     assert result["lines"][0]["Unit Tax Code"] == ""
     result, _ = taxed("AED", "50.00", {**VAT_CONFIG, "arithmetic_tolerance": {"SAR": "10.00"}})
     assert result["lines"][0]["Unit Tax Code"] == "VATA5"
+
+
+def lines_to_net(result):
+    return next(c for c in result["checks"] if c["check"] == "lines_to_net")
+
+
+def missing_cells(result):
+    return [c for c in result["cells"] if c["status"] == tc.MISSING_LINE]
+
+
+def line_parsing(*numbers):
+    return [{"code": "Line Parsing Exception", "line": n, "rule": "02A-Unit Cost", "blocking": True} for n in numbers]
+
+
+def wrong_price_read(**extra):
+    """Two rows read; line 2's price was read x10, so quantity x unit cost overshoots the net of 110.00."""
+    return {**view(net="110.00", tax="5.50", lines=[line(1, "2", "50.00"), line(2, "1", "100.00")],
+                   issues=line_parsing(2)), **extra}
+
+
+def test_all_rows_read_by_the_printed_count_says_so_and_keeps_the_hold():
+    result = check(wrong_price_read(), "Total lines: 2", "Net 110.00 VAT 5.50 Total 115.50")
+    found = lines_to_net(result)
+    assert found["status"] == tc.FAIL and "lines_to_net" in result["failed"] and result["holds"]
+    assert "missing or merged" not in found["detail"]
+    assert "the invoice prints 2 item line(s) and 2 were read" in found["detail"]
+    assert "Quantity x unit cost is not the line amount on line(s) 2" in found["detail"]
+    assert found["missing_lines"] == 0 and not missing_cells(result)
+
+
+def test_all_rows_read_by_the_line_amounts_says_so_and_keeps_the_hold():
+    result = check(wrong_price_read(line_amounts_total="110.00"), "Net 110.00 VAT 5.50 Total 115.50")
+    found = lines_to_net(result)
+    assert found["status"] == tc.FAIL and "lines_to_net" in result["failed"] and result["holds"]
+    assert "missing or merged" not in found["detail"]
+    assert "the read line amounts sum to the Header net" in found["detail"]
+    assert "Quantity x unit cost is not the line amount on line(s) 2" in found["detail"]
+    assert found["missing_lines"] == 0 and not missing_cells(result)
+
+
+def test_line_amounts_that_miss_the_net_prove_nothing():
+    result = check(wrong_price_read(line_amounts_total="60.00"), "Net 110.00 VAT 5.50 Total 115.50")
+    found = lines_to_net(result)
+    assert "read line amounts" not in found["detail"]
+    assert "estimated" in found["detail"] and found["missing_lines"] >= 1 and missing_cells(result)
+
+
+def test_a_printed_count_above_the_read_names_the_missing_lines():
+    result = check(view(net="300.00", tax="15.00"), "Total lines: 4", "Net 300.00 VAT 15.00 Total 315.00")
+    found = lines_to_net(result)
+    assert found["status"] == tc.FAIL and found["missing_lines"] == 3
+    assert "the invoice prints 4 item line(s) and 1 were read; 3 item line(s) missing or merged" in found["detail"]
+    assert "estimated" not in found["detail"] and missing_cells(result)
+
+
+def test_a_printed_count_below_the_read_says_more_were_read_than_printed():
+    v = wrong_price_read()
+    result = check(v, "Total lines: 1", "Net 110.00 VAT 5.50 Total 115.50")
+    found = lines_to_net(result)
+    assert found["status"] == tc.FAIL and result["holds"]
+    assert "the invoice prints 1 item line(s) and 2 were read" in found["detail"]
+    assert "missing or merged" not in found["detail"]
+    assert found["missing_lines"] == 0 and not missing_cells(result)
+
+
+def test_with_no_proof_the_missing_lines_are_an_estimate():
+    result = check(view(net="300.00", tax="15.00"), "Net 300.00 VAT 15.00 Total 315.00")
+    found = lines_to_net(result)
+    assert found["status"] == tc.FAIL and found["missing_lines"] == 2
+    assert found["detail"].endswith("; estimated 2 item line(s) missing or merged") and missing_cells(result)

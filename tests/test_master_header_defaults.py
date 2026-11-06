@@ -2,7 +2,9 @@
 type (L4.2, A6) and tax by the invoice's country (T5.1, A7)."""
 from decimal import Decimal
 
-from app.fine_rules import STORE, RowsSource, RulesConfig, run_invoice
+from app import target_check as tc
+from app.fine_rules import STORE, WAREHOUSE, RowsSource, RulesConfig, run_invoice
+from app.matching import rules_view
 from app.models import Invoice, Line
 
 CONFIG = RulesConfig.from_dict({"version": "t", "vat_codes": [
@@ -75,3 +77,48 @@ def test_no_tax_code_without_a_known_country_or_with_a_wrong_rate():
     rows = [item("P1", "S1", "LUX009RE4AED", A), item("P2", "S1", "LUX009RE4AED", B)]
     assert {line["Unit Tax Code"] for line in run(rows, currency="KWD")["lines"]} == {""}
     assert {line["Unit Tax Code"] for line in run(rows, tax="30.00")["lines"]} == {""}
+
+
+def location_type_cell(view, **config):
+    sources = tc.Sources(config=config, text="Lux Co\nInvoice INV-1\nitem P1\nitem P2")
+    return next(c for c in tc.check_view(view, sources)["cells"] if c["column"] == "Location Type")
+
+
+def unknown_location_view():
+    return rules_view(run([item("P1", "S1", "LUX009RE4AED", A), item("P2", "S1", "LUX009RE4AED", B)]), "", [])
+
+
+def test_the_store_of_an_unknown_location_is_rule_derived_not_a_mismatch():
+    """L4.2 (D6): nothing is printed to find; the cell says it comes from the owner rule."""
+    cell = location_type_cell(unknown_location_view())
+    assert (cell["status"], cell["sub"], cell["group"]) == (tc.VERIFIED, tc.RULE_DERIVED, tc.VERIFIED)
+    assert "L4.2" in cell["reason"] and cell["evidence"]["rule"] == "L4.2"
+
+
+def d6(view, value=None, rule=None, location=None):
+    """The unknown-location view with one thing about the D6 cell changed."""
+    fields = view["fields"]
+    cell = fields["location_type"]
+    evidence = {**cell["evidence"][0], "rule": rule or cell["evidence"][0]["rule"]}
+    return {**view, "fields": {**fields, "location_type": {**cell, "value": value or cell["value"], "evidence": [evidence]},
+                               "location": {**fields["location"], "value": location or ""}}}
+
+
+def test_the_d6_source_proves_nothing_but_a_store_at_an_unknown_location():
+    view = unknown_location_view()
+    for changed in (d6(view, value=WAREHOUSE), d6(view, value="Kiosk"), d6(view, rule="ALG-013"),
+                    d6(view, location="1234")):
+        cell = location_type_cell(changed)
+        assert (cell["status"], cell["sub"]) == (tc.MISMATCH, ""), changed["fields"]["location_type"]
+        assert cell["reason"] == "Evidence does not hold the value"
+
+
+def test_the_line_amounts_total_reaches_the_view_only_when_every_line_prints_one():
+    rows = [item("P1", "S1", "LUX009RE4AED", A), item("P2", "S1", "LUX009RE4AED", B)]
+    assert unknown_location_view()["line_amounts_total"] == "200"
+    lines = [Line(gtin=A, description="item P1", qty=1, price=Decimal(100), net_amount=Decimal(100)),
+             Line(gtin=B, description="item P2", qty=1, price=Decimal(100))]
+    inv = Invoice(number="INV-1", supplier_name="Lux Co", date="2026-08-13", currency="AED", net=Decimal(200),
+                  tax=Decimal(10), lines=lines)
+    result = run_invoice(inv, RowsSource(rows), CONFIG, text_value="Lux Co\nInvoice INV-1\nitem P1\nitem P2")
+    assert "line_amounts_total" not in rules_view(result, "", [])

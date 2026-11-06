@@ -241,10 +241,15 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str
     reconstructed = "\n".join(_row_text(row) for _, row in rows)
     searchable = "\n".join(part for part in (source_text, reconstructed) if part)
 
-    if not _has_invoice_heading(searchable):
-        return None
     if _is_purchase_order_document(searchable):
         return None
+    if not _has_invoice_heading(searchable):
+        # No title on the word list. A priced table the page itself confirms still says invoice,
+        # unless the document calls itself something else.
+        from .arithmetic_lines import names_another_document, read_lines
+
+        if names_another_document(searchable) or not read_lines(words):
+            return None
 
     lines = [line.strip() for line in searchable.splitlines() if line.strip()]
     source_lines = [line.strip() for line in source_text.splitlines() if line.strip()]
@@ -460,6 +465,12 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str
     # No tax exceeds what it is charged on: one of the two figures is misread, and nothing says which.
     if net is not None and tax is not None and to_decimal(tax) > to_decimal(net) > 0:
         net = tax = None
+    # No heading named the columns. Only then may the rows' own arithmetic find the table.
+    if not extracted_lines:
+        from .arithmetic_lines import names_another_document, read_lines
+
+        if not names_another_document(searchable):
+            extracted_lines = read_lines(words)
 
     invoice = Invoice(
         number=number,

@@ -390,12 +390,16 @@ def _page_confidence(page_lines):
     return sum(scores)/len(scores) if scores else 0.0
 
 
-def _turns_to_try(page_lines):
-    """A page the reader can barely make out may only be turned. No page with a real read pays for this."""
-    if len(page_lines)<TURNED_PAGE_MIN_LINES or _page_confidence(page_lines)>=TURNED_PAGE_CONFIDENCE:return ()
+def _reads_sideways(page_lines):
     boxes=[line_box["box"] for line_box,_ in page_lines if line_box["box"]]
-    tall=sum(box[3]-box[1]>box[2]-box[0] for box in boxes)
-    return (1,3) if 2*tall>=len(boxes) else (2,)
+    return 2*sum(box[3]-box[1]>box[2]-box[0] for box in boxes)>=len(boxes)
+
+
+def _turns_to_try(page_lines):
+    """A page with most lines sideways, or one the reader can barely make out, may only be turned. An upright page with a real read pays for nothing."""
+    if len(page_lines)<TURNED_PAGE_MIN_LINES:return ()
+    if _reads_sideways(page_lines):return (1,3)
+    return () if _page_confidence(page_lines)>=TURNED_PAGE_CONFIDENCE else (2,)
 
 
 def paddle(path,language,*,render_scale=2,max_side=None):
@@ -424,9 +428,14 @@ def paddle(path,language,*,render_scale=2,max_side=None):
                 image_limit=3600 if render_scale>2 else 2600
                 image.thumbnail((image_limit,image_limit))
                 page_lines=_read_page(reader,image,n)
+                # A sideways read can score high on long lines while it garbles short figures, so a good turn beats it.
+                to_beat=_page_confidence(page_lines)
+                if _reads_sideways(page_lines):to_beat=min(to_beat,TURNED_PAGE_CONFIDENCE)
                 for quarter_turns in _turns_to_try(page_lines):
                     turned=_read_page(reader,image.rotate(90*quarter_turns,expand=True),n)
-                    if _page_confidence(turned)>_page_confidence(page_lines):page_lines=turned
+                    if _page_confidence(turned)>to_beat:
+                        page_lines=turned
+                        break
                 for line_box,words in _trim_split_lines(page_lines):
                     line_boxes.append(line_box)
                     boxes.extend(words or [line_box])

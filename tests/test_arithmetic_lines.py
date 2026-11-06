@@ -478,3 +478,69 @@ def test_a_page_on_its_side_turns_on_a_total_with_the_currency_touching_it():
     sideways = [{**_turned(word, 1), "geometry": "word"} for word in upright]
 
     assert read_lines(_normalise_words(turn_pages(sideways)))[0].sku == "BR-104"
+
+
+def _lost_marks_page():
+    return page(
+        ["Goods", ("a", "Qty"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "197", "225.021", "44,329.137"),
+        row("TL-221 Tile adhesive", "60", "1.044.421", "62.665.260"),
+        row("CP-310 Copper elbow", "32", "251.692", "8.054.144"),
+    )
+
+
+def test_a_scan_that_turned_group_marks_into_points_reads_at_the_scale_the_table_proves():
+    assert [line.net_amount for line in read_lines(_normalise_words(_lost_marks_page()))] == [
+        Decimal("44329.137"), Decimal("62665.260"), Decimal("8054.144")]
+
+
+def test_a_heading_read_a_thousand_times_too_large_takes_the_scale_the_table_proves():
+    lines = [
+        {"sku": "BR-104", "description": "Brass hinge", "qty": "197", "price": "225.021", "net_amount": "44329.137"},
+        {"sku": "TL-221", "description": "Tile adhesive", "qty": "60", "price": "1044421", "net_amount": "62665260"},
+        {"sku": "CP-310", "description": "Copper elbow", "qty": "32", "price": "251692", "net_amount": "8054144"},
+    ]
+
+    checked = checked_lines(lines, _normalise_words(_lost_marks_page()))
+
+    assert [(Decimal(str(l["price"])), Decimal(str(l["net_amount"]))) for l in checked] == [
+        (Decimal("225.021"), Decimal("44329.137")),
+        (Decimal("1044.421"), Decimal("62665.260")),
+        (Decimal("251.692"), Decimal("8054.144")),
+    ]
+
+
+def test_whole_figures_beside_three_decimals_that_no_read_can_settle_are_blanked():
+    lines = [
+        {"sku": "BR-104", "description": "Brass hinge", "qty": "197", "price": "225.021", "net_amount": "44329.137"},
+        {"sku": "TL-221", "description": "Tile adhesive", "qty": "60", "price": "1044421", "net_amount": "62665260"},
+    ]
+
+    checked = checked_lines(lines, _normalise_words(page(["Nothing", "multiplies", "here"])))
+
+    assert checked[0]["net_amount"] == "44329.137"
+    assert checked[1]["price"] is None and checked[1]["net_amount"] is None
+
+
+def test_whole_figures_a_page_really_prints_stay():
+    lines = [
+        {"sku": "BR-104", "description": "Brass hinge", "qty": "4", "price": "2.125", "net_amount": "8.500"},
+        {"sku": "TL-221", "description": "Tile adhesive", "qty": "3", "price": "100", "net_amount": "300"},
+    ]
+    words = _normalise_words(page(
+        ["Goods", ("a", "Qty"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "4", "2.125", "8.500"),
+        row("TL-221 Tile adhesive", "3", "100", "300"),
+    ))
+
+    assert [line["net_amount"] for line in checked_lines(lines, words)] == ["8.500", "300"]
+
+
+def test_group_marks_a_scan_read_as_points_before_two_decimals_are_one_number():
+    lines = read(
+        ["Goods", ("a", "Qty"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "359", "1.422.46", "510.663.14"),
+        row("TL-221 Tile adhesive", "144", "373.22", "53.743.68"),
+    )
+
+    assert [line.net_amount for line in lines] == [Decimal("510663.14"), Decimal("53743.68")]

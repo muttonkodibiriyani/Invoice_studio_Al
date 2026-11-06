@@ -41,6 +41,7 @@ _ROW_CLOSER = re.compile(
 )
 _SIGNS = "€$£₹¥"
 _INDIAN_GROUPS = re.compile(r"[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3}(?:\.[0-9]+)?")
+_LOST_GROUP_MARKS = re.compile(r"[0-9]{1,3}(?:\.[0-9]{3})+\.[0-9]{2}")
 _WITH_UNIT = re.compile(r"([0-9]+(?:[.,][0-9]+)?)([A-Za-z]{1,6})\.?")
 _MEASURE = re.compile(r"(?i)[0-9]+(?:[.,][0-9]+)?(?:x[0-9]+)?(?:mm|cm|m|ml|cl|l|g|gm|kg|inch|in|oz|w|v)")
 _GLUED = re.compile(r"([0-9][0-9,]*[.,][0-9]{%d})([0-9][0-9,]*[.,][0-9]+)")
@@ -115,6 +116,10 @@ def _parse(text: str) -> str | None:
     text = text.strip().strip(_SIGNS).replace("'", "").replace("’", "")
     if _INDIAN_GROUPS.fullmatch(text):
         text = text.replace(",", "")
+    # "510.563.14": only a scan prints this; the group marks read as points, and the last one is the decimal.
+    if _LOST_GROUP_MARKS.fullmatch(text):
+        head, _, tail = text.rpartition(".")
+        text = f"{head.replace('.', '')}.{tail}"
     return parse_number(text)
 
 
@@ -188,6 +193,12 @@ def _row_numbers(row: list[_Word], width: float) -> list[_Number]:
             # "1.200" reads as 1.2, but dots can group thousands: the arithmetic may need 1200.
             if re.fullmatch(r"[0-9]{1,3}\.[0-9]{3}", text):
                 other = _number(text.replace(".", ""), (index,), x0, x1)
+                if other is not None:
+                    found.append(other)
+            # "8.054.144": a poor scan can print the group mark as a point, so the last one may be the decimal.
+            if re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{3}){2,}", text):
+                head, _, tail = text.rpartition(".")
+                other = _number(f"{head.replace('.', '')}.{tail}", (index,), x0, x1)
                 if other is not None:
                     found.append(other)
             mirrored = _reversed_digits(text)
@@ -719,6 +730,23 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
     return lines
 
 
+def _whole_figures(line: dict[str, Any]) -> bool:
+    return all(line.get(field) not in (None, "") and "." not in str(line[field]) for field in ("price", "net_amount"))
+
+
+def _mixed_scale(lines: list[dict[str, Any]]) -> bool:
+    """Whole figures beside rows that print three decimals: a scan may have made the decimal point read as a group mark."""
+    return any(map(_whole_figures, lines)) and any(
+        re.search(r"\.[0-9]{3}$", str(line.get(field) or "")) for line in lines for field in ("price", "net_amount")
+    )
+
+
+def _scale_differs(line: dict[str, Any], other: dict[str, Any]) -> bool:
+    """The read of the row's own figures is blank, or the same digits a thousand times smaller."""
+    amount, found = _as_decimal(line.get("net_amount")), _as_decimal(other.get("net_amount"))
+    return found is None or amount is not None and amount == found * 1000
+
+
 def _row_multiplies(line: dict[str, Any]) -> bool:
     qty, price, amount = (_as_decimal(line.get(field)) for field in ("qty", "price", "net_amount"))
     if qty is None or price is None or amount is None:
@@ -774,11 +802,14 @@ def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[d
     A row whose figures do not multiply takes them from the rows' own arithmetic, when the page confirms a table;
     otherwise the figure nothing confirms is cleared, so the line rules flag it. Rows that multiply are left alone."""
     figures_fail = not all(_row_multiplies(line) for line in lines)
-    if not lines or not figures_fail and not any(_text_doubtful(line) for line in lines):
+    mixed_scale = _mixed_scale(lines)
+    if not lines or not figures_fail and not mixed_scale and not any(_text_doubtful(line) for line in lines):
         return lines
     found = [line.model_dump(mode="json") for line in read_lines(words)]
     if len(found) > len(lines) and figures_fail:
         return found
+    if mixed_scale and len(found) != len(lines):
+        return [{**line, "price": None, "net_amount": None} if _whole_figures(line) else line for line in lines]
     if len(found) != len(lines):
         # Not row for row: only rows the same amount identifies may take their text.
         amounts = {abs(_as_decimal(other["net_amount"])): other for other in found if other.get("net_amount") not in (None, "")}
@@ -789,7 +820,9 @@ def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[d
         ]
     merged = []
     for line, other in zip(lines, found):
-        if _row_multiplies(line):
+        if mixed_scale and _whole_figures(line) and _scale_differs(line, other):
+            merged.append({**_checked_text(line, other), **{field: other.get(field) for field in ("qty", "price", "net_amount", "tax_amount")}})
+        elif _row_multiplies(line):
             merged.append(_checked_text(line, other))
         elif other.get("net_amount") not in (None, "") and other.get("price") not in (None, ""):
             merged.append({**_checked_text(line, other), **{field: other[field] for field in ("qty", "price", "net_amount", "tax_amount")}})

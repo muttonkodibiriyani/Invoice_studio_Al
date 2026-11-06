@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from .models import Invoice
 from .evidence import build as build_evidence
-from . import ai_check, ai_context, ai_rules, item_rules, item_search, matching, rules_first, scan_guard
+from . import ai_check, ai_context, ai_rules, item_rules, item_search, layout_extract, matching, rules_first, scan_guard
 from .fine_rules_source import LookupRulesSource
 from .numbers import to_decimal
 
@@ -552,15 +552,25 @@ def _ends_the_chain(invoice,missing):
 
 def _rows_ahead(candidate,best):
     """How many more priced rows the candidate read than the best read, when both total zero and nothing else can
-    tell: lines of no value sum to a net of 0 however many of them were read. A row with no quantity or price is no
-    line, and once the best read has codes only a row with a code counts. Fewer priced rows never win on a tie of
-    coded rows: the rows it dropped are gone with no flag. Otherwise 0, and the score decides."""
+    tell: lines of no value sum to a net of 0 however many of them were read. A row with no quantity or price, or a
+    code or item name, is no line, and once the best read has codes only a row with a code counts. Fewer item rows never
+    win on a tie of coded rows: the rows it dropped are gone with no flag. On a tie, the read with fewer such junk rows
+    is ahead. Otherwise 0, and the score decides."""
     if candidate is None or best is None or candidate.net!=0 or best.net!=0:return 0
     priced=lambda invoice:[l for l in invoice.lines if l.qty is not None and l.price is not None]
-    coded=lambda invoice:[l for l in priced(invoice) if l.sku or l.gtin]
-    if len(priced(candidate))<len(priced(best)):return -1
-    rows=coded if coded(best) else priced
-    return len(rows(candidate))-len(rows(best))
+    items=lambda invoice:[l for l in priced(invoice) if l.sku or l.gtin or _names_an_item(l.description)]
+    coded=lambda invoice:[l for l in items(invoice) if l.sku or l.gtin]
+    if len(items(candidate))<len(items(best)):return -1
+    rows=coded if coded(best) else items
+    junk=lambda invoice:len(priced(invoice))-len(items(invoice))
+    return len(rows(candidate))-len(rows(best)) or junk(best)-junk(candidate)
+
+
+# A priced row that is a total or a tax is a summary row the reader took for a line.
+_SUMMARY_ROW=re.compile(r"(?i)^\W*(?:(?:sub\s*|grand\s+|net\s+|page\s+|gross\s+)?total\b|(?:vat|tax|gst)\b)")
+def _names_an_item(description):
+    words=str(description or "")
+    return bool(re.search(r"[^\W\d_]",words)) and not _SUMMARY_ROW.match(words)
 
 
 _same=ai_check.same
@@ -861,6 +871,56 @@ def _date_outside_window(value):
     return None
 
 
+def guard_figures(invoice,evidence,header_readers,source,text):
+    """Net and tax against the page's own arithmetic: net + tax = the printed total, the lines = the net, or tax = a
+    rate x the net. Wordings never end, so a figure proved by none is flagged, and one the printed total contradicts
+    goes blank and flagged, as does an unproved whole number: nothing tells it from a count or a term. target_check holds
+    the sheet's cells on the same arithmetic; this keeps a wrong figure out.
+    """
+    header=evidence.setdefault("header",{})
+    net,tax=to_decimal(invoice.get("net")),to_decimal(invoice.get("tax"))
+    totals=scan_guard.printed_totals(text)
+    lines_prove=net is not None and scan_guard.lines_prove_net(invoice.get("lines"),net,text)
+    whole=lambda value:scan_guard.printed_whole(value,text)
+    # Below 100, a tie between two whole numbers is as likely to be two counts.
+    rate_ties=net is not None and tax is not None and bool(_printed_rate(invoice)) and not (whole(net) and abs(net)<100)
+    adds_up=disagrees=False
+    if net is not None and tax is not None and totals:
+        adds_up=any(abs(abs(net+tax)-total)<=AMOUNT_TOLERANCE for total in totals)
+        disagrees=not adds_up
+    # Over twice every printed total: no discount explains it, the figure lost its decimal mark. Under half of one:
+    # no freight explains it, and lines read short sum to a page's subtotal as neatly as to the net.
+    outsized=net is not None and bool(totals) and abs(net)>2*max(totals) and not lines_prove
+    short=net is not None and bool(totals) and not adds_up and max(totals)>2*(abs(net)+abs(tax or 0))
+    # A rate that ties leaves room for a charge on top, or for lines that prove the net; not for a total under them.
+    contradicted=outsized or short or (disagrees and not (rate_ties and (lines_prove or abs(net+tax)<max(totals))))
+    def settle(field,amount,proved,blank):
+        if invoice.get(field) in (None,"") or (proved and not blank):return
+        value=invoice.get(field)
+        reason=("the printed total does not equal the net plus the tax, so it needs checking" if blank else
+                "neither the printed total, the lines nor a tax rate prove this figure, so it needs checking")
+        blank_it=blank or whole(amount)
+        # A value that stays keeps the AI's flag: it names the other reading, which a person needs beside this one.
+        if not blank_it and (header.get(field) or {}).get("review"):return
+        header[field]=_review(header.get(field),None,source,reason,value,"contradicted" if blank else "unproven")
+        if blank_it:invoice[field]=None;header_readers.pop(field,None)
+    settle("net",net,adds_up or ((lines_prove or rate_ties) and not disagrees),short or (contradicted and not lines_prove))
+    settle("tax",tax,adds_up or (rate_ties and not disagrees),contradicted)
+    return invoice,evidence
+
+
+def guard_labels(invoice,evidence,header_readers,source,reads):
+    """A value only a weak wording, a strip of headings or an open-ended label names stays and is flagged: wordings
+    never end, and these fields have no arithmetic behind them. An AI's flag stays, it names the other reading."""
+    header=evidence.setdefault("header",{})
+    for read in reads:
+        for field,value in layout_extract.unproven_readings(read["text"],read["boxes"]).items():
+            if header_readers.get(field)=="ai" or str(invoice.get(field))!=str(value) or (header.get(field) or {}).get("review"):continue
+            reason="only a wording that does not prove what this value is names it, so it needs checking"
+            header[field]=_review(header.get(field),None,source,reason,value,"unproven")
+    return invoice,evidence
+
+
 def guard_header(invoice,evidence,header_readers,source,text):
     """PO only from a PO label, never a P.O. Box; an absent VAT is flagged; inclusive VAT lines are one flag.
 
@@ -1149,7 +1209,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 trace[-1]["recovery"]=result["recovery"]
             if candidate is not None:
                 local_reads.append({"engine":engine,"invoice":result["invoice"],
-                                    "boxes":result.get("boxes",[]),
+                                    "text":result["text"],"boxes":result.get("boxes",[]),
                                     "source":"ocr" if engine=="paddleocr" else "native"})
             # On a tied score a read that passes the basic checks beats one that does not: the gaps count the
             # same, but a missing number or an unreconciled table is not the same as a missing date.
@@ -1343,7 +1403,9 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             if final.get(field) not in (None,""):header_map[field]=read["engine"]
         final,best_evidence=guard_lines(final,dict(best_evidence or {}),line_map,best_source,scan,ocr_boxes)
         final,best_evidence=guard_amounts(final,best_evidence,line_map,best_source)
+        final,best_evidence=guard_figures(final,best_evidence,header_map,best_source,text)
         final,best_evidence=guard_header(final,best_evidence,header_map,best_source,text)
+        final,best_evidence=guard_labels(final,best_evidence,header_map,best_source,local_reads)
         # Lines the AI read, and rules this read's AI just added, run here: the same rules, on what the merge left empty.
         if ai_calls:
             if ai_rule_keep is not None and ai_status in ("fallback","gap_fill","cross_check","selected"):

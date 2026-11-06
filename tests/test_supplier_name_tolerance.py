@@ -153,3 +153,20 @@ def test_with_no_configured_buyer_the_printed_name_stands():
 def test_the_configured_buyer_on_a_line_of_the_page_is_no_candidate():
     candidates = supplier_candidates({"pages": {1: "Orchid Retail LLC\nHarbour Lane LLC"}}, owner_name="Orchid Retail LLC")
     assert [candidate["name"] for candidate in candidates] == ["Harbour Lane LLC"]
+
+
+@pytest.mark.parametrize("owner, printed", [
+    ("Orchid Retail", "Orchid Retail LLC"), ("Orchid Retail", "Orchid Retail L.L.C."), ("Orchid Retail LLC", "Orchid Retail L.L.C."),
+    ("Orchid Retail LLC", "Orchjd Retail LLC"), ("Orchid Retail", "0rchid Retail L.L.C."),
+])
+def test_the_owner_is_no_supplier_with_its_form_unset_or_a_typo(owner, printed):
+    names = [c["name"] for c in supplier_candidates({"pages": {1: f"{printed}\nHarbour Lane LLC"}}, owner_name=owner)]
+    assert names == ["Harbour Lane LLC"]
+
+
+@pytest.mark.parametrize("owner, printed", [
+    ("Orchid Retail LLC", "Orchid Retail Trading LLC"), ("Orchid Retail", "Orchard Retail LLC"), ("Abc Co", "Abd LLC"),
+])
+def test_another_company_near_the_owner_stays_a_supplier(owner, printed):
+    names = [c["name"] for c in supplier_candidates({"pages": {1: f"{printed}\nHarbour Lane LLC"}}, owner_name=owner)]
+    assert printed in names

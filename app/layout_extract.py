@@ -8,6 +8,7 @@ from business rules.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
@@ -17,33 +18,46 @@ from statistics import fmean, median
 from typing import Any, Iterable
 
 from app.models import Invoice, Line
-from app.numbers import to_decimal
+from app.numbers import ISO_CURRENCIES, to_decimal
 
 
 # An OCR reader may print a title's words with no space between them ("TaxInvoice"), so the
 # qualifier binds to "invoice" with optional whitespace. A labelled invoice number or date is
 # accepted as a title in its own right: a scan whose title glyphs were missed still names itself.
 _STRONG_INVOICE = re.compile(
-    r"(?im)(?:\b(?:tax|commercial|sales|debit|credit)\s*invoice\b|^\s*invoice\s*$"
-    r"|\binvoice\s*(?:(?:no|number|date)\b|#)|^\s*invoice\s*:\s*(?=[A-Z0-9./_-]*[0-9]))"
+    r"(?im)(?:\b(?:tax|vat|gst|commercial|sales|debit|credit)\s*invoice\b|^\s*invoice\s*$"
+    r"|\binvoice\s*(?:(?:no|number|date)\b|#)|^\s*invoice\s*:\s*(?=[A-Z0-9./_-]*[0-9])"
+    r"|^\s*(?:bill|(?:credit|debit)\s*(?:note|memo)|(?:sales\s+)?return\s+note)\s*$)"
 )
+# A credit document prints what it takes back, often with no sign on it. Its amounts are left to review.
+_CREDIT_TITLE = re.compile(
+    r"(?im)^\s*(?:(?:tax|vat|gst)\s+)?(?:credit\s*(?:note|memo|invoice)|(?:sales\s+)?return\s+note)\b"
+)
+# "فاتورة", in the logical order an OCR model returns or the visual order a text layer holds.
+_ARABIC_INVOICE = re.compile("فاتورة|ةروتاف")
 _PACKING_TITLE = re.compile(r"(?i)\bpacking\s+(?:list|slip)\b")
 _PURCHASE_ORDER_HEADING = re.compile(r"(?im)^\s*purchase\s+order(?:\s+no\b[^\n]*)?\s*$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]{0,79}$")
 # The same identifier as printed, with the single spaces between its parts kept.
 _SPACED_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9./_-]*(?: [A-Za-z0-9][A-Za-z0-9./_-]*){0,5}$")
 _GTIN = re.compile(r"(?i)\b(?:EAN|GTIN|UPC)\s*[:#-]?\s*([0-9][0-9 -]{6,22}[0-9])\b")
-_CURRENCY = re.compile(r"^[A-Z]{3}$")
 # What separates a label from its value. A scan adds marks of its own between the two -
 # "Invoice No: * 70001234", "Invoice Date ±+ 11.03.2024" - and a label whose value is
 # unreachable behind them reads as no value at all.
 _LABEL_GAP = r"\s*(?:[:#=-]\s*)?(?:[^\w\s]{1,2}\s*)?"
+# "Reference Invoice No: 41" cites another invoice.
+_NOT_CITED = "".join(rf"(?<!\b{word}\s)" for word in ("reference", "ref", "original", "against", "previous", "last", "related"))
 _KNOWN_CURRENCY = "AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR"
 # What may follow a printed amount: its currency code, glued on or not ("1,234.50AED"), and then nothing that
 # would make the digits part of something longer. A plain \\b would stop inside "1,234.50AED", at "1,234".
 # A rate ("5 %"), a date ("12/03") or a count ("12 Items") is not an amount.
 _COUNT_WORDS = r"items?|lines?|pcs|pieces?|units?|nos?|qty|cartons?|ctns?|boxes|box|products?|articles?"
-_AMOUNT_END = rf"\s*(?:{_KNOWN_CURRENCY})?(?![\w%]|[.,][0-9]|\s*%|\s*[/-]\s*[0-9]|\s+(?:{_COUNT_WORDS})\b)"
+# Nor is a figure whole when a group follows it after a space or an apostrophe ("676 507,80", "29'566.32"): a figure
+# with its decimals printed already ended, but one without leaves the row to the word boxes, which can tell the gap.
+_AMOUNT_END = (
+    rf"(?!['’][0-9])(?:(?<=[.,][0-9])|(?<=[.,][0-9]{{2}})|(?<=[.,][0-9]{{3}})|(?!\s+[0-9]{{3}}(?![0-9])))"
+    rf"\s*(?:{_KNOWN_CURRENCY})?(?![\w%]|[.,][0-9]|\s*%|\s*[/-]\s*[0-9]|\s+(?:{_COUNT_WORDS})\b)"
+)
 # The currency between a label and its figure.
 # How a figure's money can be marked, glued on or not: the codes and the short forms and signs printed for them.
 # A list, not any letters: "Tax NO30467" and "VAT INV1234.50" are references.
@@ -134,13 +148,92 @@ class _DraftLine:
     tax_amount: Decimal | None = None
 
 
-def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+# Currencies a page names for something other than the invoice.
+_OTHER_CURRENCY = re.compile(r"(?i)\b(?:foreign|reporting|beneficiary|remit\w*|settlement|bank|a/c|account)\s+currency\b")
+_NET_NAME = re.compile(r"(?i)\b(?:net|sub[\s-]*total|taxable)\b")
+_NOT_NET = re.compile(r"(?i)\b(?:due|payable|incl\w*|gross|with\s+(?:vat|tax|gst)|qty|quantity|items?|lines?|pcs|pieces|units?"
+                      r"|pages?|non[\s-]*tax\w*|exempt|grand|غير|معف\w*)\b|^\W*total\W*$")
+_TAX_NAME = re.compile(r"(?i)\b(?:vat|tax|gst)\b")
+_NOT_TAX = re.compile(r"(?i)\b(?:amount\s+(?:due|payable)|withholding|wht|service|tourism|items?|qty|quantity|lines?)\b")
+_COUNT_HEADING = re.compile(r"(?i)\b(?:items?|qty|quantity|lines?|pcs|pieces|units?)\b")
+_RATE_LIKE = 25
+
+
+_EDGE = 0.01
+
+
+def _at_page_edge(word: _Word) -> bool:
+    return word.x0 < word.page_width * _EDGE or word.x1 > word.page_width * (1 - _EDGE)
+
+
+def _compact_value(value: str) -> str:
+    return re.sub(r"[^\w]", "", value).casefold()
+
+
+def _is_cut(value: str | None, cut: list[str]) -> bool:
+    if not value:
+        return False
+    compact = _compact_value(value)
+    return any(piece and (compact.startswith(piece) or compact.endswith(piece)) for piece in cut)
+
+
+def _worded_figures(row: str) -> list[tuple[str, str]]:
+    """Each figure of the row, with the words printed between it and the figure before."""
+
+    out, start = [], 0
+    for match in re.finditer(r"[0-9][0-9,.'’ ]*[0-9]|[0-9]", row):
+        out.append((row[start : match.start()], match[0].strip()))
+        start = match.end()
+    return out
+
+
+def _printed_as_other(value: Decimal, rows: list[str], name: re.Pattern[str], other: re.Pattern[str]) -> bool:
+    """Whichever wording read the figure, the page says it is something else: every wording printed on it says so,
+    it is a year, or it is the tail of a longer figure ("VAT 33 825.39"), or it stands under a heading of counts."""
+
+    def is_value(figure: str) -> bool:
+        return any(_parse_decimal(part) == value for part in {figure, *figure.split()})
+
+    worded = [
+        (words, figure) for row in rows for words, figure in _worded_figures(row) if re.search("[^\\W\\d_]", words)
+    ]
+    for words, figure in worded:
+        spaced = re.fullmatch(r"([0-9]{1,3})[ '’](.+)", figure)
+        if name.search(words) and spaced and _parse_decimal(spaced[2]) == value and int(spaced[1]) > _RATE_LIKE:
+            return True
+    holding = [(words, figure) for words, figure in worded if is_value(figure)]
+    named = [(words, figure) for words, figure in holding if name.search(words)]
+    if 1900 <= value <= 2099 and any(
+        name.search(row) and figure == format(value, "f") for row in rows for _, figure in _worded_figures(row)
+    ):
+        return True
+    if named:
+        return all(other.search(words) for words, _ in holding)
+    return any(
+        name.search(above) and _COUNT_HEADING.search(above) and any(is_value(part) for part in row.split())
+        and not re.search("[^\\W\\d_]", row)
+        for above, row in zip(rows, rows[1:])
+    )
+
+
+def unproven_readings(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """{field: value} for what this page's wording does not prove: the value stands, a person checks it."""
+
+    weak: set[str] = set()
+    invoice = extract_invoice(text, boxes, weak) or {}
+    return {field: invoice[field] for field in weak if invoice.get(field) not in (None, "")}
+
+
+def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str] | None = None) -> dict[str, Any] | None:
     """Extract visible invoice facts from OCR/native text and word boxes.
 
     A strong invoice title is required.  Conflicting labels and ambiguous dates
     are left unset, and line totals are never used to invent header totals.
     The result is shaped and validated by :class:`app.models.Invoice`.
+    Fields read from a wording that proves little are added to ``weak``.
     """
+
+    weak = set() if weak is None else weak
 
     source_text = text if isinstance(text, str) else ""
     words = _normalise_words(boxes or [])
@@ -159,7 +252,7 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         lines,
         (
             re.compile(
-                r"(?i)\b(?:invoice|inv|document|doc)\s*(?:no\.?|number|#)" + _LABEL_GAP +
+                r"(?i)" + _NOT_CITED + r"\b(?:invoice|inv|document|doc)\s*(?:no\.?|number|#)" + _LABEL_GAP +
                 r"([A-Z0-9][A-Z0-9./_-]{0,79})"
             ),
             # A title that carries the number: "Tax Invoice SI/2026/0101", alone on its line.
@@ -201,12 +294,20 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     buyer_name = _spatial_buyer_name(party_rows) or _extract_buyer_name(party_lines)
     supplier_name = (
         _spatial_party_name(
-            party_rows, {"supplier", "supplier name", "from", "sold by", "seller", "vendor"}
+            party_rows, {"supplier", "supplier name", "sold by", "seller", "vendor", "supplied by", "billed by", "billed from"}
         )
         or supplier_name
-        or _letterhead_supplier(party_rows)
-        or _footer_repeated_letterhead(party_rows, buyer_name)
     )
+    if supplier_name is None:
+        # A person, an office or a route prints these too.
+        supplier_name = _spatial_party_name(party_rows, {"from", "issued by"})
+        if supplier_name is None:
+            supplier_name = _letterhead_supplier(party_rows)
+            if supplier_name is not None and _LOOSE_FORM_END.search(supplier_name):
+                weak.add("supplier_name")
+            supplier_name = supplier_name or _footer_repeated_letterhead(party_rows, buyer_name)
+        else:
+            weak.add("supplier_name")
     po = _unique_identifier(
         lines,
         (
@@ -244,7 +345,7 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     column_date = _column_labeled_date(rows)
     if invoice_date is None and column_date is not None:
         invoice_date = _parse_date(column_date)
-    currency = _extract_currency(lines) or _currency_under_label(rows)
+    currency = _extract_currency([line for line in lines if not _OTHER_CURRENCY.search(line)]) or _currency_under_label(rows)
     net_patterns = (
             re.compile(
                 r"(?i)^\s*net\s+total\s*(?::\s*)?" + _CODE_GAP +
@@ -300,6 +401,26 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         net = spatial_net
     if tax is None:
         tax = spatial_tax
+    # Whatever the wordings above missed, from the labels the page prints (app.header_labels).
+    from app.header_labels import read_labels
+
+    labelled = read_labels(rows)
+    earlier = {"number": number, "po": po, "date": invoice_date, "tax": tax, "supplier": supplier_name}
+    weak.update("supplier_name" if field == "supplier" else field for field in labelled["weak"] if earlier.get(field, 0) is None)
+    number = number if number is not None else labelled.get("number")
+    # A word after the value that no label ends: it may be the value's own or the page's next word.
+    if number and _RUNS_ON.search(number):
+        weak.add("number")
+    po = po if po is not None else labelled.get("po")
+    if po and _RUNS_ON.search(po):
+        weak.add("po")
+    # A scan reads the O of a printed PO as a zero, and cuts the value at its marks.
+    if po:
+        po = re.sub(r"^(L?)P0(?=[-/.\s])", r"\1PO", re.sub(r"\s*([-/])\s*", r"\1", po))
+    invoice_date = invoice_date if invoice_date is not None else labelled.get("date")
+    currency = currency if currency is not None else labelled.get("currency")
+    tax = tax if tax is not None else labelled.get("tax")
+    supplier_name = supplier_name if supplier_name is not None else labelled.get("supplier")
     extracted_lines = _extract_table_lines(words)
     # A scan can put a stray mark before the net ("Net total: 8 800.00"). Its last amount is
     # the net only when the barcode rows add up to it exactly; "8 800.00" may be 8,800 otherwise.
@@ -317,6 +438,28 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         )
         if extracted_lines:
             net = candidate
+    if net is None and "net" in labelled["weak"]:
+        weak.add("net")
+    net = net if net is not None else labelled.get("net")
+    wording = [*source_lines, *(_row_text(row).strip() for _, row in rows)]
+    if net is not None and _printed_as_other(net, wording, _NET_NAME, _NOT_NET):
+        net = None
+    if tax is not None and _printed_as_other(tax, wording, _TAX_NAME, _NOT_TAX):
+        tax = None
+    # A word the page's edge touches was cut there: "1126" of a longer figure, the end of a name.
+    cut = [_compact_value(word.text) for word in words if _at_page_edge(word)]
+    number, po, supplier_name = (
+        None if _is_cut(value, cut) else value for value in (number, po, supplier_name)
+    )
+    net = None if net is not None and _is_cut(format(net, "f"), cut) else net
+    tax = None if tax is not None and _is_cut(format(tax, "f"), cut) else tax
+    # "1,200.00 CR" is a credit: whichever wording read it, its sign is left to review.
+    credit_document = bool(_CREDIT_TITLE.search(searchable))
+    net = None if credit_document or net in labelled["credits"] else net
+    tax = None if credit_document or tax in labelled["credits"] else tax
+    # No tax exceeds what it is charged on: one of the two figures is misread, and nothing says which.
+    if net is not None and tax is not None and to_decimal(tax) > to_decimal(net) > 0:
+        net = tax = None
 
     invoice = Invoice(
         number=number,
@@ -357,7 +500,7 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
 
 
 def _has_invoice_heading(text: str) -> bool:
-    return bool(_STRONG_INVOICE.search(text))
+    return bool(_STRONG_INVOICE.search(text) or _ARABIC_INVOICE.search(unicodedata.normalize("NFKC", text)))
 
 
 def is_packing_page(page_text: str) -> bool:
@@ -605,10 +748,16 @@ def _unique_identifier(
                 value = match.group(1).strip().rstrip(".,:;")
                 # A label followed by the next label ("Invoice No.  Tax Invoice
                 # Date") is not a value; printed identifiers carry a digit.
-                if _SAFE_IDENTIFIER.fullmatch(value) and any(char.isdigit() for char in value):
+                if _SAFE_IDENTIFIER.fullmatch(value) and any(char.isdigit() for char in value) and not _is_date(value):
                     values.append(value)
                 break
     return _only_distinct(values)
+
+
+def _is_date(value: str) -> bool:
+    """A date printed where an identifier belongs is the next field's value, whatever the label before it says."""
+
+    return bool(re.fullmatch(r"[0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4}", value.strip())) or _parse_date(value) is not None
 
 
 def _spatial_invoice_number(rows: list[tuple[int, list[_Word]]]) -> str | None:
@@ -627,7 +776,7 @@ def _spatial_invoice_number(rows: list[tuple[int, list[_Word]]]) -> str | None:
             candidate = word.text.strip().replace(" ", "")
             if word.x0 <= heading_right or not _SAFE_IDENTIFIER.fullmatch(candidate):
                 continue
-            if len(candidate) < 4 or not any(char.isdigit() for char in candidate):
+            if len(candidate) < 4 or not any(char.isdigit() for char in candidate) or _is_date(candidate):
                 continue
             candidates.append(candidate)
         if not candidates and row_index:
@@ -639,7 +788,7 @@ def _spatial_invoice_number(rows: list[tuple[int, list[_Word]]]) -> str | None:
                     candidate = word.text.strip().replace(" ", "")
                     if word.x0 <= heading_right or not _SAFE_IDENTIFIER.fullmatch(candidate):
                         continue
-                    if len(candidate) < 4 or not any(char.isdigit() for char in candidate):
+                    if len(candidate) < 4 or not any(char.isdigit() for char in candidate) or _is_date(candidate):
                         continue
                     candidates.append(candidate)
         if len(set(candidates)) == 1:
@@ -659,9 +808,7 @@ def _spatial_labeled_date(rows: list[tuple[int, list[_Word]]]) -> str | None:
                 phrase = " ".join(_normal(word.text) for word in row[start:end])
                 if phrase not in labels:
                     continue
-                if phrase == "date" and start and _normal(row[start - 1].text) in {
-                    "due", "run", "report",
-                }:
+                if phrase == "date" and start and _QUALIFIED_DATE.search(_normal(row[start - 1].text)):
                     continue
                 label_right = max(word.x1 for word in row[start:end])
                 for candidate_word in row[end:]:
@@ -787,6 +934,9 @@ def _identifier_below_label(
     return _only_distinct(values)
 
 
+_CITING_WORDS = {"reference", "ref", "original", "against", "previous", "last", "related"}
+
+
 def _spatial_joined_identifier(
     rows: list[tuple[int, list[_Word]]], labels: set[str]
 ) -> str | None:
@@ -807,15 +957,20 @@ def _spatial_joined_identifier(
                 label_words = row[start:end]
                 if _label_phrase(label_words) not in labels:
                     continue
+                if start and _normal(row[start - 1].text) in _CITING_WORDS:
+                    break
                 label_right = max(word.x1 for word in label_words)
                 label_height = max(word.height for word in label_words)
                 pieces: list[str] = []
                 sources: set[str] = set()
                 previous_right = label_right
-                for word in row[end:]:
+                for position, word in enumerate(row[end:], end):
                     if word.x0 < label_right:
                         continue
                     token = word.text.strip().replace(" ", "")
+                    # The value runs along the line only as far as the next label or a date.
+                    if pieces and (_starts_label(row, position) or _is_date(token)):
+                        break
                     if token in {":", "#", "-"} and not pieces:
                         previous_right = word.x1
                         continue
@@ -851,10 +1006,17 @@ def _spatial_joined_identifier(
                     and len(candidate) <= 80
                     and (_SAFE_IDENTIFIER.fullmatch(candidate) or _SPACED_IDENTIFIER.fullmatch(candidate))
                     and any(character.isdigit() for character in candidate)
+                    and not _is_date(candidate)
                 ):
                     values.append(candidate)
                 break
     return _only_distinct(values)
+
+
+def _starts_label(row: list[_Word], index: int) -> bool:
+    from app.header_labels import starts_label
+
+    return starts_label(row, index)
 
 
 def _label_remainder(words: list[_Word], labels: set[str], prefix: bool = True) -> str | None:
@@ -1016,10 +1178,20 @@ def _spatial_buyer_name(rows: list[tuple[int, list[_Word]]]) -> str | None:
     return _only_distinct(values)
 
 
-_COMPANY_FORM = re.compile(
-    r"(?i)\b(?:l\.?\s?l\.?\s?c|ltd|limited|inc|incorporated|plc|fz\s?llc|fze|fzco|"
-    r"w\.?\s?l\.?\s?l|gmbh|s\.?a\.?r\.?l|b\.?v|n\.?v|s\.?p\.?a|pvt|"
-    r"co\.?\s*ltd|establishment|corporation|&\s*co)\b"
+_FORM_WORD = (
+    r"(?:l\.?\s?l\.?\s?c|ltd|limited|inc|incorporated|plc|fz\s?llc|fze|fzco|w\.?\s?l\.?\s?l|gmbh|s\.?a\.?r\.?l"
+    r"|b\.?v|n\.?v|s\.?p\.?a|pvt|private|pte|pjsc|psc|saog|saoc|b\.?s\.?c|k\.?s\.?c\.?c|est|establishment|corporation"
+    r"|corp|co|company|s\.a|a\.?g|&\s*co)"
+)
+# A name carries its form whole: "Pvt Ltd" and "Co. Ltd" are one form, and a dot printed on it is part of it.
+_COMPANY_FORM = re.compile(rf"(?i)\b{_FORM_WORD}\b(?:[\s.,]*\b{_FORM_WORD}\b)*\.?")
+# These end plenty of sentences too: "Serving the Gulf Est.", "A Division of the Company".
+_LOOSE_FORM_END = re.compile(r"(?i)(?<![\w.])(?:est|corp|co|company)\.?$")
+_RUNS_ON = re.compile(r"[0-9]\S*\s+[A-Za-z]{2,}$")
+
+
+_BUYER_LABEL_IN_ROW = re.compile(
+    r"(?i)\b(?:bill(?:ed)?\s+to|sold\s+to|ship(?:ped)?\s+to|deliver(?:ed)?\s+to|buyer|customer|client|consignee)\b"
 )
 
 
@@ -1044,6 +1216,9 @@ def _letterhead_supplier(rows: list[tuple[int, list[_Word]]]) -> str | None:
         if not row or _row_y(row) > row[0].page_height * 0.2:
             continue
         text = _row_text(row)
+        # A party block at the head of the page names the buyer, not the issuer.
+        if _BUYER_LABEL_IN_ROW.search(text):
+            continue
         match = _COMPANY_FORM.search(text)
         if match is None:
             continue
@@ -1199,7 +1374,8 @@ def _clean_party_name(value: Any) -> str | None:
     # A form prints its own field labels beside the name: "Bill To: Company: ACME LLC".
     leading = (
         r"(?:bill\s+to|buyer|company(?:\s+name)?|customer(?:\s+name)?|"
-        r"supplier(?:\s+name)?|seller(?:\s+name)?|vendor|sold\s+by|from)"
+        r"supplier(?:\s+name)?|seller(?:\s+name)?|vendor|sold\s+by|issued\s+by|supplied\s+by|billed\s+by|"
+        r"billed\s+from|from)"
     )
     while re.match(rf"(?i)^{leading}\b(?!$)", candidate):
         shortened = re.sub(rf"(?i)^{leading}\b\s*:?[ \t|,-]*", "", candidate, count=1)
@@ -1259,11 +1435,18 @@ def _extract_printed_date(lines: list[str]) -> str | None:
     return next(iter(normalized.values())) if len(normalized) == 1 else None
 
 
+# "Due Date", "Order Date": a date of something else, whichever line the invoice's own date stands on.
+_QUALIFIED_DATE = re.compile(
+    r"(?i)\b(?:due|delivery|order|po|lpo|ship(?:ping|ment)?|d[ie]spatch|expiry|payment|print(?:ed)?|run|report|posting"
+    r"|valid(?:ity)?|value)\s*$"
+)
+
+
 def _extract_date(lines: list[str]) -> str | None:
     priorities = (
         re.compile(r"(?i)\bdocument\s+date" + _LABEL_GAP + r"([0-9A-Z./ -]{6,24})"),
         re.compile(r"(?i)\binvoice\s+date" + _LABEL_GAP + r"([0-9A-Z./ -]{6,24})"),
-        re.compile(r"(?i)^\s*date" + _LABEL_GAP + r"([0-9A-Z./ -]{6,24})\s*$"),
+        re.compile(r"(?i)^\s*dated?" + _LABEL_GAP + r"([0-9A-Z./ -]{6,24})\s*$"),
         re.compile(
             r"(?i)(?<!report\srun\s)(?<!run\s)\bdate" + _LABEL_GAP + r"([0-9A-Z./ -]{6,24})"
         ),
@@ -1271,11 +1454,13 @@ def _extract_date(lines: list[str]) -> str | None:
     for pattern in priorities:
         values: list[str] = []
         for line in lines:
-            match = pattern.search(line)
-            if match:
+            for match in pattern.finditer(line):
+                if _QUALIFIED_DATE.search(line[: match.start()]):
+                    continue
                 parsed = _parse_date(match.group(1).strip())
                 if parsed:
                     values.append(parsed)
+                break
         if values:
             return _only_distinct(values)
     return None
@@ -1399,11 +1584,13 @@ def _extract_currency(lines: list[str]) -> str | None:
         ),
     )
     for line in lines:
+        if re.search(r"(?i)\b(?:equivalent|exchange\s+rate|rate\s+of\s+exchange|converted)\b", line):
+            continue
         for pattern in patterns:
             match = pattern.search(line)
             if match:
                 candidate = match.group(1).upper()
-                if _CURRENCY.fullmatch(candidate):
+                if candidate in ISO_CURRENCIES:
                     values.append(candidate)
                 break
     return _only_distinct(values)
@@ -1460,9 +1647,23 @@ def _parse_decimal(value: str) -> Decimal | None:
 # A reader can return a thousands separator as a word of its own, so "1 , 028.80" arrives as
 # three words. Glued back together it is one printed amount; read apart, the last piece alone
 # would be a wrong total that looks perfectly plausible.
-_NUMBER_PIECE = re.compile(r"^(?:,|[0-9][0-9,.]*)$")
+_NUMBER_PIECE = re.compile(r"^(?:,|[0-9][0-9,.'’]*)$")
 # A reader can also glue the money mark to the figure: "234.50AED", "AED234.50", "RO30,467.184".
-_GLUED_CODE = re.compile(rf"^(?:{_MONEY_MARK})?([0-9][0-9,.]*)(?:{_MONEY_MARK})?$")
+_GLUED_CODE = re.compile(rf"^(?:{_MONEY_MARK}|Rs)?\.?([0-9][0-9,.'’]*)(?:{_MONEY_MARK})?$")
+# A group of thousands after a space: "676 507,80". Only the gap of one printed space joins them, so two columns of
+# figures stay two figures, and only the piece before it can have opened a number.
+_SPACE_GROUP = re.compile(r"^[0-9]{3}(?:[.,][0-9]+)?$")
+_SPACE_HEAD = re.compile(r"^[0-9]{1,3}(?: [0-9]{3})*$")
+
+
+def _same_figure(joined: str, previous: _Word, text: str, word: _Word) -> bool:
+    """Whether this piece carries on the figure before it, split at a separator or at a space between thousands."""
+
+    if _NUMBER_PIECE.match(joined.replace(" ", "")) and _NUMBER_PIECE.match(text) and (
+        joined.endswith(",") or text.startswith(",")
+    ):
+        return True
+    return bool(_SPACE_HEAD.match(joined) and _SPACE_GROUP.match(text) and word.x0 - previous.x1 <= word.height * 0.8)
 # "Total amount (excl. VAT)" is the printed net. The same words with "incl." are the gross,
 # and OCR drops a letter often enough that the abbreviation is matched loosely. The label has
 # to open the row: the same words inside a column heading are not a total.
@@ -1476,19 +1677,16 @@ def _row_numbers(row: list[_Word]) -> list[Decimal]:
     """The row's printed amounts, with a separated thousands separator read as one number."""
 
     joined: list[str] = []
+    previous = None
     for word in sorted(row, key=lambda item: item.x):
         text = word.text.strip()
         if glued := _GLUED_CODE.match(text):
             text = glued[1]
-        if (
-            joined
-            and _NUMBER_PIECE.match(text)
-            and (joined[-1].endswith(",") or text.startswith(","))
-            and _NUMBER_PIECE.match(joined[-1])
-        ):
-            joined[-1] += text
-            continue
-        joined.append(text)
+        if joined and previous is not None and _same_figure(joined[-1], previous, text, word):
+            joined[-1] += (" " if _SPACE_GROUP.match(text) and not joined[-1].endswith(",") else "") + text
+        else:
+            joined.append(text)
+        previous = word
     return [value for text in joined if (value := _parse_decimal(text)) is not None]
 
 
@@ -1594,6 +1792,15 @@ def _tax_row_amount(row: list[_Word]) -> Decimal | None:
     return numbers[-1]
 
 
+def _bare_figure(text: str) -> str:
+    glued = _GLUED_CODE.match(text)
+    return glued[1] if glued else text
+
+
+def _figure_text(group: list[_Word]) -> str:
+    return " ".join(_bare_figure(word.text.strip()) for word in group).replace(" ,", ",").replace(", ", ",")
+
+
 def _summary_figures(row: list[_Word]) -> list[tuple[Decimal, float, float]]:
     """The row's figures with the span each one covers, a figure in pieces ("1 , 496.50") counted once."""
 
@@ -1602,8 +1809,7 @@ def _summary_figures(row: list[_Word]) -> list[tuple[Decimal, float, float]]:
         text = word.text.strip()
         if not _GLUED_CODE.match(text) and not _NUMBER_PIECE.match(text):
             continue
-        last = groups[-1][-1].text.strip() if groups else ""
-        if last and (last.endswith(",") or text.startswith(",")):
+        if groups and _same_figure(_figure_text(groups[-1]), groups[-1][-1], _bare_figure(text), word):
             groups[-1].append(word)
         else:
             groups.append([word])
@@ -1654,6 +1860,32 @@ def _summary_columns(row: list[_Word]) -> list[tuple[float, float]] | None:
     return found
 
 
+def _money_on_later_page(row: list[_Word]) -> bool:
+    """A later page's row may hold the real summary. Two or three decimals are money, and so are whole figures only
+    where they add up: a spaced phone or date, or "Form version 1.2", holds no summary."""
+
+    figures = [value for value, _, _ in _summary_figures(row)]
+    return any(value.as_tuple().exponent in (-2, -3) for value in figures) or (
+        len(figures) >= 3 and figures[-3] + figures[-2] == figures[-1]
+    )
+
+
+# A table of these sums up some other document or period than the one in hand.
+_ANOTHER_DOCUMENT = re.compile(r"(?i)\b(?:ytd|year\s+to\s+date|previous|prior|last|cumulative|brought\s+forward|credit\s+(?:memo|note))\b")
+_NEGATED_ABOVE = re.compile(r"(?i)^\W*(?:non|not|exempt|zero|غير|معف\w*)\W*$")
+
+
+def _heading_of_another_kind(heading: list[_Word], above: list[_Word]) -> bool:
+    """The heading row says so itself, or the words printed directly over its columns do: a two-line "Non / Taxable"."""
+
+    if _ANOTHER_DOCUMENT.search(_row_text(heading)):
+        return True
+    if not above or above[0].page != heading[0].page or _row_y(heading) - _row_y(above) > 3.5 * max(w.height for w in heading):
+        return False
+    over = sorted((w for w in above if any(w.x0 < h.x1 and w.x1 > h.x0 for h in heading)), key=lambda w: w.x)
+    return bool(over) and bool(_ANOTHER_DOCUMENT.search(_row_text(above)) or _NEGATED_ABOVE.match(_row_text(over)))
+
+
 def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Decimal | None]:
     """Net and tax under a "Rate | Taxable | VAT | Total" heading, whose figures' row prints no label of its own.
 
@@ -1667,14 +1899,12 @@ def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Deci
     def same(first: list[tuple[float, float]], second: list[tuple[float, float]]) -> bool:
         return all(a[0] < b[1] and a[1] > b[0] for a, b in zip(first, second))
 
-    def has_amounts(row: list[_Word]) -> bool:
-        figures = [value for value, _, _ in _summary_figures(row)]
-        return len(figures) >= 3 or any(value.as_tuple().exponent < 0 for value in figures)
-
     refused: list[list[tuple[float, float]]] = []
     for index, row in enumerate(rows):
         columns = _summary_columns(row)
         if columns is None or any(same(columns, earlier) for earlier in refused):
+            continue
+        if _heading_of_another_kind(row, rows[index - 1] if index else []):
             continue
         found: list[tuple[list[Decimal], list[_Word]]] = []
         for below in rows[index + 1 :]:
@@ -1695,11 +1925,21 @@ def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Deci
                 found = found[-1:]
         if found:
             page = found[0][1][0].page
-            if any(later[0].page > page and (has_amounts(later) or _summary_columns(later)) for later in rows):
+            if any(later[0].page > page and (_money_on_later_page(later) or _summary_columns(later)) for later in rows):
                 return None, None
             return found[0][0][0], found[0][0][1]
         refused.append(columns)
     return None, None
+
+
+def _net_stands_as_label(row: list[_Word], normal: str) -> bool:
+    """ "Last invoice Sub Total: 913.50" in a sentence is about something else."""
+
+    from app.header_labels import row_labels, tokens
+
+    if not re.search(r"\b(?:sub\s*total|subtotal|net amount)\b", normal) or _NET_TOTAL_LABEL.match(normal):
+        return True
+    return any(label.field == "net" for label in row_labels(tokens(row)))
 
 
 def _extract_spatial_totals(words: list[_Word]) -> tuple[Decimal | None, Decimal | None]:
@@ -1716,7 +1956,7 @@ def _extract_spatial_totals(words: list[_Word]) -> tuple[Decimal | None, Decimal
         document_rows += rows
         for row in rows:
             normal = _normal(_row_text(row))
-            if (labelled := _labelled_net(row)) is not None:
+            if _net_stands_as_label(row, normal) and (labelled := _labelled_net(row)) is not None:
                 nets.append(labelled)
             # A scan's reader returns the label as one word: "VATAMOUNT @5% 1,028.80". "VAT5%" is a label too.
             if _TAX_AMOUNT_LABEL.match(normal) and (amount := _tax_row_amount(row)) is not None:

@@ -28,7 +28,7 @@ def chain(monkeypatch, tmp_path):
     (tmp_path / "work").mkdir()
 
     def run(sample, installed=("invoice2data", "paddleocr", "docling"), reads=None, ai=INVOICE, evidence=None,
-            **options):
+            page=TEXT, page_boxes=(), **options):
         reads = reads or {}
         monkeypatch.delenv("INV_STUDIO_AI_CROSS_CHECK", raising=False)
         calls = []
@@ -39,8 +39,8 @@ def chain(monkeypatch, tmp_path):
         def local_read(engine, path, root, language="en", extra=()):
             calls.append(engine)
             # A scan has no text layer: only the OCR readers read its text.
-            text = "" if engine == "invoice2data" and path.suffix == ".png" else TEXT
-            return {"text": text, "invoice": reads.get(engine), "boxes": [], "tables": []}
+            text = "" if engine == "invoice2data" and path.suffix == ".png" else page
+            return {"text": text, "invoice": reads.get(engine), "boxes": list(page_boxes), "tables": []}
 
         def ai_reader(path, text, options):
             calls.append("ai")
@@ -177,6 +177,25 @@ def test_a_weak_scan_read_keeps_its_value_and_the_ai_reading_differently_is_flag
     assert all(set(line.values()) == {"paddleocr"} for line in result["readers"]["lines"])
     ai = result["readers"]["ai"]
     assert ai["flagged"] == ["net"] and "flagged what it reads differently (net)" in ai["reason"], ai["reason"]
+
+
+def test_a_figure_the_printed_total_contradicts_comes_out_blank_and_flagged(chain):
+    page = TEXT + "Grand Total 90,000.00\n"
+    result, _ = chain("invoice-scan.png", installed=("invoice2data", "paddleocr"), reads={"paddleocr": PRICED},
+                      page=page, ai_fallback=False)
+    assert result["invoice"]["net"] is None
+    assert result["evidence"]["header"]["net"]["review"]["code"] == "contradicted"
+
+
+def test_a_value_from_a_weak_wording_comes_out_kept_and_flagged(chain):
+    page = "Tax Invoice\nSerial No: ABC123\n"
+    words = [{"text": word, "page": 1, "box": [60 + 60 * n, y, 110 + 60 * n, y + 12], "size": [1000, 1400]}
+             for y, row in ((60, ("Tax", "Invoice")), (100, ("Serial", "No:", "ABC123"))) for n, word in enumerate(row)]
+    read = {**PRICED, "number": "ABC123"}
+    result, _ = chain("invoice-scan.png", installed=("invoice2data", "paddleocr"), reads={"paddleocr": read},
+                      page=page, page_boxes=words, ai_fallback=False)
+    assert result["invoice"]["number"] == "ABC123"
+    assert result["evidence"]["header"]["number"]["review"]["code"] == "unproven"
 
 
 def test_a_weak_scan_read_that_passes_the_basic_checks_keeps_every_value_it_read(chain):
@@ -317,3 +336,23 @@ def test_a_later_zero_value_read_with_fewer_rows_never_wins_on_a_tie_of_coded_ro
     first = {**two, "lines": [two["lines"][0], {**two["lines"][1], "sku": None, "gtin": None}]}
     result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": _zero_value(INVOICE, 1)}, ai_fallback=False)
     assert result["selected_engine"] == "paddleocr" and len(result["invoice"]["lines"]) == 2
+
+
+def _priced_junk(read, description):
+    return {**read, "lines": [*read["lines"], {"description": description, "qty": "1", "price": "0", "net_amount": "0", "tax_amount": "0"}]}
+
+
+@pytest.mark.parametrize("description", ["Total lines", "Sub Total", None, "12.00"])
+def test_a_later_priced_junk_row_does_not_take_over_a_read_with_no_codes(chain, description):
+    full = _no_codes(_zero_value(INVOICE, len(INVOICE["lines"])))
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": full, "docling": _no_codes(_priced_junk(full, description))}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"
+    assert len(result["invoice"]["lines"]) == len(full["lines"])
+
+
+def test_a_priced_junk_row_in_the_first_read_does_not_hold_off_a_right_later_read(chain):
+    rows = len(INVOICE["lines"])
+    first, right = _priced_junk(_zero_value(INVOICE, rows), "Total lines"), _zero_value(INVOICE, rows)
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": {**right, "date": None}}, ai_fallback=False)
+    assert result["selected_engine"] == "docling"
+    assert len(result["invoice"]["lines"]) == rows

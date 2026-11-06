@@ -16,6 +16,8 @@ import re
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 
+from .numbers import parse_number
+
 GTIN_LENGTHS=(8,12,13,14)
 UNREADABLE="barcode unreadable or incomplete"
 MISPRINT="printed barcode fails the GTIN check digit (likely misprint) - check the printout"
@@ -171,6 +173,53 @@ def lines_reconcile(lines,net):
     amounts=[_amount(line.get("net_amount")) for line in lines]
     if any(a is None for a in amounts):return False
     return abs(sum(amounts,Decimal(0))-net)<=_unit(net)
+
+
+def lines_prove_net(lines,net,text=""):
+    """Every line's amount, printed or quantity x price, summing to the net, with none short of a printed line count."""
+    from .target_check import printed_line_count
+    count=printed_line_count(text)
+    if count and len(lines or ())<count:return False
+    amounts=[{**line,"net_amount":line.get("net_amount") if line.get("net_amount") not in (None,"")
+              else _times(line.get("qty"),line.get("price"))} for line in lines or ()]
+    return lines_reconcile(amounts,net)
+
+
+def _times(qty,price):
+    qty,price=_amount(qty),_amount(price)
+    return None if qty is None or price is None else qty*price
+
+
+# A printed gross, of the wordings target_check takes for one. Words here name some other total on such a row.
+_OTHER_TOTAL=re.compile(r"(?i)\b(?:net|discount|qty|quantity|items?|units?|pcs|pieces|pages?|weight|previous|prior|ytd"
+                        r"|paid|deposit|advance|credit|taxable|merchandise|goods|supplies|services)\b")
+_TAX_WORD=re.compile(r"(?i)\b(?:vat|tax|gst)\b")
+_NET_PAYABLE=re.compile(r"(?i)\bnet\s+(?:payable|due)\b")
+_TAX_INCLUDED=re.compile(r"(?i)\b(?:incl?\w*|with)\b")
+_FIGURE=re.compile(r"[0-9][0-9,.'’ ]*[0-9]|[0-9]")
+
+
+def printed_whole(value,text):
+    """A bare figure the page prints nowhere with decimals or a separator: a count or a term looks the same."""
+    if not value or value.as_tuple().exponent<0 or value!=value.to_integral_value():return False
+    return not any(re.search(r"[.,'’ ]",figure) and _amount(parse_number(figure))==value
+                   for figure in _FIGURE.findall(text or ""))
+
+
+def printed_totals(text):
+    """The figures the page prints as its total. A row whose figures cannot be told apart prints none."""
+    from .target_check import GROSS_LABEL,NOT_GROSS
+
+    out=set()
+    for row in str(text or "").splitlines():
+        payable=_NET_PAYABLE.search(row)
+        if not payable and (not GROSS_LABEL.search(row) or NOT_GROSS.search(row) or _OTHER_TOTAL.search(row)):continue
+        if _TAX_WORD.search(row) and not _TAX_INCLUDED.search(row):continue
+        for figure in _FIGURE.findall(row):
+            value=_amount(parse_number(figure.strip()))
+            # A small whole number on such a row is a count or a reference.
+            if value is not None and (value>=100 or not figure.strip().isdigit()):out.add(abs(value))
+    return out
 
 
 def header_count(invoice):

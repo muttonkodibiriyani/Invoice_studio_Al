@@ -428,6 +428,7 @@ BOUNDARY_PAIRS = [
     ("Northwind L.L.C.", "Northwind", True),
     ("A.B Trading", "AB Trading", True),
     ("A.B Trading", "A Trading", False),
+    ("Star.A", "StarA", False),
     ("Store 1.2", "Store 12", False),
     # Only legal forms and articles, or nothing: close to nothing, itself included.
     ("LLC", "LLC", False),

@@ -61,6 +61,9 @@ def test_file_verdict_says_what_a_user_meets():
     assert verdict({"upload_status": 401}) == "NOT RUN, SIGN-IN EXPIRED"
     assert verdict({"upload_status": 200, "jobs": [read], "export": [{"status": 500}]}) == "EXPORT CRASH"
     assert verdict({"upload_status": 200, "jobs": [read], "invoices_in_file": 2, "export": [{"status": 200}]}) == "INVOICES LOST, NOT TOLD"
+    # "Several" about something else is no message about the lost invoices.
+    other = {**read, "told": ["Printed supplier name has several Supplier CODEs"]}
+    assert verdict({"upload_status": 200, "jobs": [other], "invoices_in_file": 2, "export": [{"status": 200}]}) == "INVOICES LOST, NOT TOLD"
     told = {**read, "told": ["This file holds several invoices"]}
     assert verdict({"upload_status": 200, "jobs": [told], "invoices_in_file": 2, "export": [{"status": 200}]}) == "read, review"
     assert verdict({"upload_status": 200, "jobs": [{**read, "number": None, "lines": 0, "told": []}], "export": []}) == "EMPTY SUCCESS"

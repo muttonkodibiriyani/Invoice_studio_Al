@@ -119,7 +119,7 @@ def verdict(rec: dict) -> str:
         return "UPLOADED, JOB NOT FOUND"
     if all(j["status"] == "error" for j in outcomes):
         return "failed with message" if all(j.get("error") for j in outcomes) else "FAILED WITH NO MESSAGE"
-    if len(outcomes) < rec.get("invoices_in_file", 0) and not any(re.search(r"several|multiple|more than one|other invoice", str(j.get("told")), re.I) for j in outcomes):
+    if len(outcomes) < rec.get("invoices_in_file", 0) and not any(re.search(r"(several|multiple|more than one|other|two|three) invoices?\b", str(j.get("told")), re.I) for j in outcomes):
         return "INVOICES LOST, NOT TOLD"
     if any(e["status"] >= 500 for e in rec.get("export") or []):
         return "EXPORT CRASH"

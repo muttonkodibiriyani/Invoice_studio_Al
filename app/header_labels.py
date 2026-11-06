@@ -75,7 +75,7 @@ _LABELS: dict[str, tuple[set[str], ...]] = {
     ),
     "tax": (
         _phrases(f"total {_TAX_WORD}|iva|tva |amount|amt", f"{_TAX_WORD}|iva|tva total|amount|amt",
-                 f"output {_TAX_WORD} |amount", f"sales tax |amount|total", f"add {_TAX_WORD}"),
+                 f"output {_TAX_WORD} |amount", "sales tax |amount|total", f"add {_TAX_WORD}"),
         _phrases("vat|tax|gst|iva|tva|mwst"),
     ),
     "supplier": (

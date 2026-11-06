@@ -220,3 +220,26 @@ def test_on_a_tied_score_the_first_read_stays_when_neither_is_better(chain):
     first, second = {**INVOICE, "number": None, "po": "first"}, {**INVOICE, "number": None, "po": "second"}
     result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": second}, ai_fallback=False)
     assert result["selected_engine"] == "paddleocr"
+
+
+def _zero_value(invoice, lines):
+    return {**invoice, "net": "0", "tax": "0",
+            "lines": [{**line, "price": "0", "net_amount": "0", "tax_amount": "0"} for line in invoice["lines"][:lines]]}
+
+
+def test_a_zero_value_read_does_not_end_the_chain_and_the_read_with_more_rows_is_kept(chain):
+    # Lines summing to a net of 0 cannot show a row is missing: only the count of rows read can.
+    rows = len(INVOICE["lines"])
+    short, full = _zero_value(INVOICE, rows - 1), {**_zero_value(INVOICE, rows), "date": None}
+    result, calls = chain("invoice-scan.png", reads={"paddleocr": short, "docling": full}, ai_fallback=False)
+    assert "docling" in calls
+    assert result["selected_engine"] == "docling"
+    assert len(result["invoice"]["lines"]) == rows
+
+
+def test_a_later_zero_value_read_with_fewer_rows_does_not_take_over(chain):
+    rows = len(INVOICE["lines"])
+    full, short = {**_zero_value(INVOICE, rows), "date": None}, _zero_value(INVOICE, rows - 1)
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": full, "docling": short}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"
+    assert len(result["invoice"]["lines"]) == rows

@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from .models import Invoice, uom_code
 from .evidence import build as build_evidence
-from . import ai_context, ai_rules, item_rules, item_search, matching, rules_first, scan_guard
+from . import ai_context, ai_rules, item_rules, item_search, layout_extract, matching, rules_first, scan_guard
 from .fine_rules_source import LookupRulesSource
 from .numbers import to_decimal
 
@@ -913,6 +913,18 @@ def guard_figures(invoice,evidence,header_readers,source,text):
     return invoice,evidence
 
 
+def guard_labels(invoice,evidence,header_readers,source,reads):
+    """A value only a weak wording, a strip of headings or an open-ended label names stays and is flagged: wordings
+    never end, and these fields have no arithmetic behind them. An AI's flag stays, it names the other reading."""
+    header=evidence.setdefault("header",{})
+    for read in reads:
+        for field,value in layout_extract.unproven_readings(read["text"],read["boxes"]).items():
+            if header_readers.get(field)=="ai" or str(invoice.get(field))!=str(value) or (header.get(field) or {}).get("review"):continue
+            reason="only a wording that does not prove what this value is names it, so it needs checking"
+            header[field]=_review(header.get(field),None,source,reason,value,"unproven")
+    return invoice,evidence
+
+
 def guard_header(invoice,evidence,header_readers,source,text):
     """PO only from a PO label, never a P.O. Box; an absent VAT is flagged; inclusive VAT lines are one flag.
 
@@ -1198,7 +1210,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 trace[-1]["recovery"]=result["recovery"]
             if candidate is not None:
                 local_reads.append({"engine":engine,"invoice":result["invoice"],
-                                    "boxes":result.get("boxes",[]),
+                                    "text":result["text"],"boxes":result.get("boxes",[]),
                                     "source":"ocr" if engine=="paddleocr" else "native"})
             # On a tied score a read that passes the basic checks beats one that does not: the gaps count the
             # same, but a missing number or an unreconciled table is not the same as a missing date.
@@ -1394,6 +1406,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
         final,best_evidence=guard_amounts(final,best_evidence,line_map,best_source)
         final,best_evidence=guard_figures(final,best_evidence,header_map,best_source,text)
         final,best_evidence=guard_header(final,best_evidence,header_map,best_source,text)
+        final,best_evidence=guard_labels(final,best_evidence,header_map,best_source,local_reads)
         # Lines the AI read, and rules this read's AI just added, run here: the same rules, on what the merge left empty.
         if ai_calls:
             if ai_rule_keep is not None and ai_status in ("fallback","gap_fill","cross_check","selected"):

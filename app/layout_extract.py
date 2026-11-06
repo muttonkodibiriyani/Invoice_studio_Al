@@ -216,13 +216,24 @@ def _printed_as_other(value: Decimal, rows: list[str], name: re.Pattern[str], ot
     )
 
 
-def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def unproven_readings(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """{field: value} for what this page's wording does not prove: the value stands, a person checks it."""
+
+    weak: set[str] = set()
+    invoice = extract_invoice(text, boxes, weak) or {}
+    return {field: invoice[field] for field in weak if invoice.get(field) not in (None, "")}
+
+
+def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str] | None = None) -> dict[str, Any] | None:
     """Extract visible invoice facts from OCR/native text and word boxes.
 
     A strong invoice title is required.  Conflicting labels and ambiguous dates
     are left unset, and line totals are never used to invent header totals.
     The result is shaped and validated by :class:`app.models.Invoice`.
+    Fields read from a wording that proves little are added to ``weak``.
     """
+
+    weak = set() if weak is None else weak
 
     source_text = text if isinstance(text, str) else ""
     words = _normalise_words(boxes or [])
@@ -283,13 +294,20 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     buyer_name = _spatial_buyer_name(party_rows) or _extract_buyer_name(party_lines)
     supplier_name = (
         _spatial_party_name(
-            party_rows, {"supplier", "supplier name", "from", "sold by", "seller", "vendor", "issued by", "supplied by",
-                         "billed by", "billed from"}
+            party_rows, {"supplier", "supplier name", "sold by", "seller", "vendor", "supplied by", "billed by", "billed from"}
         )
         or supplier_name
-        or _letterhead_supplier(party_rows)
-        or _footer_repeated_letterhead(party_rows, buyer_name)
     )
+    if supplier_name is None:
+        # A person, an office or a route prints these too.
+        supplier_name = _spatial_party_name(party_rows, {"from", "issued by"})
+        if supplier_name is None:
+            supplier_name = _letterhead_supplier(party_rows)
+            if supplier_name is not None and _LOOSE_FORM_END.search(supplier_name):
+                weak.add("supplier_name")
+            supplier_name = supplier_name or _footer_repeated_letterhead(party_rows, buyer_name)
+        else:
+            weak.add("supplier_name")
     po = _unique_identifier(
         lines,
         (
@@ -387,8 +405,15 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
     from app.header_labels import read_labels
 
     labelled = read_labels(rows)
+    earlier = {"number": number, "po": po, "date": invoice_date, "tax": tax, "supplier": supplier_name}
+    weak.update("supplier_name" if field == "supplier" else field for field in labelled["weak"] if earlier.get(field, 0) is None)
     number = number if number is not None else labelled.get("number")
+    # A word after the value that no label ends: it may be the value's own or the page's next word.
+    if number and _RUNS_ON.search(number):
+        weak.add("number")
     po = po if po is not None else labelled.get("po")
+    if po and _RUNS_ON.search(po):
+        weak.add("po")
     # A scan reads the O of a printed PO as a zero, and cuts the value at its marks.
     if po:
         po = re.sub(r"^(L?)P0(?=[-/.\s])", r"\1PO", re.sub(r"\s*([-/])\s*", r"\1", po))
@@ -413,6 +438,8 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None) -> dict[str, 
         )
         if extracted_lines:
             net = candidate
+    if net is None and "net" in labelled["weak"]:
+        weak.add("net")
     net = net if net is not None else labelled.get("net")
     wording = [*source_lines, *(_row_text(row).strip() for _, row in rows)]
     if net is not None and _printed_as_other(net, wording, _NET_NAME, _NOT_NET):
@@ -961,8 +988,6 @@ def _spatial_joined_identifier(
                     pieces.append(token)
                     sources.add(word.line or "")
                     previous_right = word.x1
-                while len(pieces) > 1 and any(c.isdigit() for c in "".join(pieces[:-1])) and pieces[-1].isalpha():
-                    pieces.pop()
                 candidate = "".join(pieces)
                 # Words from a text layer are split where the page prints a space: "NWT 004512".
                 if sources == {""} and _SPACED_IDENTIFIER.fullmatch(" ".join(pieces)):
@@ -1160,6 +1185,9 @@ _FORM_WORD = (
 )
 # A name carries its form whole: "Pvt Ltd" and "Co. Ltd" are one form, and a dot printed on it is part of it.
 _COMPANY_FORM = re.compile(rf"(?i)\b{_FORM_WORD}\b(?:[\s.,]*\b{_FORM_WORD}\b)*\.?")
+# These end plenty of sentences too: "Serving the Gulf Est.", "A Division of the Company".
+_LOOSE_FORM_END = re.compile(r"(?i)(?<![\w.])(?:est|corp|co|company)\.?$")
+_RUNS_ON = re.compile(r"[0-9]\S*\s+[A-Za-z]{2,}$")
 
 
 _BUYER_LABEL_IN_ROW = re.compile(

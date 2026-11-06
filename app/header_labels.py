@@ -79,8 +79,9 @@ _LABELS: dict[str, tuple[set[str], ...]] = {
         _phrases("vat|tax|gst|iva|tva|mwst"),
     ),
     "supplier": (
-        _phrases("issued|supplied|billed|sold by", "billed from", "supplier |name", "seller |name", "vendor |name",
-                 "from"),
+        _phrases("supplied|billed|sold by", "billed from", "supplier |name", "seller |name", "vendor |name"),
+        # Open-ended: a person, an office or a route prints these too.
+        _phrases("issued by", "from"),
     ),
 }
 
@@ -139,8 +140,10 @@ _BANK_LABEL = re.compile(r"(?i)^(?:iban|swift|bank|account|acct)\b")
 _LINE_HEADING = re.compile(r"(?i)\b(?:description|qty|quantity|price|uom)\b")
 _MONEY_LABEL = re.compile(r"(?i)\b(?:total|amount|balance|payable|due)\b")
 _LETTERS = re.compile(r"^[^\W\d_]+\.?$")
+_BARE_DIRHAM = re.compile(r"(?i)\bdirhams?\b")
+_UAE = re.compile(r"(?i)\b(?:uae|u\.a\.e\.?|emirati|emirates|aed)\b")
 _CURRENCY_NAMES = (
-    (r"\b(?:uae|emirati)\s+dirhams?\b|\bdirhams?\b", "AED"), (r"\bsaudi\s+riyals?\b", "SAR"),
+    (r"\bsaudi\s+riyals?\b", "SAR"),
     (r"\bqatari\s+riyals?\b", "QAR"), (r"\bomani\s+(?:riyals?|rials?)\b|\brials?\s+omani\b", "OMR"),
     (r"\bbahraini\s+dinars?\b", "BHD"), (r"\bkuwaiti\s+dinars?\b", "KWD"), (r"\bjordanian\s+dinars?\b", "JOD"),
     (r"\begyptian\s+pounds?\b", "EGP"), (r"\bindian\s+rupees?\b", "INR"), (r"\bus\s+dollars?\b", "USD"),
@@ -352,7 +355,8 @@ def _identifier(words: list[_Word]) -> str | None:
     pieces: list[str] = []
     previous = None
     joined = False
-    for word in words:
+    trailing = False
+    for position, word in enumerate(words):
         text = word.text.strip(",;")
         # An OCR model cuts an identifier at its marks: "LPO / 923".
         if text in {"/", "-", "."} and pieces:
@@ -370,18 +374,31 @@ def _identifier(words: list[_Word]) -> str | None:
         if previous is not None and word.x0 - previous.x1 > word.height * 1.5:
             break
         has_digit = any(part.isdigit() for piece in pieces for part in piece)
-        if has_digit and (_LETTERS.match(text) or _DATE_SHAPE.match(text)):
+        if has_digit and _DATE_SHAPE.match(text):
+            break
+        if has_digit and _LETTERS.match(text):
+            # A word before a colon is a label, known or not. Any other is part of the value ("7781 B"), or prose.
+            following = words[position + 1:position + 2]
+            if following and following[0].text in {":", "："}:
+                break
+            if following and _LETTERS.match(following[0].text) and following[0].x0 - word.x1 <= word.height * 1.5:
+                return None
+            pieces.append(text)
+            trailing = True
             break
         pieces.append(text)
         previous = word
-    while pieces and not any(character.isdigit() for character in pieces[-1]):
-        pieces.pop()
-    if not pieces or len(pieces) > 3 or sum(not any(c.isdigit() for c in piece) for piece in pieces) > 1:
+        # "PO 7920, Dubai": a comma ends the value.
+        if word.text.endswith(",") and any(character.isdigit() for character in text):
+            break
+    if not any(character.isdigit() for piece in pieces for character in piece):
+        return None
+    if len(pieces) > 3 or sum(not any(c.isdigit() for c in piece) for piece in pieces) > 1 + trailing:
         return None
     value = " ".join(pieces)
     plain = value.replace(" ", "")
-    # "P.O. Box7920" is an address.
-    if re.match(r"(?i)box[0-9]", plain):
+    # "P.O. Box7920", "P.O. Bag 7920" are addresses.
+    if re.match(r"(?i)(?:box|bag|bx)[0-9]", plain):
         return None
     if len(plain) > 80 or not _SAFE_IDENTIFIER.fullmatch(plain):
         return None
@@ -412,10 +429,14 @@ def _currency(words: list[_Word]) -> str | None:
 
 
 def _currency_name(text: str) -> str | None:
-    for pattern, code in _CURRENCY_NAMES:
-        if re.search(rf"(?i){pattern}", text):
-            return code
-    return None
+    """The one currency a sentence names. Many countries print dirhams: alone the word says none, so it stands for
+    an unknown one against any other name. Two names say neither."""
+
+    names = {code for pattern, code in _CURRENCY_NAMES if re.search(rf"(?i){pattern}", text)}
+    names |= {word for word in re.findall(r"\b[A-Z]{3}\b", text) if word in ISO_CURRENCIES}
+    if _BARE_DIRHAM.search(text):
+        names.add("AED" if _UAE.search(text) else "dirham")
+    return names.pop() if len(names) == 1 and "dirham" not in names else None
 
 
 def _figure(words: list[_Word], field: str, tier: int, rated: bool) -> Decimal | None:
@@ -510,7 +531,9 @@ def _beside(row: list[_Word], labels: list[_Label]) -> list[tuple[str, int, Any]
         rated = any("%" in word.text for word in row[label.start:label.end])
         value = _value(label.field, label.tier, words, rated)
         if value is not None:
-            found.append((label.field, label.tier, value))
+            # "PO 7920" with no mark or number word is as likely an address.
+            bare = label.field == "po" and label.end - label.start == 1 and row[label.end].text not in _SEPARATOR
+            found.append((label.field, max(label.tier, 1) if bare and _compact(row[label.start].text) in {"po", "lpo"} else label.tier, value))
     return found
 
 
@@ -548,7 +571,12 @@ def _under(row: list[_Word], labels: list[_Label], below: list[_Word], after: li
         named = row_labels(later)
         if len(named) > 1 or (named and named[0].start == 0):
             break
-        more = more or any(_row_numbers([word]) for word in later)
+        # Another row of figures, or another value under one of these headings: a column, not a value.
+        more = more or any(_row_numbers([word]) or (
+            any(c.isdigit() for c in word.text) and any(_overlap(word.x0, word.x1, label) > 0 for label in wanted)
+        ) for word in later)
+    if lines or more:
+        return []
     unknown = [word for index, word in enumerate(row) if index not in known and word.text not in _SEPARATOR]
     found: list[tuple[str, int, Any]] = []
     money: dict[str, Decimal] = {}
@@ -566,6 +594,9 @@ def _under(row: list[_Word], labels: list[_Label], below: list[_Word], after: li
             continue
         if best not in wanted:
             continue
+        # Under two headings at once, the values of two columns have run together.
+        if best.field not in {"net", "tax"} and sum(_overlap(left, right, label) > 0 for label in labels) > 1:
+            continue
         value = _value(best.field, best.tier, cell, rated=True)
         if best.field in {"net", "tax"}:
             if value is not None:
@@ -574,7 +605,7 @@ def _under(row: list[_Word], labels: list[_Label], below: list[_Word], after: li
         elif value is not None:
             found.append((best.field, best.tier, value))
     # Only the row's own sum proves figures are the totals: net, tax and their total, printed in that order.
-    if not (unknown or lines or more or len(cells) > len(labels)) and None not in (
+    if not (unknown or len(cells) > len(labels)) and None not in (
         money.get("net"), money.get("tax"), money.get("total")
     ) and money["net"] + money["tax"] == money["total"] and columns["net"] < columns["tax"] < columns["total"]:
         found.extend((label.field, label.tier, money[label.field]) for label in wanted if label.field in money)
@@ -585,13 +616,16 @@ def _coded(words: list[_Word]) -> list[str]:
     """Each figure's own currency: a sign or code on it ("€812.00", "BD2.500", "12.00 EGP") or standing beside it."""
 
     found = []
+    words = _strip_separators(words)
     for index, word in enumerate(words):
         if not _row_numbers([word]) and not re.search(r"[0-9]", word.text):
             continue
         glued = re.match(r"^([€£]|[A-Z]{2,3}|Dhs?)\.?(?=[0-9])", word.text) or re.search(r"(?<=[0-9])([A-Z]{3})$", word.text)
         if glued:
             found.append(_CURRENCY_SIGN.get(glued[1], glued[1]))
-        for other in (words[index - 1] if index else None, words[index + 1] if index + 1 < len(words) else None):
+        # A code before the figure is its own only as the first thing after the label: "TOTAL FOR ALL 50.00" is prose.
+        own = words[:index] in ([], words[:1]) or [word.text.casefold() for word in words[:index - 1]] == ["in"]
+        for other in (words[index - 1] if index and own else None, words[index + 1] if index + 1 < len(words) else None):
             if other is not None:
                 found.append(_CURRENCY_SIGN.get(other.text, other.text))
     return [code for code in found if code in ISO_CURRENCIES]
@@ -615,25 +649,29 @@ def _printed_currencies(row: list[_Word], labels: list[_Label]) -> list[str]:
                 found.extend(_coded(row[labels[position - 1].end if position else 0:label.start]))
     sentence = _AMOUNTS_IN.search(" ".join(word.text for word in row))
     if sentence:
-        words = sentence[1].split()
-        code = words[0].strip(".,;()") if words else ""
-        named = code if code in ISO_CURRENCIES else _currency_name(sentence[1])
+        named = _currency_name(sentence[1])
         if named:
             found.append(named)
     return found
 
 
 def read_labels(rows: list[tuple[int, list[_Word]]]) -> dict[str, Any]:
-    """Each field's value from its strongest wording, or absent when the page prints two different ones."""
+    """Each field's value from its strongest wording, or absent when the page prints two different ones.
+
+    "weak" names the fields whose value no wording proves: below the top tier, from a strip of headings, or open-ended.
+    Money beside a label is left out of it: guard_figures holds that to the page's arithmetic.
+    """
 
     tiered: dict[str, dict[int, list[Any]]] = {}
     printed: list[str] = []
     split = [(page, tokens(row)) for page, row in rows]
     strips: list[tuple[str, int, Any]] = []
+    proven: set[tuple[str, Any]] = set()
     open_ended = False
     for index, (page, row) in enumerate(split):
         labels = row_labels(row)
         found = _beside(row, labels)
+        proven |= {(field, value) for field, tier, value in found if tier == 0 or field in {"net", "tax"}}
         printed.extend(_printed_currencies(row, labels))
         if labels and not found and index + 1 < len(split) and split[index + 1][0] == page:
             below = split[index + 1][1]
@@ -657,11 +695,14 @@ def read_labels(rows: list[tuple[int, list[_Word]]]) -> dict[str, Any]:
     for field, tier, value in () if open_ended else strips:
         tiered.setdefault(field, {}).setdefault(tier, []).append(value)
     result: dict[str, Any] = {}
+    weak: set[str] = set()
     for field, tiers in tiered.items():
         values = tiers[min(tiers)]
         distinct = set(values)
         if len(distinct) == 1:
             result[field] = values[0]
+            if (field, values[0]) not in proven:
+                weak.add(field)
     if "currency" not in tiered and (code := _only_distinct(printed)) is not None:
         result["currency"] = code
     credits = {
@@ -672,4 +713,5 @@ def read_labels(rows: list[tuple[int, list[_Word]]]) -> dict[str, Any]:
         if result.get(field) in credits:
             del result[field]
     result["credits"] = credits
+    result["weak"] = weak
     return result

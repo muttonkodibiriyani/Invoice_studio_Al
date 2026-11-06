@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.layout_extract import extract_invoice
+from app.layout_extract import extract_invoice, unproven_readings
 from app.numbers import parse_number
 
 WIDTH, HEIGHT = 1000.0, 1400.0
@@ -527,3 +527,131 @@ def test_a_summary_printed_whole_still_refuses_whole_figures_on_a_later_page():
 
 def test_a_bare_colon_after_the_label_still_reads():
     assert money(read((800, (100, "Subtotal : 4,500.00")))["net"]) == Decimal("4500.00")
+
+
+def flags(*rows):
+    return unproven_readings(text((TITLE, *rows)), boxes(TITLE, *rows))
+
+
+SITE_VISIT = ((220, (60, "12/12/2025"), (200, "Site visit"), (600, "1"), (800, "100.00")),
+              (240, (60, "13/12/2025"), (200, "Site visit"), (600, "1"), (800, "100.00")))
+
+
+@pytest.mark.parametrize("heading, field", [("Date", "date"), ("Ref No", "number")])
+def test_a_column_of_the_line_table_is_no_header_value(heading, field):
+    first = (220, (60, "P-77"), (200, "Site visit"), (600, "1"), (800, "100.00")) if field != "date" else SITE_VISIT[0]
+    invoice = read((200, (60, heading), (200, "Description"), (600, "Qty"), (800, "Amount")), first, SITE_VISIT[1])
+    assert invoice[field] is None
+
+
+def test_a_heading_strip_followed_by_more_rows_of_figures_gives_no_value():
+    row = ((100, (60, "Ref No")), (116, (60, "WO-77")), (132, (60, "WO-78")))
+    assert read(*row)["number"] is None
+
+
+@pytest.mark.parametrize("row, number", [
+    ("Serial No: ABC123", "ABC123"), ("Our Ref: JOB-44", "JOB-44"), ("Ref No: OB-123", "OB-123"),
+    ("Receipt No: R-900", "R-900"),
+])
+def test_a_number_from_a_weak_wording_keeps_its_value_and_is_flagged(row, number):
+    assert read((100, (60, row)))["number"] == number
+    assert flags((100, (60, row))) == {"number": number}
+
+
+@pytest.mark.parametrize("row", ["Invoice No: SI-100", "Tax Invoice No: SI-100", "Inv #: SI-100"])
+def test_a_number_from_a_strong_wording_is_not_flagged(row):
+    assert read((100, (60, row)))["number"] == "SI-100"
+    assert "number" not in flags((100, (60, row)))
+
+
+@pytest.mark.parametrize("row, number, flagged", [
+    ("Invoice No: 7781 B", "7781 B", False), ("Bill No: 7781 B", "7781 B", True),
+    ("Invoice No: INV 7781 REV", "INV 7781 REV", True), ("Bill No: 7781 REV", "7781 REV", True),
+])
+def test_a_number_keeps_what_follows_it_when_no_label_does(row, number, flagged):
+    assert read((100, (60, row)))["number"] == number
+    assert ("number" in flags((100, (60, row)))) is flagged
+
+
+@pytest.mark.parametrize("row", ["Inv No: 7781 Cashier: Bob", "Invoice No: 7781 Cashier: Bob"])
+def test_a_word_before_a_colon_is_a_label_however_unknown(row):
+    assert read((100, (60, row)))["number"] == "7781"
+
+
+def test_values_merged_under_two_headings_go_blank():
+    assert read((100, (60, "Inv No"), (160, "PO No")), (116, (60, "SI-2026-0045"), (145, "7781")))["number"] is None
+
+
+def test_values_under_a_heading_strip_are_kept_and_flagged():
+    rows = ((100, (60, "Inv No"), (300, "PO No")), (116, (60, "SI-1"), (300, "7781")))
+    assert read(*rows)["number"] == "SI-1"
+    assert flags(*rows) == {"number": "SI-1"}
+
+
+@pytest.mark.parametrize("row", ["P.O. Bag 7920, Dubai", "PO Bag 7920", "PO Bx 7920", "P.O. Bx: 7920", "PO Bag7920"])
+def test_a_post_office_bag_is_an_address_and_no_po(row):
+    assert read((100, (60, row)))["po"] is None
+
+
+@pytest.mark.parametrize("row, po", [("Your Ref: QUOTE-55", "QUOTE-55"), ("PO 7920, Dubai", "7920")])
+def test_a_po_from_an_open_wording_keeps_its_value_and_is_flagged(row, po):
+    assert read((100, (60, row)))["po"] == po
+    assert flags((100, (60, row))) == {"po": po}
+
+
+@pytest.mark.parametrize("row", ["PO No: 7920", "LPO: 7920", "Purchase Order: 7920"])
+def test_a_po_from_a_po_label_is_not_flagged(row):
+    assert read((100, (60, row)))["po"] == "7920"
+    assert "po" not in flags((100, (60, row)))
+
+
+@pytest.mark.parametrize("row, currency", [
+    ("Currency: Moroccan Dirham", None), ("Currency: Dirham", None), ("Currency: UAE Dirham", "AED"),
+    ("All prices in Dirhams", None), ("All prices in UAE Dirhams", "AED"), ("Amounts in Dirhams (AED)", "AED"),
+    ("All prices in Euros, payable in Dirhams at bank rate", None), ("All prices in USD, payable in EUR", None),
+    ("All prices in Euros", "EUR"),
+])
+def test_a_currency_name_counts_only_when_it_says_which_and_alone(row, currency):
+    assert read((100, (60, row)))["currency"] == currency
+
+
+@pytest.mark.parametrize("label, figure, currency", [
+    ("TOTAL FOR ALL", "1,050.00", None), ("TOTAL FOR TOP", "1,050.00", None), ("Total AED", "1,050.00", "AED"),
+    ("Total", "AED 1,050.00", "AED"), ("Total", "1,050.00 AED", "AED"), ("Total in AED", "1,050.00", "AED"),
+])
+def test_a_code_beside_a_total_counts_only_as_the_labels_own_value(label, figure, currency):
+    assert read((900, (400, label), (760, figure)))["currency"] == currency
+
+
+@pytest.mark.parametrize("row, name", [
+    ("Serving the Gulf Est. 1985", "Serving the Gulf Est."), ("A Division of the Company", "A Division of the Company"),
+    ("Registered Company No 445566", "Registered Company"),
+])
+def test_a_letterhead_with_only_a_loose_company_word_is_flagged(row, name):
+    assert read((40, (60, row)))["supplier_name"] == name
+    assert flags((40, (60, row))) == {"supplier_name": name}
+
+
+@pytest.mark.parametrize("row", ["Alpha Beta Trading LLC", "Gamma Trading Co. Ltd", "Delta Foods Pvt Ltd"])
+def test_a_letterhead_with_a_real_company_form_is_not_flagged(row):
+    assert read((40, (60, row)))["supplier_name"]
+    assert "supplier_name" not in flags((40, (60, row)))
+
+
+@pytest.mark.parametrize("row, name", [("Issued by: John Smith", "John Smith"), ("From: Head Office", "Head Office")])
+def test_a_supplier_from_an_open_ended_label_is_flagged(row, name):
+    assert read((100, (60, row)))["supplier_name"] == name
+    assert flags((100, (60, row))) == {"supplier_name": name}
+
+
+def test_a_supplier_from_its_own_label_is_not_flagged():
+    assert "supplier_name" not in flags((100, (60, "Supplier: Alpha Beta")))
+
+
+@pytest.mark.parametrize("above", ["Month to Date", "Quotation Summary", "Any Other Words"])
+def test_a_strip_of_figures_is_kept_and_flagged_whatever_stands_above_it(above):
+    rows = ((860, (300, above)), (880, (300, "Net Amount"), (500, "VAT 5%"), (700, "Total")),
+            (900, (300, "9,000.00"), (500, "450.00"), (700, "9,450.00")))
+    found = flags(*rows)
+    if read(*rows)["net"] is not None:
+        assert found == {"net": "9000.00", "tax": "450.00"}

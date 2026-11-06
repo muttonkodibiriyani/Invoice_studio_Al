@@ -140,6 +140,10 @@ class RulesRig:
         self.source = LookupRulesSource(self.app.state.store)
         self.config = RulesConfig.from_dict(rules_config(c))
 
+    def close(self):
+        self.client.__exit__(None, None, None)
+        self.patch.undo()
+
     def run(self, invoice_dict, supplier, text, boxes, evidence=None, ocr_lines=False):
         """As a reviewer who confirmed the printed supplier name: the view on screen and the Details rows of the export."""
         import io

@@ -290,6 +290,7 @@ async function main() {
     await node("#confirm-export-anyway").emit("click");
     assert.deepEqual([...opened], [], "edits on the other invoice are not reloaded over");
     assert.equal(notes.at(-1), "Excel workbook prepared.");
+    vm.runInContext("app.reviewDirty = false", context);
     // The exported invoice itself always reloads, so it shows as locked.
     select("app.state.jobs[0]");
     answer("Blocked", 18);
@@ -300,6 +301,43 @@ async function main() {
     assert.deepEqual([...opened], ["j1"], "the exported invoice refreshes to locked");
     vm.runInContext("app.reviewDirty = false", context);
     select("app.state.jobs[0]");
+    // Unsaved edits on the open invoice: nothing is checked or exported, the edits stay, and Save has focus.
+    const unsaved = "Save the current invoice before exporting. Your unsaved edits are still in the form.";
+    answer("Approved", 0);
+    opened.length = 0;
+    let before = calls.length;
+    vm.runInContext("app.reviewDirty = true", context);
+    await exportOne();
+    assert.equal(calls.length, before, "no check and no export with unsaved edits");
+    assert.equal(notes.at(-1), unsaved);
+    assert(node("#save-review").focused, "Save has focus");
+    assert.equal(vm.runInContext("app.reviewDirty", context), true, "the edits are still there");
+    assert.deepEqual([...opened], []);
+    // The same when the edit is typed during the check, clean invoice or warned one.
+    for (const [status, blank] of [["Approved", 0], ["Blocked", 18]]) {
+      vm.runInContext("app.reviewDirty = false", context);
+      node("#save-review").focused = false;
+      notes.length = 0;
+      answer(status, blank);
+      await duringCheck(() => vm.runInContext("app.reviewDirty = true", context));
+      assert(!dialog.open && !calls.includes(exportPath), "an edit typed during the check stops the export");
+      assert.equal(notes.at(-1), unsaved);
+      assert(node("#save-review").focused);
+    }
+    vm.runInContext("app.reviewDirty = false", context);
+    // The export went through and the download failed: the invoice still reloads, so it shows as locked.
+    answer("Approved", 0);
+    opened.length = 0;
+    notes.length = 0;
+    vm.runInContext(`var workingDownload = downloadApi, reloads = 0, workingLoad = loadState;
+      loadState = async () => { reloads += 1; };
+      downloadApi = async () => { throw new Error("The download failed"); };`, context);
+    await exportOne();
+    assert(calls.includes(exportPath));
+    assert.equal(vm.runInContext("reloads", context), 1, "the list reloads");
+    assert.deepEqual([...opened], ["j1"], "the exported invoice refreshes to locked");
+    assert.deepEqual([...notes], ["The download failed"], "the failure shows, not the prepared note");
+    vm.runInContext("downloadApi = workingDownload; loadState = workingLoad", context);
     // Nothing selected any more (deleted, or the list cleared): the export still finishes, with nothing to reopen.
     answer("Blocked", 18);
     opened.length = 0;

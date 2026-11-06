@@ -42,6 +42,22 @@ def _logged(rule):
     return {k: rule[k] for k in ("id", "supplier_name", "kind", "item_id", "source")}
 
 
+def both_read(local, read, suggestions):
+    """The AI's picks on lines where both reads agree on the supplier and on the printed value the rule would key on, so
+    one wrong AI read cannot put a wrong rule on the local read's words. The pick itself has only the AI behind it: it is
+    checked against the item master, the supplier's sites and close_names in add()."""
+    mine, theirs = (local or {}).get("lines") or [], (read or {}).get("lines") or []
+    if not _fold((local or {}).get("supplier_name")) or _fold((local or {}).get("supplier_name")) != _fold((read or {}).get("supplier_name")) or len(mine) != len(theirs):
+        return []
+    def agreed(pick):
+        n = pick.get("line")
+        if not isinstance(n, int) or not 0 <= n < len(mine):
+            return False
+        key = next(_keys(mine[n]), None)
+        return key is not None and key in set(_keys(theirs[n]))
+    return [s for s in suggestions if agreed(s)]
+
+
 def add(store, local, suggestions, model="", filename="", sites=()):
     """Add a rule for each item candidate the AI picked for a local line with no item. Returns the new rules' ids.
 

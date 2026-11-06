@@ -11,9 +11,9 @@ import uuid
 from pathlib import Path
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from .models import Invoice, uom_code
+from .models import Invoice
 from .evidence import build as build_evidence
-from . import ai_context, ai_rules, item_rules, item_search, layout_extract, matching, rules_first, scan_guard
+from . import ai_check, ai_context, ai_rules, item_rules, item_search, layout_extract, matching, rules_first, scan_guard
 from .fine_rules_source import LookupRulesSource
 from .numbers import to_decimal
 
@@ -387,19 +387,20 @@ def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=
     catalog=LookupRulesSource(store)  # the live item master, read for the child's item searches
     def send(message):
         proc.stdin.write(json.dumps(message,default=str)+"\n");proc.stdin.flush()
-    picks=[]  # (local read, what the AI picked), held until the child says the read stands: a rejected read adds no rule
+    picks=[]  # (local read, what the AI picked, the AI's read), held until the child says the read stands: a rejected read adds no rule
     def _after_context(meta,read,local):
         """The search over what the AI read, and what it picked. A failure here costs them, not the read."""
         meta=dict(meta or {})
         try:
             found=meta.get("suggestions") or []
             meta["suggestions"]=found+ai_context.searched(catalog,read,supplier_site,found)
-            picks.append((local or {},found))
+            picks.append((local or {},found,read))
         except Exception as e:progress("azure","AI suggestions unavailable",{"reason":type(e).__name__})
         return meta
     def keep_picks():
         kept=[]
-        for known,found in picks:
+        for known,found,read in picks:
+            found=ai_rules.both_read(known,read,found)
             sites=[supplier_site] if supplier_site else item_search.invoice_sites(catalog,known)
             kept+=ai_rules.add(store,known,found,options.model,filename,sites)
         picks.clear()
@@ -486,25 +487,26 @@ def needs_scan_evidence(result,options):
 
 
 # Fields a reader is recorded for in job.readers (internal enrichment fields are set later by the rules).
-READER_HEADER_FIELDS=("number","supplier_name","buyer_name","po","date_printed","date","currency","net","tax")
-READER_LINE_FIELDS=("sku","gtin","description","qty","uom","price","net_amount","tax_amount")
-AMOUNT_FIELDS={"net","tax","qty","price","net_amount","tax_amount"}
+READER_HEADER_FIELDS=ai_check.HEADER_FIELDS
+READER_LINE_FIELDS=ai_check.LINE_FIELDS
 AI_DISAGREEMENT="The AI read a different value here"
 AI_NOT_ON_DOCUMENT="The AI gave a value here that is not on the document, so it was left blank"
 AI_NOT_IN_OCR="The AI filled this, but the page OCR does not show it: check it against the source"
 # The AI boundary (docs/AI_BOUNDARY.md). After the local readers and the item master rules (rules_first), whose
-# resolved values are not gaps and are never overwritten, process() asks the AI only for:
+# resolved values are not gaps and are never overwritten, process() asks the AI for:
 #   fallback    the local result fails _basic_checks; the AI fills empty fields, and its lines stand in only for
 #               local lines that do not sum to the net (on a weak scan read, its self-checked lines also when the
 #               local lines do not align with them one to one);
 #   gap_fill    the local result passes the checks but leaves gaps; the AI fills empty fields only;
-#   cross_check a complete local result, only when ai_cross_check or INV_STUDIO_AI_CROSS_CHECK=1; flags only.
+#   cross_check a complete local result: always on Foundry (provider azure), which reads every invoice as a second,
+#               independent read (app/ai_check compares the two); elsewhere only when ai_cross_check or
+#               INV_STUDIO_AI_CROSS_CHECK=1. Flags only.
 # With ai_fallback off none of these runs. engine="ai" is the one other path: the user chose the AI as the reader.
 # Every field's reader is in readers.header/lines (an engine id or "ai"); readers.ai.reason says why the AI ran.
 AI_REASONS={
     "fallback":"The local readers' result failed the basic checks (no lines, no number or net, or totals that do not reconcile); the AI filled empty fields, its lines stand in only for local lines that do not sum to the net, and every disagreement is flagged",
     "gap_fill":"The local readers left gaps; the AI filled only empty fields and every disagreement is flagged",
-    "cross_check":"The local readers read a complete invoice; the AI cross-check flags disagreements and fills optional empty fields",
+    "cross_check":"The local readers read a complete invoice; the AI read it separately to compare, flags disagreements and fills optional empty fields",
     "skipped":"The local readers read a complete, reconciled invoice; the AI cross-check is off",
     "whole":"No local reader read this invoice, so the AI read the whole invoice; review every field against the source",
     "off":"AI fallback is off","unavailable":"Select a model in Engines & AI",
@@ -571,14 +573,7 @@ def _names_an_item(description):
     return bool(re.search(r"[^\W\d_]",words)) and not _SUMMARY_ROW.match(words)
 
 
-def _same(field,mine,theirs):
-    """Two readers agree when amounts are numerically equal or text matches by digits and letters."""
-    if field in AMOUNT_FIELDS:
-        try:return Decimal(str(mine))==Decimal(str(theirs))
-        except (InvalidOperation,ValueError):return False
-    if field=="uom":return uom_code(mine)==uom_code(theirs)
-    fold=lambda v:re.sub(r"[^0-9a-z]","",str(v).casefold())
-    return fold(mine)==fold(theirs)
+_same=ai_check.same
 
 
 def _aligned(mine,theirs):
@@ -1035,7 +1030,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
     # taken from the reader that printed it.
     local_reads=[];selected_read=None;filled_fields={}
     # The item master rules' result on the selected local read (rules_first.Resolved), once they ran.
-    resolved=None;lines_stood_in=False
+    resolved=None;lines_stood_in=False;both_reads=None
     # Readers the chain reached but that are not installed: told on the job with their install hint, and
     # named on the AI's trace entry as why it ran.
     missing_readers=[]
@@ -1085,7 +1080,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
 
         On a weak local read of a scan (``fallback``) the AI's read must first pass its own checks. A value the
         document's text does not print is not written; on a scan, whose text is OCR, it stands flagged."""
-        nonlocal best,best_score,selected,best_evidence,best_source,best_reader,ai_status,ai_notes,readers_maps,ai_reason,lines_stood_in
+        nonlocal best,best_score,selected,best_evidence,best_source,best_reader,ai_status,ai_notes,readers_maps,ai_reason,lines_stood_in,both_reads
         read=call_ai(mode)
         if read is None:
             ai_status="failed";return
@@ -1103,6 +1098,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 ai_reason=("Not read: the local OCR read is weak ("+"; ".join(weak)+") and the AI read fails its checks ("
                            +"; ".join(failed)+"). Nothing was filled; enter the invoice manually.")
                 return
+        both_reads=(local,ai_dict)  # the AI's read as it gave it, before anything below takes values out
         if weak:
             # A money total stands only with the quote it was read from: no derived net or tax, no 0 for unprinted.
             ai_dict={**ai_dict,**{f:None for f in ("net","tax") if not str((ai_evidence.get(f) or {}).get("quote") or "").strip()}}
@@ -1380,7 +1376,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             if missing or open_items:trace.append({"engine":options.provider,"status":"needs_connection","reason":"Select a model in Engines & AI"})
             ai_status="unavailable" if missing or open_items else "skipped"
             if not missing and not open_items:ai_reason="The local readers read a complete, reconciled invoice; no model is selected"
-        elif need=="cross_check" and not cross_check:ai_status="skipped"
+        elif need=="cross_check" and not (cross_check or options.provider=="azure"):ai_status="skipped"
         else:merge_ai(need)
     if resolved is not None and best is not None and lines_stood_in:
         # The lines are other rows now, so nothing found for the local ones goes back on them by position.
@@ -1432,7 +1428,9 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
         ai_record.update({k:v for k,v in (("filled",_ai_filled(header_readers,line_readers)),("flagged",_ai_flagged(best_evidence or {}))) if v})
     elif ai_rules_applied:ai_record["filled"]=_ai_filled(header_readers,line_readers)
     ai_record.update({k:v for k,v in (("suggestions",ai_suggestions),("rules_added",ai_rules_added),("rules_applied",ai_rules_applied)) if v})
-    readers={"ai":ai_record,"header":header_readers,"lines":line_readers,"gaps":gaps_of(best),
+    # The two reads, compared now the guards have left each cell as it stands.
+    compared=ai_check.compare(*both_reads,invoice,header_readers,line_readers) if both_reads else ai_check.not_read(ai_status)
+    readers={"ai":ai_record,"ai_check":compared,"header":header_readers,"lines":line_readers,"gaps":gaps_of(best),
              "not_installed":[{"engine":e,"hint":_install_hint(e)} for e in missing_readers]}
     if best is not None and best.lines and best.number and document_type_hint is None and ai_status!="not_read":
         extraction_note=None

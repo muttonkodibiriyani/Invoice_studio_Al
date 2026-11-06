@@ -3,8 +3,10 @@ import re
 from datetime import date
 from decimal import Decimal
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
+from .ai_check import TARGET_HEADER, TARGET_LINES
 from .matching import strip_ult
 from .location_type import STORE, WAREHOUSE, written
 from .models import UNWRITABLE_TEXT
@@ -59,6 +61,38 @@ def batch_workbook(entries):
 
 
 UPC_MODES=("barcode","empty")
+# What a cell shows of the AI check (app/ai_check): a fill and a note, no column added to the template. A cell with
+# neither was not confirmed. Column A of the Header row says it for the whole invoice.
+MARKS={"confirmed":("C6EFCE","AI confirmed: the local read and the AI read agree. This does not prove the value right."),
+       "filled":("BDD7EE","AI filled: the local read was blank and the value is the AI's. Check it against the document."),
+       "disputed":("F8CBAD","In dispute: the local read and the AI read differ."),
+       "settled":("FFE699","A person settled a dispute between the local read and the AI read here."),
+       "not_confirmed":("D9D9D9","Not AI-confirmed")}
+_INVOICE_MARKS={"confirmed":"confirmed","partial":"filled","disputed":"disputed","not_confirmed":"not_confirmed"}
+
+
+def _mark(cell,state,text=""):
+    color,words=MARKS[state]
+    cell.fill=PatternFill("solid",fgColor=color)
+    cell.comment=Comment(f"{words} {text}".strip(),"Invoice Studio",width=320,height=120)
+
+
+def _mark_invoice(sheet,row,check):
+    """The invoice's AI check on its Transaction Number cell, which always holds a value."""
+    counts=check.get("counts") or {}
+    said=check.get("why") or ", ".join(f"{n} {name}" for name,n in counts.items() if n)
+    cell=sheet.cell(row,1);cell.fill=PatternFill("solid",fgColor=MARKS[_INVOICE_MARKS[check["status"]]][0])
+    cell.comment=Comment(f"{check['label']}: {said}.","Invoice Studio",width=320,height=120)
+
+
+def _mark_cell(cell,state,sources,check,line=None):
+    """One target cell's state from ai_check.written. An empty cell holds nothing the reads agreed on."""
+    if state=="disputed":
+        found=next((x for x in check["disputes"] if x["field"] in sources and x["line"]==line),None)
+        _mark(cell,"disputed",f"Local: {found['local']}. AI: {found['ai']}." if found else "")
+    elif state and cell.value not in (None,""):_mark(cell,state)
+
+
 _NUMBER_ID=re.compile(r"[1-9]\d{0,14}")
 
 
@@ -111,6 +145,8 @@ def _rules_sheets(views,upc,blanks):
         return f["value"]
     for transaction,v in enumerate(views,1):
         f=v["fields"];s=w["Header"];row=transaction+1
+        check=v.get("ai_check") or {"status":"not_confirmed","label":"Not AI-confirmed","why":"no AI read was made","header":{},"lines":[],"disputes":[]}
+        cell_states=check.get("written") or {"header":{},"lines":[]}
         ev=cells.setdefault(transaction,{})
         def put(sheet,r,c,field):
             if not blanks or w[sheet].cell(r,c).value not in (None,""):ev[f"{sheet}!{w[sheet].cell(r,c).coordinate}"]=field["evidence"]
@@ -136,4 +172,11 @@ def _rules_sheets(views,upc,blanks):
             for col,k in ((4,"Unit Cost"),(5,"Quantity")):
                 x=need(c[k],f"Line {line['line']} {k}");d.cell(n,col,None if x is None else Decimal(x)).number_format="0.0000";put("Details",n,col,c[k])
             text_cell(d.cell(n,6),need(c["Unit Tax Code"],f"Line {line['line']} Unit Tax Code"));put("Details",n,6,c["Unit Tax Code"])
+            states=cell_states["lines"][line["line"]-1] if 0<line["line"]<=len(cell_states["lines"]) else {}
+            for col,k in ((2,"Item"),(3,"UPC"),(4,"Unit Cost"),(5,"Quantity")):
+                if col!=3 or d.cell(n,3).value not in (None,""):_mark_cell(d.cell(n,col),states.get(k),TARGET_LINES[k],check,line["line"])
+        for cell,k in ((s.cell(row,2),"number"),(s.cell(row,3),"site"),(s.cell(row,4),"po"),(s.cell(row,5),"location"),
+                       (s.cell(row,7),"date"),(s.cell(row,8),"net"),(s.cell(row,9),"tax"),(t.cell(row,3),"net")):
+            _mark_cell(cell,cell_states["header"].get(k),TARGET_HEADER[k],check)
+        _mark_invoice(s,row,check)
     return w,cells

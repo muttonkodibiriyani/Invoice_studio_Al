@@ -243,7 +243,7 @@ function rulesCell(cell, name, line, prompted = false) {
   const empty = !cell || cell.value === null || cell.value === undefined;
   if (empty) td.append(make("span", "rules-flagged", cell?.reason === "No evidence" ? "Empty · no evidence" : cell?.reason || "Not found"));
   else td.append(make("span", "", cell.value), make("small", "", evidenceText(cell.evidence)));
-  td.append(...readerNotes(app.currentJob, "line", name, line));
+  td.append(...readerNotes(app.currentJob, "line", name, line, enteredByReviewer(cell)));
   if (!prompted && ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell))) td.append(rulesEntry(cell, name, "line", name, line));
   return td;
 }
@@ -253,7 +253,7 @@ function rulesCell(cell, name, line, prompted = false) {
 const READER_LINE_FIELDS = { Item: "sku", UPC: "gtin", "Unit Cost": "price", Quantity: "qty" };
 const READER_HEADER_FIELDS = { site: "supplier_name" };
 const AI_READER_LABELS = {
-  fallback: "Fallback", gap_fill: "Gap fill", cross_check: "Cross-check", skipped: "Not needed", off: "Off",
+  fallback: "Fallback", gap_fill: "Gap fill", cross_check: "Second read", skipped: "Not needed", off: "Off",
   unavailable: "Not connected", failed: "Failed", selected: "Selected reader", not_read: "Read rejected",
 };
 
@@ -294,13 +294,17 @@ function noteFor(input, note) {
 }
 const hasLineReview = (job) => (job?.evidence?.lines || []).some((entry) => Object.values(entry || {}).some((value) => value?.review?.reason));
 
-function readerNotes(job, scope, column, line) {
+function readerNotes(job, scope, column, line, entered = false) {
   const key = scope === "header" ? READER_HEADER_FIELDS[column] || column : READER_LINE_FIELDS[column];
   const readers = scope === "header" ? job?.readers?.header : job?.readers?.lines?.[line - 1];
   const evidence = scope === "header" ? job?.evidence?.header : lineReviews(job)?.[line - 1];
   const notes = [];
-  const badge = readerBadge(readers?.[key]);
+  // A typed value is the reviewer's: no read made it and no read compared it.
+  const badge = entered ? null : readerBadge(readers?.[key]);
   if (badge) notes.push(badge);
+  const written = job?.rules?.ai_check?.written;
+  const mark = aiCheckBadge(scope === "header" ? written?.header?.[column] : written?.lines?.[line - 1]?.[column]);
+  if (mark) notes.push(mark);
   const note = reviewNote(evidence?.[key]?.review);
   if (note) notes.push(note);
   return notes;
@@ -312,6 +316,57 @@ function readerBadge(reader) {
   const badge = make("span", `reader-badge reader-${reader}`, reader === "ai" ? "AI" : humanize(reader));
   badge.title = reader === "ai" ? "Filled by the AI: check it against the document" : `Read by ${humanize(reader)}`;
   return badge;
+}
+
+// A cell's AI check (rules.ai_check). Two reads agreeing is not proof, so it says "AI confirmed", never verified. A filled
+// cell already has the AI badge. Target cells read ai_check.written, which the server ties to the value they hold.
+const AI_CHECK_MARKS = { confirmed: "AI confirmed", disputed: "In dispute", settled: "Settled" };
+function aiCheckBadge(state) {
+  if (!AI_CHECK_MARKS[state]) return null;
+  return make("span", `reader-badge ai-check-${state}`, AI_CHECK_MARKS[state]);
+}
+
+// A person's pick on a dispute: the value goes into the form, then the save records who picked what.
+async function pickAiValue(dispute, choice) {
+  const job = app.currentJob;
+  if (choice !== "typed") {
+    if (dispute.key === "lines") {
+      job.invoice.lines = dispute[`${choice}_lines`];
+      renderSelectedJob(job);
+    } else {
+      const row = dispute.line ? $$("#line-items tr")[dispute.line - 1] : null;
+      const input = dispute.line ? row && $(`[name="${dispute.field}"]`, row) : $(`#header-fields [name="${dispute.field}"]`);
+      if (input) input.value = dispute[choice];
+      if (!dispute.line) job.invoice[dispute.field] = dispute[choice];
+    }
+  }
+  await submitReview({ settled: { [dispute.key]: choice } }, `${dispute.label} settled.`);
+}
+
+function aiDisputeRow(dispute, locked) {
+  const row = make("span", "ai-dispute");
+  row.append(make("strong", "", `${dispute.label}: `), make("span", "", `local read ${dispute.local} · AI read ${dispute.ai} `));
+  [["local", `Use local: ${dispute.local}`], ["ai", `Use AI: ${dispute.ai}`], ["typed", "Keep what is in the form"]].forEach(([choice, label]) => {
+    const button = make("button", "secondary", label);
+    button.type = "button";
+    button.disabled = locked;
+    button.addEventListener("click", () => pickAiValue(dispute, choice));
+    row.append(button);
+  });
+  return row;
+}
+
+// What this invoice's AI check says, its open disputes with both values, and what the read used.
+function renderAiCheck(box, job) {
+  const check = job?.rules?.ai_check;
+  if (rulesJob(job) && !["queued", "processing"].includes(job.status)) {
+    const counts = check?.counts || {};
+    const said = check?.why || (check ? ["confirmed", "filled", "disputed", "settled", "unchecked"].filter((name) => counts[name]).map((name) => `${counts[name]} ${name}`).join(", ") : "no AI read was made");
+    box.append(make("strong", `ai-check-status ai-check-${check?.status || "not_confirmed"}`, `${check?.label || "Not AI-confirmed"}: ${said}`));
+    (check?.disputes || []).forEach((dispute) => box.append(aiDisputeRow(dispute, job.status === "exported")));
+  }
+  const cost = job?.cost;
+  if (cost?.calls) box.append(make("span", "", `AI use: ${cost.calls} call${cost.calls === 1 ? "" : "s"} · ${cost.input_tokens + cost.cached_tokens} tokens in · ${cost.output_tokens} out${cost.usd === null ? " · not priced" : ` · $${cost.usd}`}`));
 }
 
 // readers.lines is positional like evidence.lines, so it marks the rows only while the counts still match.
@@ -330,7 +385,7 @@ function renderAiReader(job) {
   const named = reason.split(":")[0].split(", ");
   const missing = (job?.readers?.not_installed || [])
     .filter((entry) => entry?.hint && !(named.includes(entry.engine) && reason.includes(entry.hint.slice(1))));
-  box.hidden = !ai?.status && !missing.length;
+  box.hidden = !ai?.status && !missing.length && !rulesJob(job);
   box.replaceChildren();
   if (box.hidden) return;
   const used = ["fallback", "gap_fill", "cross_check", "selected"].includes(ai?.status);
@@ -341,6 +396,7 @@ function renderAiReader(job) {
     if (reason) box.append(make("span", "", `${used ? "Why the AI ran" : "Why"}: ${reason}`));
     box.title = (ai.notes || []).join("\n");
   }
+  renderAiCheck(box, job);
   (ai?.rules_applied || []).forEach((fill) => box.append(make("span", "", `Line ${fill.line + 1}: item ${fill.item_id} filled by AI-added rule ${fill.rule} · ${fill.source}`)));
   (ai?.suggestions || []).forEach((hint) => box.append(make("span", "", `Suggestion${hint.line === null || hint.line === undefined ? "" : ` for line ${hint.line + 1}`}, not filled: ${humanize(hint.field)} ${hint.value} · ${hint.source} · ${hint.why}`)));
   missing.forEach((entry) => box.append(make("span", "", `${humanize(entry.engine)}: ${entry.hint}`)));
@@ -537,7 +593,7 @@ function renderRulesResult(job) {
         // "Not found" is the view's placeholder for every blank field, not a reason of its own.
         : (field.reason !== "Not found" && field.reason) || headerException(job, field.target) || "Not found in owner sheets or on the invoice"));
     } else dd.append(make("span", "", field.value), make("small", "", evidenceText(field.evidence)));
-    dd.append(...readerNotes(job, "header", key));
+    dd.append(...readerNotes(job, "header", key, undefined, enteredByReviewer(field)));
     if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(entries[key] = rulesEntry(field, field.label, "header", key));
     if (key === "site") renderSupplierPick(dd, job);
     if (field.target === "Order No" && Number(rules.po_candidates) > 1) {
@@ -1740,6 +1796,8 @@ function renderInvoiceForm(job) {
     wrapper.append(input);
     const badge = readerBadge(job.readers?.header?.[name]);
     if (badge) wrapper.append(badge);
+    const mark = aiCheckBadge(job.rules?.ai_check?.header?.[name]);
+    if (mark) wrapper.append(mark);
     const review = noteFor(input, reviewNote(job.evidence?.header?.[name]?.review));
     if (review) wrapper.append(review);
     if (buyer) {
@@ -2152,9 +2210,16 @@ function renderExportButton(job) {
   $("#export-job").textContent = exported ? "Download Excel" : "Export Excel";
 }
 
+function refuseUnsavedExport() {
+  if (!app.reviewDirty) return false;
+  notify("Save the current invoice before exporting. Your unsaved edits are still in the form.", "error", 8000);
+  $("#save-review").focus();
+  return true;
+}
+
 async function exportCurrentJob() {
   const job = app.currentJob;
-  if (!job) return;
+  if (!job || refuseUnsavedExport()) return;
   if (job.export_id) return writeExport(job);
   const button = $("#export-job");
   button.disabled = true;
@@ -2174,6 +2239,7 @@ async function exportCurrentJob() {
     notify("The selected invoice changed during the check. Nothing was exported; open the invoice and export again.", "error", 7000);
     return;
   }
+  if (refuseUnsavedExport()) return;
   if (!warning) return writeExport(job);
   app.exportPending = job;
   $("#export-confirm-text").textContent = `${job.filename}: ${warning} Export anyway?`;
@@ -2188,10 +2254,13 @@ async function writeExport(job) {
   button.textContent = "Preparing…";
   try {
     const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/export`, { method: "POST", body: { revision: job.revision } });
-    await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
-    await loadState();
-    // Unsaved edits on another invoice stay; the exported invoice itself always reloads, so it shows as locked.
-    if (app.selectedJobId && (app.selectedJobId === job.id || !app.reviewDirty)) await selectJob(app.selectedJobId);
+    try {
+      await downloadApi(result.url, `Merch_Inv_${result.id.slice(0, 8)}.xlsx`);
+    } finally {
+      await loadState();
+      // Unsaved edits on another invoice stay; the exported invoice itself always reloads, so it shows as locked, even if the download failed.
+      if (app.selectedJobId && (app.selectedJobId === job.id || !app.reviewDirty)) await selectJob(app.selectedJobId);
+    }
     notify("Excel workbook prepared.");
   } catch (error) {
     notify(error.message, "error", 7000);

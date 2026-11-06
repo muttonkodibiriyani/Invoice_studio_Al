@@ -1,6 +1,15 @@
-# Invoice Studio runbook
+# Invoice Studio runbook: the old Google Cloud setup
 
-Live app: https://inv-studio-740495548022.web.app. GCP project `productintelligence-beeb3` is **shared with Product
+> **This is not the deploy route. To deploy, go to [CLOUD_SHELL_COMMANDS.md](CLOUD_SHELL_COMMANDS.md)**: copy-paste
+> commands for Azure Cloud Shell, with the detail in [AZURE.md](AZURE.md).
+>
+> This page records the older Google Cloud copy only (Cloud Run, Firebase, Cloud SQL). It is kept because the two copies
+> run side by side and share nothing, until someone chooses to move the users over (AZURE.md). "Live" below means live
+> on Google Cloud, as last recorded here on 23 Oct 2026. `main` below means the branch in the ops host's repo. This
+> repository's `main` signs in with Entra ID only and refuses to start in cloud mode with the Firebase settings
+> (`app/authentication.py`), so do not build it for this setup.
+
+Google Cloud app: https://inv-studio-740495548022.web.app. GCP project `productintelligence-beeb3` is **shared with Product
 Intelligence** (`pi-api`, `pi-capture`, `pi-sephora`, the default Hosting site, and the Firebase Authentication user
 pool): never touch those, and never change project-wide Auth settings without the owner's OK.
 
@@ -20,10 +29,12 @@ to the least-privilege deployer identity once that plan is agreed (see the deplo
 
 ## 1. Deploy a new version
 
+Google Cloud only. To deploy to Azure, use [CLOUD_SHELL_COMMANDS.md](CLOUD_SHELL_COMMANDS.md).
+
 Rule: **a build never goes live by itself.** Traffic is pinned to a named revision; a candidate is deployed with no
 traffic and tested by the owner on a Hosting preview channel; then a fresh revision with the live settings is promoted.
 
-**Live now (since 23 Oct 2026 21:13 UTC): the users and sign-in release.** Revision `inv-studio-api-users-live` runs
+**Live on Google Cloud when last recorded (since 23 Oct 2026 21:13 UTC): the users and sign-in release.** Revision `inv-studio-api-users-live` runs
 image tag `users-3633d1c` (`app@sha256:15a9b53b124d…`, the linux/amd64 manifest in the pushed index `e4acfe7593f4…`):
 `go-live/auth` `3633d1c`'s `app/` (tree `b7d4f0ec…`) on the 8 Oct live image, with the live settings. Hosting version
 `8e5145b49e9a2183` holds the static files of the same export (`~/inv-studio-golive/build/3633d1c`). The release keeps

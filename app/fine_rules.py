@@ -424,13 +424,16 @@ def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=(),
 
     Buyer-side party text is removed by position, never by name, since group companies sell to each other.
     A reader buyer that is only company-type words (a reader miss) excludes nothing. The configured owner entity
-    is never its own supplier, by the whole name: a sibling printing another company form or a longer name stays."""
+    is never its own supplier, by the whole name within the typo or two the tolerant match allows, whichever side omits
+    the company form: a sibling printing another company form or a longer name stays."""
     found = []
 
     def is_owner(value):
         form = lambda name: "".join(w for w in _tokens(name) if w in _COMPANY_TYPES)
-        return bool(entity_tokens(owner_name)) and entity_tokens(value) == entity_tokens(owner_name) \
-            and form(value) in ("", form(owner_name))
+        entity, owner = name_key(" ".join(entity_tokens(value))), name_key(" ".join(entity_tokens(owner_name)))
+        limit = 2 if len(owner) >= 16 else 1 if len(owner) >= 6 else 0
+        forms = form(value), form(owner_name)
+        return bool(owner) and _edits(entity, owner, limit) <= limit and ("" in forms or forms[0] == forms[1])
 
     printed_buyer = fold(buyer_name) if buyer_name and entity_tokens(buyer_name) else ""
     buyer_rows = [r for r in buyer_rows if entity_tokens(r)]

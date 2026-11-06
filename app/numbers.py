@@ -2,11 +2,12 @@
 
 parse_number("1,067.13") == "1067.13"; it returns a plain decimal string with the printed places kept
 ("9.00" stays "9.00", a KWD "12.500" stays "12.500"), or None when the text is not one number. Read:
-- thousands separators: "1,067.13", "1,234,567", a space "8 800.00", and the other convention "1.067,13";
+- thousands separators: "1,067.13", "1,234,567", a space "8 800.00", an apostrophe "29'566.32", lakhs "12,34,567.89", and
+  the other convention "1.067,13";
   with one kind of separator printed twice or more, the last one is the decimal point unless its group has
   three digits ("2.480.00" is a scan of "2,480.00"; "1.234.567" is 1234567);
 - one comma: three digits after it group thousands ("1,067"); one or two are the decimal point ("950,40");
-- a currency code or sign before or after the amount, with or without a space ("950.40 AED", "KD12.500");
+- a currency code or sign before or after the amount, with or without a space ("950.40 AED", "KD12.500", "€950.40");
 - negatives: "-12.50", "(12.50)", "12.50-", and the Unicode minus;
 - OCR noise: O or o for a zero among digits ("1O0.00"), spaces around a separator ("1 , 105.31", "950. 40"),
   Arabic-Indic digits and the Arabic decimal and thousands marks.
@@ -16,12 +17,21 @@ import re
 from decimal import Decimal
 
 # ISO codes printed on Gulf invoices, and the local signs suppliers print instead.
-_CURRENCY = r"(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR|Dhs?|KD|SR|QR|BD|RO)\.?"
+_CURRENCY = r"(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR|Dhs?|KD|SR|QR|BD|RO|Rs|[€£$])\.?"
 _AROUND = re.compile(rf"(?i)^(?:{_CURRENCY}\s*)?(?P<number>.*?)(?:\s*{_CURRENCY})?$")
 _ARABIC = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٫٬−   ",
                         "01234567890123456789.,-   ")
 _SHAPE = re.compile(r"[0-9]+(?:[.,][0-9]+)*")
 _MAX_DIGITS = 24
+# The codes a printed word may be read as: "DUE" and "VAT" have three capitals and are no currency.
+ISO_CURRENCIES = frozenset(
+    "AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF CHF "
+    "CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG "
+    "HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA "
+    "MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD "
+    "RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX "
+    "USD UYU UZS VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL".split()
+)
 
 
 def parse_number(value):
@@ -46,6 +56,10 @@ def parse_number(value):
     text = re.sub(r"\s*([.,])\s*", r"\1", text)
     if re.fullmatch(r"[0-9]{1,3}(?: [0-9]{3})+(?:[.,][0-9]+)?", text):
         text = text.replace(" ", "")
+    if re.fullmatch(r"[0-9]{1,3}(?:['’][0-9]{3})+(?:[.,][0-9]+)?", text):
+        text = re.sub(r"['’]", "", text)
+    if re.fullmatch(r"[0-9]{1,2}(?:,[0-9]{2})+,[0-9]{3}(?:\.[0-9]+)?", text):  # Indian lakh grouping: "12,34,567.89"
+        text = text.replace(",", "")
     if not _SHAPE.fullmatch(text):
         return None
     plain = _ungroup(text)

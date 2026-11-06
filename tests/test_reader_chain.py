@@ -313,3 +313,23 @@ def test_a_later_zero_value_read_with_fewer_rows_never_wins_on_a_tie_of_coded_ro
     first = {**two, "lines": [two["lines"][0], {**two["lines"][1], "sku": None, "gtin": None}]}
     result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": _zero_value(INVOICE, 1)}, ai_fallback=False)
     assert result["selected_engine"] == "paddleocr" and len(result["invoice"]["lines"]) == 2
+
+
+def _priced_junk(read, description):
+    return {**read, "lines": [*read["lines"], {"description": description, "qty": "1", "price": "0", "net_amount": "0", "tax_amount": "0"}]}
+
+
+@pytest.mark.parametrize("description", ["Total lines", "Sub Total", None, "12.00"])
+def test_a_later_priced_junk_row_does_not_take_over_a_read_with_no_codes(chain, description):
+    full = _no_codes(_zero_value(INVOICE, len(INVOICE["lines"])))
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": full, "docling": _no_codes(_priced_junk(full, description))}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"
+    assert len(result["invoice"]["lines"]) == len(full["lines"])
+
+
+def test_a_priced_junk_row_in_the_first_read_does_not_hold_off_a_right_later_read(chain):
+    rows = len(INVOICE["lines"])
+    first, right = _priced_junk(_zero_value(INVOICE, rows), "Total lines"), _zero_value(INVOICE, rows)
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": {**right, "date": None}}, ai_fallback=False)
+    assert result["selected_engine"] == "docling"
+    assert len(result["invoice"]["lines"]) == rows

@@ -271,11 +271,12 @@ def page_texts_from_boxes(boxes: list[dict]) -> list[str]:
     """Per-page text rebuilt from a reader's boxes (OCR text is joined without page marks), top to bottom, a line per row."""
     pages: dict[int, list[dict]] = {}
     for box in boxes:
-        place = box.get("box")
-        if box.get("geometry") != "word" and place and isinstance(box.get("page"), int) and 1 <= box["page"] <= MAX_PAGES:
+        if box.get("box") and isinstance(box.get("page"), int) and 1 <= box["page"] <= MAX_PAGES:
             pages.setdefault(box["page"], []).append(box)
     texts = [""] * (max(pages) if pages else 0)
     for number, items in pages.items():
+        # Some readers give lines and their words, some words alone: use the lines where a page has them.
+        items = [b for b in items if b.get("geometry") != "word" and str(b.get("text") or "").strip()] or items
         rows: list[list[dict]] = []
         for item in sorted(items, key=lambda b: b["box"][1]):
             height = max(1.0, item["box"][3] - item["box"][1])

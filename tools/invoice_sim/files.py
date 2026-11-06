@@ -64,20 +64,24 @@ def cases(c, folder: Path) -> list[dict]:
     folder.mkdir(parents=True, exist_ok=True)
     # One invoice per case: the same number twice would stop at the duplicate guard and hide what the export holds.
     base = [i for i in c.invoices if i.family in ("grid-classic", "ruled-zebra", "plain-whitespace")]
-    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:12]]
+    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:14]]
     scan_path, _ = scan_pdf(folder / f"{base[1].id}.pdf", folder / f"{base[1].id}.scan.pdf", f"{c.seed}:files", "office")
     scanned = Path(scan_path).read_bytes()
+    scan_path, _ = scan_pdf(folder / f"{base[13].id}.pdf", folder / f"{base[13].id}.scan.pdf", f"{c.seed}:files-pdf", "office")
+    scanned_alone = Path(scan_path).read_bytes()
     blank = _pdf(lambda p: p.showPage())
     noise = np.random.default_rng(c.seed).integers(0, 255, (2200, 1700, 3), dtype=np.uint8)
     noise_out = io.BytesIO()
     Image.fromarray(noise).save(noise_out, "PNG")
-    number = [i.truth["number"] for i in base[:12]]
-    net = [str(i.truth["net"]) for i in base[:12]]
+    number = [i.truth["number"] for i in base[:14]]
+    net = [str(i.truth["net"]) for i in base[:14]]
     heavy = np.random.default_rng(c.seed + 1).integers(0, 255, (1950, 1800, 3), dtype=np.uint8)
     heavy_out = io.BytesIO()
     Image.fromarray(heavy).save(heavy_out, "PNG")
     pad = bytes(rng.getrandbits(8) for _ in range(1024)) * 1024 * 13
     return [
+        {"case": "PDF native", "name": "invoice.pdf", "content": native[12], "number": number[12]},
+        {"case": "PDF scanned", "name": "invoice-scan.pdf", "content": scanned_alone, "number": number[13]},
         {"case": "JPG", "name": "invoice.jpg", "content": _image(native[2], "JPEG"), "number": number[2]},
         {"case": "PNG", "name": "invoice.png", "content": _image(native[3], "PNG"), "number": number[3]},
         {"case": "TIFF", "name": "invoice.tiff", "content": _image(native[4], "TIFF"), "number": number[4]},

@@ -321,6 +321,16 @@ def test_the_excel_says_not_ai_confirmed_with_no_cell_marked(client, owner, app,
     assert book["Header"]["B2"].fill.fill_type is None
 
 
+def test_an_empty_cell_in_the_excel_is_not_marked_confirmed(client, owner, app, tmp_path):
+    invoice = {"number": "A1", "net": "5", "tax": "1", "po": "P1", "date": "2026-10-04", "lines": [{"sku": "ABC-1", "qty": "1", "price": "5"}]}
+    job_with(app.state.store, tmp_path, readers=record_for(invoice, invoice), invoice=invoice)
+    view = client.get("/api/jobs/dis", headers=bearer(owner)).json()["rules"]
+    assert view["ai_check"]["header"]["po"] == "confirmed"
+    view["fields"]["po"].update(value=None, flagged=True, evidence=[])
+    book = load_workbook(io.BytesIO(rules_workbook([view], "empty", blanks=True)[0]))
+    assert book["Header"]["D2"].value is None and book["Header"]["D2"].comment is None
+
+
 def test_a_settled_cell_in_the_excel_is_not_called_confirmed(client, owner, app, tmp_path):
     invoice = {"number": "A1", "net": "6", "tax": "1", "date": "2026-10-04", "lines": [{"sku": "ABC-1", "qty": "1", "price": "5"}]}
     readers = ai_check.settle(record_for({**invoice, "net": "5"}, {**invoice, "net": "6"}), {"net": "ai"}, invoice, "someone", "now")

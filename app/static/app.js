@@ -294,14 +294,14 @@ function noteFor(input, note) {
 }
 const hasLineReview = (job) => (job?.evidence?.lines || []).some((entry) => Object.values(entry || {}).some((value) => value?.review?.reason));
 
-function readerNotes(job, scope, column, line) {
+function readerNotes(job, scope, column, line, blank = false) {
   const key = scope === "header" ? READER_HEADER_FIELDS[column] || column : READER_LINE_FIELDS[column];
   const readers = scope === "header" ? job?.readers?.header : job?.readers?.lines?.[line - 1];
   const evidence = scope === "header" ? job?.evidence?.header : lineReviews(job)?.[line - 1];
   const notes = [];
   const badge = readerBadge(readers?.[key]);
   if (badge) notes.push(badge);
-  const mark = aiCheckBadge(job, scope, key, line, column === "site" || column === "Item");
+  const mark = aiCheckBadge(job, scope, key, line, blank || column === "site" || column === "Item");
   if (mark) notes.push(mark);
   const note = reviewNote(evidence?.[key]?.review);
   if (note) notes.push(note);
@@ -317,7 +317,8 @@ function readerBadge(reader) {
 }
 
 // A cell's AI check (rules.ai_check). Two reads agreeing is not proof, so it says "AI confirmed", never verified. A filled
-// cell already has the AI badge. A derived cell (site, item) was not read by the AI, so it only carries a dispute.
+// cell already has the AI badge. A derived cell (site, item) was not read by the AI, so it only carries a dispute, and so
+// does an empty target cell, which holds nothing the reads agreed on.
 const AI_CHECK_MARKS = { confirmed: "AI confirmed", disputed: "In dispute", settled: "Settled" };
 function aiCheckBadge(job, scope, key, line, derived = false) {
   const check = job?.rules?.ai_check;
@@ -593,7 +594,7 @@ function renderRulesResult(job) {
         // "Not found" is the view's placeholder for every blank field, not a reason of its own.
         : (field.reason !== "Not found" && field.reason) || headerException(job, field.target) || "Not found in owner sheets or on the invoice"));
     } else dd.append(make("span", "", field.value), make("small", "", evidenceText(field.evidence)));
-    dd.append(...readerNotes(job, "header", key));
+    dd.append(...readerNotes(job, "header", key, undefined, empty));
     if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(entries[key] = rulesEntry(field, field.label, "header", key));
     if (key === "site") renderSupplierPick(dd, job);
     if (field.target === "Order No" && Number(rules.po_candidates) > 1) {

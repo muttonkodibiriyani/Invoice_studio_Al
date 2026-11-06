@@ -92,7 +92,8 @@ def _mark_cell(cell,states,fields,check,line=None):
         if states.get(field)=="disputed":
             found=next((x for x in check["disputes"] if x["field"]==field and x["line"]==line),None)
             _mark(cell,"disputed",f"Local: {found['local']}. AI: {found['ai']}." if found else "");return
-    if own and states.get(own) in MARKS:_mark(cell,states[own])
+    # An empty cell holds nothing the reads agreed on, whatever the invoice behind it says.
+    if own and states.get(own) in MARKS and cell.value not in (None,""):_mark(cell,states[own])
 _NUMBER_ID=re.compile(r"[1-9]\d{0,14}")
 
 

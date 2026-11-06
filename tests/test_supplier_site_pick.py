@@ -86,3 +86,59 @@ def test_the_review_endpoint_takes_the_site_pick(client, owner, app):
     assert [l["cells"]["Item"]["value"] for l in job["rules"]["lines"]] == ["100000001", "100000002"]
     job = review(3, supplier_site="").json()
     assert "owner_supplier_site" not in job and job["rules"]["fields"]["site"]["value"] in ("", None)
+
+
+BUYER_FIRST = {1: [(10, 50, "Customer"), (10, 120, "Copperleaf"), (10, 190, "Mart"), (24, 50, "Al"), (24, 70, "Quoz"),
+                   (38, 50, "Kestrow"), (38, 110, "Imports"), (38, 170, "Pvt"), (38, 200, "Ltd"),
+                   (52, 50, "P.O."), (52, 80, "Box"), (52, 110, "3801")]}
+
+
+def buyer_first_boxes():
+    return [{"text": value, "page": page, "box": [x, top, x + 30, top + 8], "size": [600, 800]}
+            for page, words in BUYER_FIRST.items() for top, x, value in words]
+
+
+BUYER_FIRST_TEXT = "Customer Copperleaf Mart\nAl Quoz\nKestrow Imports Pvt Ltd\nP.O. Box 3801"
+
+
+def test_a_second_company_name_below_the_customer_label_is_not_the_buyer():
+    source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "KESTRO01",
+                          "SUPPLIER SITE NAME": "Kestrow Imports Pvt Ltd", "ITEM_DESC": "Rose red"}])
+    read = Invoice(supplier_name="Kestrow Imports Pvt Ltd", lines=[Line(sku="VPN-1", description="Rose red")])
+    result = run_invoice(read, source, text_value=BUYER_FIRST_TEXT, boxes=buyer_first_boxes())
+    assert result["header"]["Supplier Site"] == "101"
+
+
+def test_a_typed_supplier_name_is_never_thrown_away():
+    # The buyer's own row: without the reviewer's word this name is removed as buyer-side text.
+    read = Invoice(supplier_name="Copperleaf Mart", lines=[Line(sku="VPN-1", description="Rose red")])
+    source = RowsSource([{"VPN": "VPN-9", "ITEM_PARENT": "P9", "SUPPLIER": "109", "SUPPLIER_NAME": "COPPER01",
+                          "SUPPLIER SITE NAME": "Copperleaf Mart", "ITEM_DESC": "Other"}])
+    text = "Customer Copperleaf Mart\nAl Quoz"
+    boxes = [b for b in buyer_first_boxes() if b["box"][1] < 30]
+    unread = run_invoice(read, source, text_value=text, boxes=boxes)
+    assert any(e["Rule ID"] == "ALG-002" for e in unread["exceptions"])
+    typed = run_invoice(read, source, text_value=text, boxes=boxes, typed_supplier_name="Copperleaf Mart")
+    assert not any(e["Rule ID"] == "ALG-002" for e in typed["exceptions"])
+    assert typed["header"]["Supplier Site"] == "109"
+    changed = run_invoice(read, source, text_value=text, boxes=boxes, typed_supplier_name="Somebody Else")
+    assert any(e["Rule ID"] == "ALG-002" for e in changed["exceptions"])
+
+
+def test_the_review_endpoint_keeps_a_typed_supplier_name(client, owner, app):
+    def edit(sheet):
+        sheet.delete_rows(2, sheet.max_row)
+        sheet.append([11, None, 100000001, "Other", "VPN-9", "Rose", "COPPER01", "Copperleaf Mart", 109] + [None] * 8)
+    activate(client, owner, master_bytes(edit))
+    read = Invoice(supplier_name="", lines=[Line(sku="VPN-1", description="Rose red")]).model_dump(mode="json")
+    app.state.store.job("typed", {"id": "typed", "filename": "synthetic.txt", "status": "review", "revision": 1,
+                                  "reviewed": False, "provenance": [], "trace": [], "boxes": [b for b in buyer_first_boxes() if b["box"][1] < 30],
+                                  "text": "Customer Copperleaf Mart\nAl Quoz", "invoice": read})
+    data = {**read, "supplier_name": "Copperleaf Mart"}
+    job = client.post("/api/jobs/typed/review", headers=bearer(owner), json={"invoice": data, "revision": 1}).json()
+    assert job["typed_supplier_name"] == "Copperleaf Mart"
+    assert job["rules"]["fields"]["site"]["value"] == "109"
+    # Saved again unchanged, it is still the reviewer's.
+    job = client.post("/api/jobs/typed/review", headers=bearer(owner), json={"invoice": data, "revision": 2}).json()
+    assert job["typed_supplier_name"] == "Copperleaf Mart"
+    assert job["rules"]["fields"]["site"]["value"] == "109"

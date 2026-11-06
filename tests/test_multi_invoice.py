@@ -471,3 +471,17 @@ def test_child_answers_with_bad_hold_pages_are_refused():
     for bad in ([0], [21], ["2"], "2", [True]):
         with pytest.raises(ValueError):
             outcome_from({**good, "hold_pages": bad})
+
+
+def test_a_scan_read_as_words_alone_is_checked_not_held_blind(tmp_path):
+    from app.job_worker import several_in_read
+    file = tmp_path / "scan.pdf"
+    file.write_bytes(_pdf(None, None))
+    words = [{"text": word, "page": page, "geometry": "word", "box": [10 + 60 * x, 10 + 20 * y, 60 + 60 * x, 25 + 20 * y]}
+             for page, text in enumerate([_page(foot=()), "\n".join((*_rows(3), "Total 60.00"))], 1)
+             for y, line in enumerate(text.splitlines()) for x, word in enumerate(line.split())]
+    assert several_in_read(file, {"selected_engine": "paddleocr", "boxes": words}) == []
+    # An empty line box beside the words is not a line.
+    assert several_in_read(file, {"selected_engine": "paddleocr", "boxes": [{"text": "", "page": 2, "box": [0, 0, 1, 1]}, *words]}) == []
+    lines = [{"text": "Line text", "page": 1, "box": [10, 10, 60, 25]}]
+    assert multi_invoice.page_texts_from_boxes(lines + words[:1]) == ["Line text"]  # lines win over their words

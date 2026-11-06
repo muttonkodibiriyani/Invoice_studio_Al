@@ -224,3 +224,102 @@ def test_a_four_decimal_price_is_not_cut_in_two():
 def test_a_tax_row_never_reads_its_rate_or_a_registration_number(row, expected):
     tax = read(TITLE, NUMBER, row)["tax"]
     assert (None if tax is None else str(tax)) == expected
+
+
+def row_of(y, *words):
+    return (y, *((80 + 110 * n, word) for n, word in enumerate(words)))
+
+
+def totals(*rows):
+    return read(TITLE, NUMBER, *rows)
+
+
+def figure(invoice, field):
+    value = invoice[field]
+    return None if value is None else str(value)
+
+
+SALES_TAX = row_of(900, "Sales", "Tax", "197,031.55")
+
+
+@pytest.mark.parametrize("reference", [
+    # A title is not a tax label, and neither its number nor a date beside it is an amount.
+    row_of(120, "Tax", "Invoice", "No", "ZZ/2099/47362"),
+    row_of(120, "Tax", "Invoice", "No", "ZZ", "2099", "47362"),
+    row_of(120, "Tax", "Invoice", "No:", "T77-0001", "Invoice", "Date:", "05/03/2099"),
+    row_of(120, "Tax", "Invoice", "Invoice", "Date", "05", "03", "2099"),
+    row_of(120, "Tax", "Date", "05/03/2099"),
+    row_of(120, "Tax", "Point", "2099"),
+    row_of(120, "Tax", "Period", "2099"),
+    row_of(120, "VAT", "Invoice", "47362"),
+    row_of(120, "Tax", "2099"),
+    row_of(120, "VAT", "100200300400003"),
+    row_of(120, "GSTIN", "47362"),
+])
+def test_a_reference_row_is_never_the_tax(reference):
+    assert figure(totals(reference, SALES_TAX), "tax") == "197031.55"
+    assert figure(totals(reference), "tax") is None
+
+
+@pytest.mark.parametrize("label", [("Excl.", "Tax", "Total"), ("Excluding", "VAT", "Total"), ("Ex", "VAT", "Amount"),
+                                   ("Excl.", "Tax", "Amount"), ("Before", "Tax", "Total")])
+def test_a_figure_excluding_tax_is_the_net_and_never_the_tax(label):
+    invoice = totals(row_of(880, *label, "AED1,247,783.38"), row_of(900, "VAT", "@", "16%", "AED199,645.34"))
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("1247783.38", "199645.34")
+    assert figure(totals(row_of(880, *label, "AED1,247,783.38")), "tax") is None
+
+
+@pytest.mark.parametrize("label", [("Incl.", "VAT", "Total"), ("Including", "Tax", "Total"), ("Total", "Incl.", "Tax", "Amount"),
+                                   ("Total", "Inclusive", "of", "VAT")])
+def test_a_figure_including_tax_is_neither_the_tax_nor_the_net(label):
+    invoice = totals(row_of(880, *label, "1,050.00"))
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_real_tax_label_after_a_figure_excluding_tax_still_reads():
+    invoice = totals(row_of(880, "Amount", "Excl.", "VAT", "100.00", "VAT", "Amount", "5.00"))
+    assert figure(invoice, "tax") == "5.00"
+
+
+@pytest.mark.parametrize("words, expected", [
+    (("Sales", "Tax", "197,031.55"), "197031.55"),
+    (("Sales", "Tax", "@", "5%", "225.00"), "225.00"),
+    (("VAT", "@", "16%", "AED199,645.34"), "199645.34"),
+    (("VAT", "@", "5", "%", "225.00"), "225.00"),
+    (("VAT", "Total", "118.75"), "118.75"),
+    (("Tax", "Total", "AED", "118.75"), "118.75"),
+    (("Total", "VAT", "118.75"), "118.75"),
+    (("Tax", "Amount", ":", "118.75"), "118.75"),
+    (("VAT", "Amount", "(AED)", "118.75"), "118.75"),
+    (("VAT", "5%", "225.00", "Total", "4,725.00"), "225.00"),
+])
+def test_a_real_tax_label_reads_its_amount(words, expected):
+    assert figure(totals(row_of(900, *words)), "tax") == expected
+
+
+SUMMARY_HEADING = (870, (530, "Rate"), (640, "Taxable"), (770, "VAT"), (890, "Total"))
+SUMMARY_FIGURES = (885, (530, "16%"), (640, "1,496,663.816"), (770, "239,466.211"), (890, "1,736,130.027"))
+
+
+def test_a_summary_table_reads_the_figures_under_its_headings():
+    invoice = totals(SUMMARY_HEADING, SUMMARY_FIGURES)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("1496663.816", "239466.211")
+
+
+def test_a_summary_figure_in_pieces_is_one_figure():
+    pieces = (885, (530, "16%"), (640, "1"), (648, ","), (652, "496"), (672, ","), (676, "663.816"),
+              (770, "239"), (790, ","), (795, "466.211"), (890, "1,736,130.027"))
+    invoice = totals(SUMMARY_HEADING, pieces)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("1496663.816", "239466.211")
+
+
+def test_a_gross_row_under_a_summary_table_changes_nothing():
+    gross = (900, (670, "Total"), (720, "Incl."), (760, "VAT"), (890, "1,736,130.027"))
+    assert figure(totals(SUMMARY_HEADING, SUMMARY_FIGURES, gross), "tax") == "239466.211"
+
+
+def test_figures_on_many_rows_under_those_headings_are_no_summary():
+    # Line columns or several rates: no one row is the invoice's tax, and nothing here adds them up.
+    second = (900, (530, "5%"), (640, "1,000.00"), (770, "50.00"), (890, "1,050.00"))
+    invoice = totals(SUMMARY_HEADING, SUMMARY_FIGURES, second)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)

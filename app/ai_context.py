@@ -2,14 +2,15 @@
 
 Given: the rules workbook's lookup order and item master rows near what the local read found, each a candidate with
 an id. Only Azure AI Foundry is given them (engines.process_job). All of it goes in as data the model is told never to
-obey, and it has no tools.
+obey. The request carries no tools; an agent carries its own, so it must have none, and a reply that used one is refused.
 
 Back: a suggestion is an id it picked; the value and its source are taken from the candidate this server sent, so a
 suggestion cannot carry a value that is not in the item master. An item candidate it picks for a line becomes a rule
-(app.ai_rules) when the row is at that supplier's site; every other suggestion only shows, and fills nothing.
+(app.ai_rules) when the row is that supplier's; every other suggestion only shows, and fills nothing.
 
 absent_values is the owner's D11, "don't invent", for the invoice fields the AI does write: a value not on the
-document is not a value.
+document is not a value. It is a weak check, a small number is printed somewhere on most pages, so the AI mark is the
+real control.
 """
 import json
 import re
@@ -70,19 +71,25 @@ def _fields(row, columns):
     return {field: value for field, column in columns.items() if (value := _cell(row, column))}
 
 
-ITEM = {"item_id": "ITEM_PARENT", "sku": "VPN", "gtin": "BARCODE", "description": "ITEM_DESC", "site": "SUPPLIER SITE"}
+ITEM = {"item_id": "ITEM_PARENT", "sku": "VPN", "gtin": "BARCODE", "description": "ITEM_DESC", "site": "SUPPLIER SITE",
+        "supplier_name": "SUPPLIER_NAME"}
 SUPPLIER = {"supplier_name": "SUPPLIER_NAME", "site": "SUPPLIER SITE"}
 ORDER = {"po": "RMS_ORDER_NO", "item_id": "RMS_ITEM_ID", "qty": "QTY_RECEIVED"}
 
 
+def _name_score(one, other):
+    """How many of two supplier names' words they share, 0 to 1."""
+    words, others = (set(re.findall(r"[^\W_]+", str(name or "").casefold())) for name in (one, other))
+    return len(words & others) / len(words | others) if words and others else 0
+
+
+def close_names(one, other):
+    return _name_score(one, other) >= MIN_SIMILAR
+
+
 def _similar_names(source, name):
     """Supplier names sharing most of their words with the printed one: the exact rule misses a differing spelling."""
-    words = set(re.findall(r"[a-z0-9]+", name.casefold()))
-    scored = []
-    for known in source.supplier_names():
-        other = set(re.findall(r"[a-z0-9]+", known))
-        if words and other and len(words & other) / len(words | other) >= MIN_SIMILAR:
-            scored.append((-len(words & other) / len(words | other), known))
+    scored = [(-_name_score(name, known), known) for known in source.supplier_names() if close_names(name, known)]
     return [known for _, known in sorted(scored)[:PER_SEARCH]]
 
 
@@ -175,7 +182,8 @@ def accept(context, answer):
             continue
         suggestions.append({"line": candidate["line"], "kind": candidate["kind"], "field": pick.field,
                             "value": candidate["fields"][pick.field], "source": candidate["source"], "why": pick.why,
-                            "row_site": candidate["fields"].get("site", "")})
+                            "row_site": candidate["fields"].get("site", ""),
+                            "row_supplier": candidate["fields"].get("supplier_name", "")})
     return suggestions, bad
 
 
@@ -201,22 +209,36 @@ _GROUPED = re.compile(r"\d{1,3}(?:[  '](?:\d{3}))+(?:[.,]\d+)?")
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 
 
+def _readings(token):
+    """Every number a token can be read as: a lone comma or dot may be a decimal mark or a thousands mark."""
+    token = re.sub(r"[  ']", "", token)
+    marks = re.findall(r"[.,]", token)
+    readings = [token.replace(",", "").replace(".", "")]
+    if marks:
+        whole, _, fraction = token.rpartition(marks[-1])
+        readings.append(re.sub(r"[.,]", "", whole) + "." + fraction)
+    for reading in readings:
+        try:
+            yield Decimal(reading)
+        except InvalidOperation:
+            pass
+
+
 def _numbers(text):
-    """Every number the text can be read as: a lone comma or dot may be a decimal mark or a thousands mark."""
-    found = set()
-    for token in _NUMBER.findall(text) + _GROUPED.findall(text):
-        token = re.sub(r"[  ']", "", token)
-        marks = re.findall(r"[.,]", token)
-        readings = [token.replace(",", "").replace(".", "")]
-        if marks:
-            whole, _, fraction = token.rpartition(marks[-1])
-            readings.append(re.sub(r"[.,]", "", whole) + "." + fraction)
-        for reading in readings:
-            try:
-                found.add(Decimal(reading))
-            except InvalidOperation:
-                pass
-    return found
+    """(positive, negative) sets of the numbers the text prints. A minus right before a number after a space or start
+    is negative only; (100.00), 100.00- and 100.00 CR can be either, as brackets and dashes have other uses."""
+    positive, negative = set(), set()
+    for pattern in (_NUMBER, _GROUPED):
+        for match in pattern.finditer(text):
+            before, after = text[max(0, match.start() - 2):match.start()], text[match.end():match.end() + 4]
+            minus = re.search(r"(?:^|[\s:=(])[-\u2212]$", before)
+            either = (before.endswith("(") and after.startswith(")")) or re.match(r"[-\u2212](?:\s|$)|\s?cr\b", after, re.I)
+            readings = set(_readings(match[0]))
+            if minus or either:
+                negative |= readings
+            if not minus:
+                positive |= readings
+    return positive, negative
 
 
 def _fold(value):
@@ -229,14 +251,15 @@ def _words(value):
 
 class Document:
     def __init__(self, text):
-        self.numbers = _numbers(text)
+        self.positive, self.negative = _numbers(text)
         self.folded = _fold(text)
         self.words = set(_words(text))
 
     def has(self, field, value):
         if field in AMOUNTS:
             try:
-                return Decimal(str(value)) in self.numbers
+                number = Decimal(str(value))
+                return abs(number) in (self.negative if number < 0 else self.positive)
             except InvalidOperation:
                 return False
         if field in WORDS_ANYWHERE:

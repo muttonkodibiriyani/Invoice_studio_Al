@@ -23,7 +23,7 @@ copies share no sign-in, no database and no files.
                                               ├──► Key Vault      database login, encryption key, AI key
                                               │
                                               └──► AI provider    only when the local readers leave gaps
-                                                   (Azure AI Foundry only, by managed identity)
+                                                   (Azure AI Foundry only, managed identity or key)
 
   The app's image comes from Container Registry. Logs from every part go to Log Analytics.
 ```
@@ -738,18 +738,23 @@ so grant the app identity *Foundry Agent Consumer* on the project
 ([RBAC](https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry)); the token scope is
 `https://ai.azure.com/.default`. The agent carries its own model and instructions; the app asks for the JSON in the
 input and refuses an answer that does not fit. Whether an agent takes the PDF or image attachment is not stated by the
-documents: **this route is unproven until run against the real agent.** The rules assistant reads with a deployment, and
+documents: **this route is unproven until run against the real agent.** The agent must have no tools: invoice text goes
+in its input, so an injected instruction could drive one. The app refuses a reply showing tool activity, but by then the
+tool has run, so the agent's own definition is the control. The rules assistant reads with a deployment, and
 says so when the connection is an agent.
 
 **Connecting on Engines & AI.** *Test and save* makes a real call to the agent or deployment first. Only a completed
 answer saves it; a failed test saves nothing and the previous connection stays. Choose managed identity to send no key.
 
 Two things stay with the people who own them. **Grant the role:** whoever owns the Foundry resource (or the
-Citadel gateway in front of it) grants the app identity *Cognitive Services OpenAI User* (InfoSec LLD §9). **Open
+Citadel gateway in front of it) grants the app identity its role: *Cognitive Services OpenAI User* on the resource for a
+deployment (InfoSec LLD §9), *Foundry Agent Consumer* on the project for an agent. **Open
 the hub:** the hub firewall must allow the host, and the private DNS must resolve it.
 
 ```bash
 PRINCIPAL=$(az identity show -g "$RG" -n "${APP%-api}-app" --query principalId -o tsv)
+# A deployment: "Cognitive Services OpenAI User" on the Foundry resource id.
+# An agent: "Foundry Agent Consumer" on the project's resource id.
 az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal-type ServicePrincipal \
   --role "Cognitive Services OpenAI User" --scope "<Foundry resource id>"
 ```

@@ -40,7 +40,7 @@ def options(provider="azure", model="invoice-reader"):
 
 def completed(usage=None):
     return {"status": "completed",
-            "output": [{"content": [{"type": "output_text", "text": json.dumps(sample_invoice())}]}],
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(sample_invoice())}]}],
             "usage": usage or {"input_tokens": 9, "output_tokens": 4}}
 
 
@@ -384,7 +384,7 @@ PROJECT = "https://acme.services.ai.azure.com/api/projects/invoices"
 
 
 def said(text="OK"):
-    return FakeResponse({"status": "completed", "output": [{"content": [{"type": "output_text", "text": text}]}]})
+    return FakeResponse({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]})
 
 
 def connecting(monkeypatch, response):
@@ -451,6 +451,63 @@ def test_a_read_goes_to_the_agent_named_with_the_schema_in_its_input(store, monk
     assert sent["json"]["agent_reference"]["name"] == "invoice-agent"
     assert not {"model", "instructions", "text", "tools"} & set(sent["json"])
     assert "matching this JSON schema" in sent["json"]["input"][0]["content"][0]["text"]
+
+
+TOOL_CALL = {"type": "web_search_call", "status": "completed"}
+
+
+def test_an_agent_reply_holding_a_tool_call_is_refused_and_its_reasoning_is_not(store, monkeypatch):
+    monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: "entra-token")
+    providers = Providers(store, FakeChatGPT())
+    providers.azure.save(providers.azure.prepare(PROJECT, None, "invoice-agent", "managed_identity"))
+    sample = ROOT / "samples" / "invoice.pdf"
+    connecting(monkeypatch, FakeResponse(dict(completed(), output=[TOOL_CALL, *completed()["output"]])))
+    with pytest.raises(ValueError, match="must have no tools"):
+        providers.extract(Path(sample), "text", options(model="invoice-agent"))
+    connecting(monkeypatch, FakeResponse(dict(completed(), output=[{"type": "reasoning"}, *completed()["output"]])))
+    assert providers.extract(Path(sample), "text", options(model="invoice-agent"))[0].number
+
+
+def test_an_agent_that_used_a_tool_fails_the_connection_test_and_saves_nothing(client, owner, monkeypatch):
+    monkeypatch.setattr(azure_module, "bearer_token", lambda scope=None: "entra-token")
+    connecting(monkeypatch, FakeResponse(dict(said().json(), output=[TOOL_CALL, *said().json()["output"]])))
+    refused = client.post("/api/connections/azure", headers=bearer(owner),
+                          json={"endpoint": PROJECT, "name": "invoice-agent", "auth": "managed_identity"})
+    assert refused.status_code == 400 and "must have no tools" in refused.json()["detail"]
+    assert client.get("/api/state", headers=bearer(owner)).json()["connections"]["azure"] is False
+
+
+def test_a_refused_endpoint_in_the_environment_turns_the_ai_off_and_not_the_app(client, owner, monkeypatch):
+    monkeypatch.setenv(azure_module.ENV_ENDPOINT, "https://models.example.com")
+    state = client.get("/api/state", headers=bearer(owner))
+    assert state.status_code == 200 and azure_module.ENV_ENDPOINT in state.json()["azure_refused"]
+    assert state.json()["connections"]["azure"] is False
+
+
+GATEWAY = "citadel-gw.contoso.example"
+
+
+def test_a_saved_gateway_connection_stops_working_when_the_deployment_stops_naming_it(store, monkeypatch):
+    monkeypatch.setenv(azure_module.ENV_GATEWAY, GATEWAY)
+    foundry = AzureFoundry(store)
+    foundry.save(foundry.prepare(f"https://{GATEWAY}", KEY))
+    assert azure_module._saved(store)
+    monkeypatch.delenv(azure_module.ENV_GATEWAY)
+    assert azure_module._saved(store) is None
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0x7f.0.0.1", "10.0.0.1", "gw.example.com:8443", "gw.example.com/path"])
+def test_an_address_port_or_path_is_no_gateway(host):
+    assert not azure_module.valid_gateway(host)
+
+
+def test_a_new_connection_replaces_the_model_a_read_would_name(client, owner, monkeypatch):
+    connecting(monkeypatch, said())
+    connect = {"endpoint": ENDPOINT, "api_key": KEY}
+    assert client.post("/api/connections/azure", headers=bearer(owner), json={**connect, "name": "reader"}).status_code == 200
+    assert client.post("/api/settings", headers=bearer(owner), json={"provider": "azure", "model": "reader", "ai_fallback": True}).status_code == 200
+    assert client.post("/api/connections/azure", headers=bearer(owner), json={**connect, "name": "reader-2"}).status_code == 200
+    assert client.get("/api/state", headers=bearer(owner)).json()["settings"]["model"] == "reader-2"
 
 
 def test_a_key_refused_on_an_agent_names_managed_identity(client, owner, monkeypatch):

@@ -159,21 +159,28 @@ def read(monkeypatch, tmp_path):
         for e in ("invoice2data", "paddleocr", "docling")])
     monkeypatch.setattr(engines.item_rules, "rules", lambda: RULES)
 
-    def go(local=LOCAL, ai=None, text=PRINTED, fills=None, meta=None, master=None, **options):
+    def go(local=LOCAL, ai=None, text=PRINTED, fills=None, meta=None, master=None, sample="invoice.pdf", keep=None, **options):
         calls = []
         seen_text = []
+        # A scan has no text layer: only the OCR reader reads it.
+        scan = sample.endswith(".png")
+        monkeypatch.setattr(engines, "capabilities", lambda: [
+            {"id": e, "installed": e == "invoice2data" or (scan and e == "paddleocr"), "models_blocked": False, "version": "1", "note": ""}
+            for e in ("invoice2data", "paddleocr", "docling")])
         monkeypatch.setattr(engines, "local_read", lambda engine, path, root, language="en", extra=(): {
-            "text": text, "invoice": local, "boxes": [], "tables": []})
+            "text": "" if scan and engine == "invoice2data" else text, "invoice": None if scan and engine == "invoice2data" else local,
+            "boxes": [], "tables": []})
 
         def foundry(path, read_text, opts):
             calls.append("ai")
             seen_text.append(read_text)
             return ai or sample_ai(), {"evidence": {}, **(meta or {})}
 
-        result = engines.process(ROOT / "samples" / "invoice.pdf",
-                                 ProcessingOptions(**{"engine": "invoice2data", "model": "m", **options}),
+        result = engines.process(ROOT / "samples" / sample,
+                                 ProcessingOptions(**{"engine": "auto" if scan else "invoice2data", "model": "m", **options}),
                                  types.SimpleNamespace(root=tmp_path), foundry, item_master=master,
-                                 ai_rule_fill=(lambda inv: {"fills": fills or []}) if fills is not None else None)
+                                 ai_rule_fill=(fills if callable(fills) else lambda inv: {"fills": fills or []}) if fills is not None else None,
+                                 ai_rule_keep=keep)
         return result, calls, seen_text
     return go
 
@@ -235,9 +242,9 @@ def test_an_added_rule_never_runs_with_the_ai_off(read):
 # The rules it adds
 
 
-def pick(value="1001", line_number=0, site="NW1", kind="item", field="item_id"):
+def pick(value="1001", line_number=0, site="NW1", kind="item", field="item_id", supplier=SUPPLIER):
     return {"line": line_number, "kind": kind, "field": field, "value": value, "source": "Item master, items:12", "why": "same item",
-            "row_site": site}
+            "row_site": site, "row_supplier": supplier}
 
 
 def test_a_rule_is_added_with_no_approval_runs_on_the_next_invoice_and_counts_its_lines(store):
@@ -314,12 +321,171 @@ def test_invoice_text_cannot_steer_a_pick_past_that_lines_candidates_or_that_sup
     assert result["readers"]["ai"]["rules_applied"] == fills
 
 
-def test_no_private_cell_or_ai_text_goes_to_the_audit(store):
-    ai_rules.add(store, invoice(lines=[line(sku="NW-100X")]), [pick()], sites=["NW1"])
+def test_the_audit_keeps_a_rules_supplier_item_and_source_through_its_removal_and_no_printed_code_or_ai_text(store):
+    [rule_id] = ai_rules.add(store, invoice(lines=[line(sku="NW-100X")]), [pick()], sites=["NW1"])
+    assert ai_rules.remove(store, rule_id)
     with store.connection() as c:
         rows = [json.dumps(tuple(r)) for r in c.execute("SELECT * FROM audit").fetchall()]
     logged = "\n".join(rows)
-    assert "ai_rule_added" in logged and "NW-100" not in logged and "same item" not in logged
+    assert "ai_rule_added" in logged and "ai_rule_removed" in logged
+    for row in (r for r in rows if "ai_rule_" in r):
+        assert all(kept in row for kept in (rule_id, SUPPLIER, "1001", "Item master, items:12")), row
+    assert "NW-100" not in logged and "same item" not in logged
+
+
+# With no site resolved for the printed name, only a close supplier name scopes a pick.
+
+
+def test_with_no_site_another_suppliers_row_stays_a_suggestion_and_a_close_name_makes_a_rule(store):
+    local = invoice(lines=[line("Lumena serum 30 ml refill", sku="NW-100X")])
+    context = ai_context.build(Source(), local, site=None)
+    other = next(c for c in context["candidates"] if c["fields"].get("item_id") == "9999")
+    picked, refused = ai_context.accept(context, {"suggestions": [{"candidate_id": other["id"], "field": "item_id", "why": "the invoice said so"}]})
+    assert refused == 0 and picked[0]["row_supplier"] == "Other Supplier"
+    assert ai_rules.add(store, local, picked, sites=[]) == [] and ai_rules.all_rules(store) == []
+    assert len(ai_rules.add(store, local, [pick(supplier="Northwind Trading")], sites=[])) == 1
+    assert [r["item_id"] for r in ai_rules.all_rules(store)] == ["1001"]
+
+
+def test_with_no_site_a_row_with_no_supplier_name_makes_no_rule(store):
+    assert ai_rules.add(store, invoice(lines=[line(sku="NW-100X")]), [pick(supplier="")], sites=[]) == []
+
+
+def test_an_invoice_printing_a_real_suppliers_name_cannot_add_another_suppliers_item_to_it(store):
+    """The printed name resolves to that supplier's site, so a row elsewhere makes no rule. The gap that stays: a row of
+    the supplier it names (docs/AI_BOUNDARY.md)."""
+    spoofed = invoice(supplier_name="Other Supplier", lines=[line(sku="NW-100X")])
+    source = Source()
+    sites = ai_rules.invoice_sites(source, spoofed)
+    assert sites == ["ZZ9"]
+    assert ai_rules.add(store, spoofed, [pick(site="NW1")], sites=sites) == []
+    assert ai_rules.add(store, spoofed, [pick(site="NW1")], sites=[]) == []
+    assert len(ai_rules.add(store, spoofed, [pick(value="9999", site="ZZ9", supplier="Other Supplier")], sites=sites)) == 1
+
+
+def test_with_no_site_a_rule_fills_only_while_its_items_row_has_a_close_supplier_name(store):
+    local = invoice(lines=[line(sku="NW-100X")])
+    assert ai_rules.add(store, local, [pick(supplier="Northwind Trading")], sites=[])
+    moved = [{**ROWS[0], "SUPPLIER SITE": "ZZ9", "SUPPLIER_NAME": "Other Supplier"}]
+    nowhere = Source(moved)
+    nowhere.supplier_names = lambda: []
+    assert ai_rules.fill(store, nowhere, local) == []
+    near = [{**ROWS[0], "SUPPLIER_NAME": "Northwind Trading"}]
+    still = Source(near)
+    still.supplier_names = lambda: []
+    assert [f["item_id"] for f in ai_rules.fill(store, still, local)] == ["1001"]
+
+
+@pytest.mark.parametrize("second", ["شركة باء للتجارة", "مؤسسة النور"])
+def test_two_names_in_another_script_do_not_share_a_rule(store, second):
+    first = "شركة الف للتجارة"
+    ai_rules.add(store, invoice(supplier_name=first, lines=[line(sku="NW-100X")]), [pick()], sites=["NW1"])
+    assert len(ai_rules.fill(store, Source(), invoice(supplier_name=first, lines=[line(sku="NW-100X")]), site="NW1")) == 1
+    assert ai_rules.fill(store, Source(), invoice(supplier_name=second, lines=[line(sku="NW-100X")]), site="NW1") == []
+
+
+def test_a_name_with_no_latin_letter_or_digit_keys_a_rule(store):
+    assert ai_rules.add(store, invoice(supplier_name="شركة الف", lines=[line(sku="NW-100X")]), [pick()], sites=["NW1"])
+    assert ai_rules.all_rules(store)[0]["supplier_name"]
+
+
+# AI lines standing in for local ones (Reality Checker, finding 1): no rule value goes back by position.
+
+SCAN_LINES = [{"description": "Lumena serum 30 ml", "sku": "NW-100", "qty": 10, "price": 60.0, "net_amount": 600.0},
+              {"description": "Lumena cream 50 ml", "sku": "NW-200", "qty": 4, "price": 50.0, "net_amount": 200.0}]
+SCAN_TEXT = ("Northwind Trading LLC\nInvoice INV-1 dated 04/10/2026 currency AED\nNet 800.00 VAT 40.00\n"
+             "Lumena cream 50 ml NW-200 4 50.00 200.00\nLumena serum 30 ml NW-100 10 60.00 600.00\n"
+             "Lumena gel 15 ml NW-300 20 40.00 800.00\n")
+# The local OCR read's total is a stray token, so its lines do not reconcile and the read is weak.
+SCAN_LOCAL = {**AI_READ, "date": None, "date_printed": None, "net": "8.0", "tax": 40.0, "lines": SCAN_LINES}
+BY_CODE = {"NW-100": "1001", "NW-200": "1002"}
+
+
+def by_code(invoice):
+    def item_search(row):
+        return lambda column, match: [BY_CODE[row["sku"]]] if column == "VPN" and row.get("sku") in BY_CODE else []
+    return item_search
+
+
+def scan_ai(lines):
+    return sample_ai(net=800.0, tax=40.0, lines=lines)
+
+
+def test_lines_the_ai_reads_in_another_order_keep_each_rows_own_item(read):
+    result, calls, _ = read(local=SCAN_LOCAL, ai=scan_ai(list(reversed(SCAN_LINES))), text=SCAN_TEXT, master=by_code, sample="invoice-scan.png")
+    assert calls == ["ai"]
+    final = result["invoice"]["lines"]
+    assert [x["sku"] for x in final] == ["NW-200", "NW-100"], "the AI's lines stood in"
+    assert [x["item_id"] for x in final] == ["1002", "1001"], "the positional restore would give 1001, 1002"
+
+
+def test_other_rows_from_the_ai_get_no_item_found_for_the_local_rows(read):
+    other = [{"description": "Lumena gel 15 ml", "sku": "NW-300", "qty": 20, "price": 40.0, "net_amount": 800.0}]
+    result, calls, _ = read(local={**SCAN_LOCAL, "lines": SCAN_LINES + [dict(SCAN_LINES[0])]}, ai=scan_ai(other), text=SCAN_TEXT, master=by_code, sample="invoice-scan.png")
+    assert calls == ["ai"]
+    [only] = result["invoice"]["lines"]
+    assert only["sku"] == "NW-300" and not only.get("item_id")
+    same_count = [{**other[0], "net_amount": 400.0, "qty": 10}, {**other[0], "sku": "NW-301", "description": "Lumena oil 15 ml", "net_amount": 400.0, "qty": 10}]
+    result, _, _ = read(local=SCAN_LOCAL, ai=scan_ai(same_count), text=SCAN_TEXT + "Lumena oil 15 ml NW-301 10 40.00 400.00\n", master=by_code, sample="invoice-scan.png")
+    assert [x["sku"] for x in result["invoice"]["lines"]] == ["NW-300", "NW-301"]
+    assert not any(x.get("item_id") for x in result["invoice"]["lines"]), "the same line count must not bring position back"
+
+
+def test_the_rule_receipt_counts_what_is_on_the_final_lines(read):
+    """A rule filled a local line, then the AI's lines stood in for it: that fill is gone, so it is not counted."""
+    def only_for_the_cream(inv):
+        return {"fills": [{"line": n, "rule": "air-1", "item_id": "1002", "source": "x"} for n, row in enumerate(inv["lines"]) if row.get("sku") == "NW-200"]}
+    local = {**SCAN_LOCAL, "lines": [dict(SCAN_LINES[1])]}
+    other = [{"description": "Lumena gel 15 ml", "sku": "NW-300", "qty": 10, "price": 40.0, "net_amount": 400.0}]
+    result, calls, _ = read(local=local, ai=scan_ai(other + other), text=SCAN_TEXT + "Lumena gel 15 ml NW-300 10 40.00 400.00\n", fills=only_for_the_cream, sample="invoice-scan.png")
+    assert calls == ["ai"] and [x["sku"] for x in result["invoice"]["lines"]] == ["NW-300", "NW-300"]
+    assert not result["readers"]["ai"].get("rules_applied")
+    both = [SCAN_LINES[1], SCAN_LINES[0]]
+    result, _, _ = read(local=local, ai=scan_ai(both), text=SCAN_TEXT, fills=only_for_the_cream, sample="invoice-scan.png")
+    assert [(f["line"], f["item_id"]) for f in result["readers"]["ai"]["rules_applied"]] == [(0, "1002")]
+    assert result["invoice"]["lines"][0]["item_id"] == "1002" and result["readers"]["lines"][0]["item_id"] == "ai"
+
+
+def test_rules_are_kept_only_after_the_read_passes_its_checks(read):
+    kept = []
+    def keep():
+        kept.append(1)
+        return {"rules": ["air-1"]}
+    result, _, _ = read(keep=keep)
+    assert kept == [1] and result["readers"]["ai"]["rules_added"] == ["air-1"]
+    kept.clear()
+    # The local OCR read is weak and the AI's read has no lines: it fails its own checks, so the invoice is not read.
+    result, calls, _ = read(local=SCAN_LOCAL, ai=sample_ai(lines=[]), text=SCAN_TEXT, sample="invoice-scan.png", keep=keep)
+    assert calls == ["ai"] and result["readers"]["ai"]["status"] == "not_read"
+    assert kept == [] and not result["readers"]["ai"].get("rules_added")
+
+
+def test_a_failure_keeping_the_rules_costs_the_rules_not_the_read(read):
+    def keep():
+        raise RuntimeError("private detail")
+    result, calls, _ = read(keep=keep)
+    assert calls == ["ai"] and result["invoice"]["number"] == "INV-1" and "private detail" not in json.dumps(result["trace"])
+
+
+# The number check: a sign is part of the value.
+
+
+@pytest.mark.parametrize(("printed", "value", "found"), [
+    ("Net -100.00", -100.0, True),
+    ("Net -100.00", 100.0, False),
+    ("Net: \u2212100.00", -100.0, True),
+    ("Net 100.00", -100.0, False),
+    ("Net 100.00", 100.0, True),
+    ("Net (100.00)", -100.0, True),
+    ("Net (100.00)", 100.0, True),
+    ("Net 100.00-", -100.0, True),
+    ("Net 100.00 CR", -100.0, True),
+    ("Net 100.00 CR", 100.0, True),
+    ("Dated 2026-10-04", -10.0, False),
+    ("Dated 2026-10-04", 10.0, True),
+])
+def test_a_printed_number_is_found_with_its_sign(printed, value, found):
+    assert ai_context.Document(printed).has("net", value) is found
 
 
 # The API

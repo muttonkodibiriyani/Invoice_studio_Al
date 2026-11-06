@@ -201,3 +201,28 @@ def test_a_pick_through_the_real_job_child_adds_a_rule_that_fills_this_invoice_a
     assert len(asked) == 1 and second["readers"]["ai"]["need"] == "cross_check"  # the rule answered; no second call
     removed = ai_rules.remove(store, rule["id"])
     assert removed and ai_rules.all_rules(store) == []
+
+
+def test_a_pick_on_a_read_that_fails_its_checks_adds_no_rule_through_the_real_job_child(tmp_path, monkeypatch, store):
+    installed(store)
+    line = {"sku": "PRINTED-77", "description": "Rose hand cream synthetic 50 ml", "qty": "2", "price": "5.00", "net_amount": "10.00"}
+    read = {"text": "INVOICE SYN-1\nTotal 10.00\n", "boxes": [], "tables": [], "extraction_method": "ocr",
+            "invoice": {"number": "SYN-1", "supplier_name": "Synthetic Co", "currency": "AED", "date": "2026-10-01",
+                        "net": "99.00", "tax": "0.50", "lines": [line]}}
+    monkeypatch.setattr(engines, "local_read", lambda *a, **k: json.loads(json.dumps(read)))
+    monkeypatch.setattr(engines, "capabilities", lambda: [
+        {"id": e, "installed": e in ("invoice2data", "paddleocr"), "models_blocked": False, "version": None, "note": ""}
+        for e in ("invoice2data", "paddleocr", "docling")])
+    asked = []
+
+    def foundry(path, text, options, examples=None, context=None):
+        asked.append(context)
+        wanted = next(c for c in context["candidates"] if c["fields"].get("item_id") == "100000001")
+        suggestions, _ = ai_context.accept(context, {"suggestions": [
+            {"candidate_id": wanted["id"], "field": "item_id", "why": "same item"}]})
+        return Invoice.model_validate({**read["invoice"], "lines": []}), {"evidence": {"header": {}}, "suggestions": suggestions}
+
+    options = ProcessingOptions(engine="auto", ai_fallback=True, provider="azure", model="agent")
+    result = engines.process_job(ROOT / "samples" / "invoice-scan.png", options, store, foundry, filename="SYN-1.png")
+    assert len(asked) == 1 and result["readers"]["ai"]["status"] == "not_read"
+    assert ai_rules.all_rules(store) == [] and not result["readers"]["ai"].get("rules_added")

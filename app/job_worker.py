@@ -98,6 +98,9 @@ def main():
     def ai_rule_fill(invoice):
         return parent.call("ai_rule_fill",invoice=_searchable(invoice))
 
+    def ai_rule_keep():
+        return parent.call("ai_rule_keep")
+
     def item_master(invoice):
         # The live item master is searched in the parent (engines.process_job): it holds the store.
         return for_invoice(lambda line,column,match:parent.call("item_search",line=line,column=column,match=match),
@@ -112,7 +115,7 @@ def main():
     progress=lambda engine,message,details=None:parent.call("progress",engine=engine,message=message,details=details)
     try:
         result=engines.process(Path(start["path"]),ProcessingOptions.model_validate(start["options"]),
-                               SimpleNamespace(root=root),ai_reader,progress,item_master=item_master,ai_local=True,ai_rule_fill=ai_rule_fill)
+                               SimpleNamespace(root=root),ai_reader,progress,item_master=item_master,ai_local=True,ai_rule_fill=ai_rule_fill,ai_rule_keep=ai_rule_keep)
         result["annotated_evidence"]=annotate(result.get("evidence"),result["invoice"],filename=start["filename"])
     except Exception as e:
         # The class name only: no document content.

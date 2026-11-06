@@ -184,7 +184,8 @@ NOT_RUN = (
     "ACR Tasks allowed on the subscription (access request D3): shows on the first image build",
     "Entra tenant settings, consent and Conditional Access (E5, E6): shows at the first sign-in",
     "Hub firewall allow-list and routing (H3, H4): shows when the first revision starts",
-    "With AI on, the app identity's Cognitive Services OpenAI User role on the Foundry resource (AZURE.md §7): "
+    "With AI on, the app identity's role (AZURE.md §7): Cognitive Services OpenAI User on the Foundry resource for a "
+    "deployment, Foundry Agent Consumer on the project for an agent: "
     "shows at the first AI read",
 )
 

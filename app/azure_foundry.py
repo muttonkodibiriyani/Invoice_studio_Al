@@ -56,7 +56,7 @@ NON_TEXT = ("embedding", "whisper", "tts", "dall-e", "sora", "transcrib", "speec
 
 def valid_gateway(host):
     """A bare DNS name. An address, a port or a path is no gateway."""
-    return bool(_HOSTNAME.fullmatch(host)) and not host.replace(".", "").isdigit()
+    return bool(_HOSTNAME.fullmatch(host)) and host.rsplit(".", 1)[-1][0].isalpha()  # 127.0.0.1 and 0x7f.0.0.1 end in a number
 
 
 def gateway_host():
@@ -170,6 +170,10 @@ def env_deployment():
 def _saved(store, c=None):
     saved = store.secret(SECRET, c=c)
     if isinstance(saved, dict) and saved.get("endpoint") and (saved.get("api_key") or saved.get("auth") == MANAGED_IDENTITY):
+        try:
+            normalise_endpoint(saved["endpoint"])  # a gateway host the deployment has since stopped naming is no endpoint
+        except ValueError:
+            return None
         return saved
     return None
 

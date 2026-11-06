@@ -59,12 +59,19 @@ date against the printed date. A scan or a page with almost no text has nothing 
 weak-scan self-check that holds. A value the AI saw only in a PDF's image (a logo's supplier name, say) is left blank
 by this: strict D11.
 
+This check is weak. A number is accepted when it is printed anywhere, so an invented 7.00 passes on a page printing
+"CN-7", and text in a script other than Latin is not checked at all. A minus sign is checked: -100.00 needs a printed
+`-100.00`, `(100.00)`, `100.00-` or `100.00 CR`, and 100.00 is refused where only `-100.00` is printed. The AI mark in
+review and on the receipt is the real control.
+
 ## What the AI read is given
 
 On Azure AI Foundry only (`Providers.extract` refuses it for anything else), the read also gets the rules workbook's
 lookup order and item master rows near what the local read found: by printed code, by barcode, by a similar
 description, by a similar supplier name, by order number. Each row is a candidate with an id. All of it is JSON inside
-a tag pair it cannot close, and the model is told it is data, never instructions. The request carries no tools.
+a tag pair it cannot close, and the model is told it is data, never instructions. The request carries no tools. A
+Foundry agent carries its own, so it must have none; a reply showing anything but its message and reasoning is refused,
+though by then a tool has run, so the agent's definition is the real control.
 
 What comes back is an id. `ai_context.accept` takes the value and the source from the candidate this server sent and
 refuses an id or field it did not send, so a suggestion cannot carry a value that is not in the item master.
@@ -80,9 +87,12 @@ and on later invoices from that supplier, with no approval step. It holds to the
 
 - It fills only an item cell the rules left empty. A rules result of Found or Conflict stands; an Ambiguous or
   Suggestion result lets through only an item it already lists.
-- A row at a site other than the supplier's is not a rule. Item master `SUPPLIER_NAME` holds coded site names, so a
-  printed name the master does not carry resolves to no site, and the rule then rests on the printed supplier it is
-  keyed on.
+- A row at a site other than the supplier's is not a rule. A printed name the master does not carry resolves to no
+  site (owner, 6 Nov): then only a row whose supplier name is close to the printed one makes a rule, and any other pick
+  stays a suggestion. Item master `SUPPLIER_NAME` holds coded site names, so most such picks stay suggestions.
+- A rule is added only after the read passed its checks: a read that ends `not_read` adds none.
+- A spoofed name is not caught: an invoice printing a real supplier's name can plant a rule from that supplier's own
+  items under its name. It can only name that supplier's rows, and every fill is marked AI and removable.
 - Its item must still be in the item master each time it runs, or it fills nothing.
 - Each fill is marked `ai` in review, listed in `readers.ai.rules_applied`, and on the receipt.
 - Each rule keeps its source, reason, model and file, and counts the lines it filled. **Engines & AI** lists them
@@ -98,8 +108,8 @@ truth files. `/api/rules-assistant/propose` is separate and unchanged: it still 
 - `readers.header[field]` and `readers.lines[n][field]` name the reader of each value: the engine id
   (`invoice2data`, `paddleocr`, `docling`, `native_pdf_text`), `rule:<rule id>` (e.g. `rule:I2.1`) or `ai`. A field filled from another local
   reader's read names that reader. (`evidence.*.source` stays `native`, `ocr` or `ai`: where the quote came from.)
-- `readers.ai`: `status`, `need`, `calls`, `fields` and `reason`. `fields` lists what the local readers and the
-  item master rules left open, the only fields the AI may fill; with AI off they are the fields left for the user. The reason is a sentence a reviewer can read: the
+- `readers.ai`: `status`, `need`, `calls`, `fields` and `reason`. `fields` lists the gaps the local readers and the
+  item master rules left, which asked for the AI (it may fill other empty fields too, listed in `filled`); with AI off they are the fields left for the user. The reason is a sentence a reviewer can read: the
   `AI_REASONS` wording, the weak-scan reason that names what was replaced, or "The AI read failed: …". It is
   prefixed with the missing readers' install hint when a reader the file needed is not installed. `notes` adds
   the line-count decisions from `merge_ai_fields`.

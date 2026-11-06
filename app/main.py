@@ -1474,6 +1474,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         connection=providers.azure.prepare(body.endpoint,body.api_key.get_secret_value() if body.api_key else None,body.name,body.auth)
         providers.test_azure(connection)  # raises on anything but a real answer: nothing saved, the previous connection stays
         result=providers.azure.save(connection)
+        settings=store.get("settings",None)
+        # Reads name the chosen model: the tested name replaces one from the connection before, which this endpoint may not have.
+        if settings and settings.get("provider")=="azure" and result["name"] and settings.get("model")!=result["name"]:
+            store.set("settings",{**settings,"model":result["name"]})
         store.set(RULES_ASSISTANT_TESTED,None)  # a new key or auth mode needs the assistant's connection test again
         store.audit("connection_connected",{"provider":"azure","endpoint":result["endpoint"],"name":result["name"],"route":result["route"],"auth":body.auth})
         return result

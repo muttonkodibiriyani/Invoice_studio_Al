@@ -50,7 +50,7 @@ def test_counts_per_cell_and_per_rule_with_no_value_in_the_output(app, signed_in
     connect(app, monkeypatch)
     rule_id = ai_rules.add(app.state.store, {"supplier_name": "S", "lines": [{"sku": "ABC-1"}]},
                            [{"line": 0, "kind": "item", "field": "item_id", "value": "1001", "source": "Item master",
-                             "why": "same", "row_site": ""}])[0]
+                             "why": "same", "row_site": "", "row_supplier": "S"}])[0]
     fills = [{"line": 0, "rule": rule_id, "item_id": "1001", "source": "Item master"},
              {"line": 1, "rule": rule_id, "item_id": SECRET_VALUE, "source": "Item master"}]
 

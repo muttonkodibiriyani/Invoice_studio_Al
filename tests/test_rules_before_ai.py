@@ -93,14 +93,17 @@ def test_when_local_and_rules_resolve_every_field_the_ai_is_not_called(run):
 
 def test_a_line_the_rules_could_not_identify_asks_the_ai_and_a_conflict_does_not(run):
     with_codes = {**NO_IDS, "lines": [{**line, "sku": "PRINTED"} for line in NO_IDS["lines"]]}
-    result, calls = run(with_codes, matcher(set()), RULES)
+    result, calls = run(with_codes, matcher(set()), RULES, provider="openai")
+    assert calls == [], "only Azure AI Foundry is given the item master search, so no other provider is called for it"
+    result, calls = run(with_codes, matcher(set()), RULES, provider="azure")
     assert "ai" in calls and result["readers"]["ai"]["need"] == "gap_fill"
+    assert result["readers"]["ai"]["fields"] == ["line 1 item_id", "line 2 item_id"]
     held = {t["engine"]: t for t in result["trace"]}["item_rules"]["held"]
     assert {h["status"] for h in held} == {"Not in item master"}
 
     def conflicting(line):
         return lambda column, match: {"VPN": ["1001"], "BARCODE": ["1002"]}.get(column, [])
-    result, calls = run(with_codes, conflicting, RULES)
+    result, calls = run(with_codes, conflicting, RULES, provider="azure")
     held = {t["engine"]: t for t in result["trace"]}["item_rules"]["held"]
     assert {h["status"] for h in held} == {"Conflict"}
     assert calls == [] and result["readers"]["ai"]["need"] == "cross_check"

@@ -387,20 +387,26 @@ def process_job(path,options,store,ai_reader,progress=lambda *args:None,learned=
     catalog=LookupRulesSource(store)  # the live item master, read for the child's item searches
     def send(message):
         proc.stdin.write(json.dumps(message,default=str)+"\n");proc.stdin.flush()
+    picks=[]  # (local read, what the AI picked), held until the child says the read stands: a rejected read adds no rule
     def _after_context(meta,read,local):
-        """The search over what the AI read, and the rules from what it picked. A failure here costs them, not the read."""
+        """The search over what the AI read, and what it picked. A failure here costs them, not the read."""
         meta=dict(meta or {})
         try:
             found=meta.get("suggestions") or []
             meta["suggestions"]=found+ai_context.searched(catalog,read,supplier_site,found)
-            known=local or {}
-            sites=[supplier_site] if supplier_site else item_search.invoice_sites(catalog,known)
-            ids=ai_rules.add(store,known,found,options.model,filename,sites)
-            if ids:meta["rules_added"]=ids
+            picks.append((local or {},found))
         except Exception as e:progress("azure","AI suggestions unavailable",{"reason":type(e).__name__})
         return meta
+    def keep_picks():
+        kept=[]
+        for known,found in picks:
+            sites=[supplier_site] if supplier_site else item_search.invoice_sites(catalog,known)
+            kept+=ai_rules.add(store,known,found,options.model,filename,sites)
+        picks.clear()
+        return kept
     def answer(call,args):
         if call=="capabilities":return capabilities()
+        if call=="ai_rule_keep":return {"rules":keep_picks()}
         if call=="ai_rule_fill":return {"fills":ai_rules.fill(store,catalog,dict(args["invoice"]),supplier_site)}
         if call=="models_blocked":return models_blocked(str(args["engine"]))
         if call=="note_models_blocked":return note_models_blocked(str(args["engine"]))
@@ -950,11 +956,12 @@ def _absent_fields(evidence):
     return {"absent_fields":[f for f,c in codes.items() if c==scan_guard.TAX_ABSENT_CODE],"reason_codes":codes}
 
 
-def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=None,ai_local=False,ai_rule_fill=None):
+def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=None,ai_local=False,ai_rule_fill=None,ai_rule_keep=None):
     """``item_master(invoice) -> item_search``, and ``item_search(line) -> search(column, match)``, is the item master
     search matching.lookup_item runs per line (app/item_search.for_invoice). ``ai_local``: the AI reader also takes
     ``local=`` the local read so far, for the item master context the job's parent builds from it.
-    ``ai_rule_fill(invoice) -> {"fills": [...]}`` is the rules the AI added (app.ai_rules), asked of the job's parent."""
+    ``ai_rule_fill(invoice) -> {"fills": [...]}`` is the rules the AI added (app.ai_rules), asked of the job's parent;
+    ``ai_rule_keep() -> {"rules": [...]}`` adds the rules from this read's picks, once the read has passed its checks."""
     trace=[];best=None;best_score=-1;text="";boxes=[];selected="none";best_evidence={};best_source="native"
     # The engine id (or "ai") the reader maps name for the selected read; best_source is its evidence source.
     best_reader="none"
@@ -968,14 +975,14 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
     # taken from the reader that printed it.
     local_reads=[];selected_read=None;filled_fields={}
     # The item master rules' result on the selected local read (rules_first.Resolved), once they ran.
-    resolved=None
+    resolved=None;lines_stood_in=False
     # Readers the chain reached but that are not installed: told on the job with their install hint, and
     # named on the AI's trace entry as why it ran.
     missing_readers=[]
     cross_check=bool(getattr(options,"ai_cross_check",False)) or os.getenv("INV_STUDIO_AI_CROSS_CHECK","0")=="1"
     def call_ai(role):
         """One AI read: (candidate, its own header evidence, completeness) with a trace entry, or None."""
-        nonlocal ai_attempted,ai_calls,ai_suggestions,ai_rules_added
+        nonlocal ai_attempted,ai_calls,ai_suggestions
         ai_attempted=True;ai_calls+=1
         progress(options.provider,"Waiting for an AI reader slot")
         _AI_SLOTS.acquire()
@@ -986,7 +993,6 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             candidate,meta=ai_reader(path,text,options,**sent)
             meta=dict(meta or {});ai_evidence=meta.pop("evidence",None) or {}
             ai_suggestions=meta.pop("suggestions",None) or []
-            ai_rules_added=meta.pop("rules_added",None) or []
             internal_fields=("seller","site","buyer","location","origin","market","taxCode")
             ignored=[field for field in internal_fields if getattr(candidate,field) is not None]
             candidate=candidate.model_copy(update={field:None for field in internal_fields})
@@ -1019,7 +1025,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
 
         On a weak local read of a scan (``fallback``) the AI's read must first pass its own checks. A value the
         document's text does not print is not written; on a scan, whose text is OCR, it stands flagged."""
-        nonlocal best,best_score,selected,best_evidence,best_source,best_reader,ai_status,ai_notes,readers_maps,ai_reason
+        nonlocal best,best_score,selected,best_evidence,best_source,best_reader,ai_status,ai_notes,readers_maps,ai_reason,lines_stood_in
         read=call_ai(mode)
         if read is None:
             ai_status="failed";return
@@ -1051,6 +1057,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             if local is None:best_source=best_reader="ai"
             if weak:ai_ev=_from_page_image(ai_dict,ai_ev)
             merged,evidence,header_readers,line_readers,notes=merge_ai_fields(local or Invoice().model_dump(mode="json"),ai_dict,best_evidence if local else {},ai_ev,best_source,mode,best_reader,self_checked=bool(weak))
+            lines_stood_in=bool(ai_dict.get("lines")) and merged["lines"]==ai_dict["lines"] and merged["lines"]!=(local or {}).get("lines")
             best=Invoice.model_validate(merged);best_score=quality(best)[0];best_evidence=evidence
             readers_maps=(header_readers,line_readers);ai_notes=notes
         best_evidence=_mark_absent(best.model_dump(mode="json"),best_evidence,header_readers,line_readers,absent,scan,ai_notes)
@@ -1293,7 +1300,8 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             best=Invoice.model_validate(resolved.invoice);best_score=quality(best)[0]
     missing=gaps_of(best);ai_reason=None
     # A line the rules could not identify is what the AI's wider search is for; a Conflict is the reviewer's to decide.
-    open_items=[h["line"] for h in (resolved.held if resolved else [])
+    # Only Azure AI Foundry is given that search, so no other provider is called for it.
+    open_items=[h["line"] for h in (resolved.held if resolved and options.provider=="azure" else [])
                 if h["status"]!="Conflict" and not str(resolved.invoice["lines"][h["line"]-1].get("item_id") or "").strip()]
     # What the engines' result asks of the AI, recorded whether or not the AI runs, so AI calls per invoice
     # can be counted on an AI-off run: fallback when the engines could not read, gap fill when they left gaps,
@@ -1314,6 +1322,13 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             if not missing and not open_items:ai_reason="The local readers read a complete, reconciled invoice; no model is selected"
         elif need=="cross_check" and not cross_check:ai_status="skipped"
         else:merge_ai(need)
+    if resolved is not None and best is not None and lines_stood_in:
+        # The lines are other rows now, so nothing found for the local ones goes back on them by position.
+        merged=best.model_dump(mode="json");ai_rules_applied=[]
+        try:rules_first.rerun_lines(resolved,merged["lines"],item_master(merged) if item_master else None,item_rules.rules())
+        except item_rules.RulesError as e:
+            trace.append({"engine":"item_rules","status":"unavailable","reason":"The item master rules did not run on the AI's lines: "+str(e)[:200]})
+            rules_first.rerun_lines(resolved,merged["lines"],None,None)
     if resolved is not None and best is not None and ai_calls:
         best=Invoice.model_validate(rules_first.protect(best.model_dump(mode="json"),resolved))
     if ai_status=="failed":ai_reason="The AI read failed: "+str(trace[-1].get("reason") or "no reason given")[:240]
@@ -1332,14 +1347,20 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
         final,best_evidence=guard_header(final,best_evidence,header_map,best_source,text)
         # Lines the AI read, and rules this read's AI just added, run here: the same rules, on what the merge left empty.
         if ai_calls:
+            if ai_rule_keep is not None and ai_status in ("fallback","gap_fill","cross_check","selected"):
+                try:ai_rules_added=ai_rule_keep()["rules"]
+                except Exception as e:trace.append({"engine":"ai_rules","status":"unavailable","reason":"The AI's picks were not kept as rules: "+type(e).__name__})
             for fill in added_rule_fills(final):
                 final["lines"][fill["line"]]["item_id"]=fill["item_id"]
                 if fill["line"]<len(line_map):line_map[fill["line"]]["item_id"]="ai"
                 ai_rules_applied.append(fill)
+        # What the receipt and the rule's count say is what is on the final lines.
+        ai_rules_applied=[fill for fill in ai_rules_applied if fill["line"]<len(final["lines"]) and fill["line"]<len(line_map)
+                          and final["lines"][fill["line"]].get("item_id")==fill["item_id"] and line_map[fill["line"]].get("item_id")=="ai"]
         best=Invoice.model_validate(final);best_score=quality(best)[0];readers_maps=(header_map,line_map)
-    # fields: what the local readers and the item master rules left open, the only fields the AI may fill.
+    # fields: the gaps that asked for the AI. It may fill any other empty field too; "filled" lists what it did fill.
     ai_record={"status":ai_status,"reason":ai_reason or AI_REASONS.get(ai_status,""),"calls":ai_calls,"need":need,
-               "fields":list(missing)}
+               "fields":[*missing,*(f"line {n} item_id" for n in open_items)]}
     if missing_readers and need in ("fallback","gap_fill"):
         # A reader this file needed is missing: that, not the document, is why the AI is asked.
         hint=_install_hint(missing_readers[0])

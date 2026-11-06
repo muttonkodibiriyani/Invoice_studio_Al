@@ -71,6 +71,11 @@ def _responses_text(result):
     return "".join(c.get("text","") for item in result.get("output",[]) for c in item.get("content") or [] if c.get("type")=="output_text")
 
 
+def _used_a_tool(result):
+    """An agent carries its own tools, and invoice text is in its input: anything but its message and reasoning in the reply is one running."""
+    return any(not isinstance(item,dict) or item.get("type") not in ("message","reasoning") for item in result.get("output") or [])
+
+
 def _unfenced(output):
     """An agent's JSON without a code fence around it: nothing holds an agent to the bare object a schema enforces."""
     text=output.strip()
@@ -122,6 +127,7 @@ class Providers:
         except (ValueError,AttributeError,TypeError):result,said={},""
         if result.get("status")!="completed" or not said.strip():
             raise ValueError("The connection test reached Azure, but the "+("agent" if agent else "deployment")+" gave no completed answer."+kept)
+        if agent and _used_a_tool(result):raise ValueError("The agent used a tool to answer. It must have no tools: invoice text goes in its input."+kept)
 
     def verify_key(self,provider,key):
         """Refuse a key the provider rejects; network or quota failures stay unverified, not fatal."""
@@ -212,6 +218,7 @@ class Providers:
                     if r.status_code!=200:raise ValueError(safe_error(r.status_code))
                     result=r.json()
                     if result.get("status")!="completed":raise ValueError("AI output was incomplete; it was not accepted")
+                    if _used_a_tool(result):raise ValueError("The agent used a tool on this invoice, so the read was not accepted. The agent must have no tools.")
                 elif provider=="chatgpt":
                     body["stream"]=True
                     with http.stream("POST",responses_url,headers=headers,json=body) as r:

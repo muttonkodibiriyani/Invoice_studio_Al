@@ -580,3 +580,151 @@ def test_one_rate_with_its_printed_total_row_is_the_summary():
 ])
 def test_a_month_first_date_is_the_same_only_when_the_day_cannot_be_a_month(value, printed, same):
     assert tc.same(value, printed) is same
+
+
+@pytest.mark.parametrize("words", [
+    ("Subtotal", "Qty:", "12", "Amount", "4,500.00"), ("Sub", "Total", "Page", "1", "of", "2", "4,500.00"),
+    ("Subtotal", "Qty", "12"), ("Subtotal", "Page", "1"), ("Subtotal", "Lines", "3", "Value", "4,500.00"),
+])
+def test_a_count_or_page_before_the_money_blanks_the_net(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+@pytest.mark.parametrize("words, net", [
+    (("Sub", "Total", "(10", "items)", "1,500.00"), "1500.00"), (("Sub", "Total", ":", "4,500.00"), "4500.00"),
+    (("Net", "Amount", "in", "AED", "4,500.00"), "4500.00"), (("Subtotal", "Amount", "(AED)", "4,500.00"), "4500.00"),
+    (("Total", "(", "ex", "VAT", ")", "989", ",", "408.22"), "989408.22"),
+])
+def test_a_bracket_or_money_wording_before_the_figure_still_reads(words, net):
+    assert figure(totals(row_of(880, *words)), "net") == net
+
+
+@pytest.mark.parametrize("words", [
+    ("Not", "Taxable", "Amount", "50.00"), ("Zero", "Taxable", "Amount", "50.00"), ("Tax-free", "Taxable", "Amount", "50.00"),
+    ("GST", "for", "Taxable", "Amount", "50.00"), ("Tax", "of", "Taxable", "Amount", "50.00"),
+    ("Taxable", "Amount", "Ref", "47362"), ("Taxable", "Value", "Code", "123"), ("Taxable", "Value", "%", "5.00"),
+    ("Subtotal", "Ref", "47362"), ("Net", "Amount", "Doc", "47362"),
+])
+def test_taxable_needs_a_known_lead_and_a_reference_is_no_figure(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+@pytest.mark.parametrize("line", [
+    "Not Taxable Amount 50.00", "GST for Taxable Amount 50.00", "Taxable Amount Ref 47362", "Taxable Value Code 123",
+    "Taxable Value % 5.00", "Subtotal Ref 47362", "Net Amount Doc 47362",
+])
+def test_the_same_rows_with_no_word_boxes_leave_the_net_blank(line):
+    assert figure(extract_invoice(f"Tax Invoice\nInvoice No: ZZ-1\nDate: 2026-10-24\n{line}\n", None), "net") is None
+
+
+@pytest.mark.parametrize("words, net", [
+    (("Taxable", "Amount", "100.00"), "100.00"), (("Total", "Taxable", "Amount", "100.00"), "100.00"),
+    (("Total", "Taxable", "Value", "100.00"), "100.00"), (("Net", "Taxable", "Amount", "100.00"), "100.00"),
+    (("المبلغ", "Taxable", "Amount", "100.00"), "100.00"), (("Taxable", "Amount", "AED", "100.00"), "100.00"),
+])
+def test_taxable_with_a_known_lead_reads(words, net):
+    assert figure(totals(row_of(880, *words)), "net") == net
+
+
+def test_a_reference_after_a_tax_amount_label_is_no_tax():
+    assert figure(totals(row_of(880, "Tax", "Amount", "Ref", "12345")), "tax") is None
+    assert figure(extract_invoice("Tax Invoice\nInvoice No: ZZ-1\nDate: 2026-10-24\nTax Amount Ref 12345\n", None), "tax") is None
+
+
+def pages(*page_rows):
+    """Each argument is one page's rows, the same (y, (x, word), ...) shape as read()."""
+    words = [{**word, "page": number} for number, rows in enumerate(page_rows, 1) for word in boxes(*rows)]
+    return extract_invoice("\n\n".join(text(rows) for rows in page_rows), words)
+
+
+def under(y, row):
+    return (y, *row)
+
+
+PAGE_ONE = (TITLE, NUMBER, under(870, PLAIN_HEADING), under(885, FIVE))
+
+
+@pytest.mark.parametrize("second_page", [
+    # A rate table split over the pages.
+    [under(100, FIFTEEN)],
+    [under(85, PLAIN_HEADING), under(100, FIFTEEN)],
+    # A line table split over the pages.
+    [under(100, [(100, "Item"), (450, "60.00"), (650, "3.00"), (820, "63.00")]),
+     under(115, [(100, "Item"), (450, "70.00"), (650, "3.50"), (820, "73.50")])],
+    # A page total, and the Grand Total on the next page.
+    [under(100, [(100, "Grand"), (170, "Total"), (450, "9,000.00"), (650, "450.00"), (820, "9,450.00")])],
+    # Whatever stands under those columns further on, even if it does not add up.
+    [under(100, [(650, "7.00")])],
+])
+def test_a_summary_table_blanks_when_a_later_page_has_figures_under_its_columns(second_page):
+    invoice = pages(PAGE_ONE, second_page)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_table_too_long_for_a_summary_does_not_read_the_row_past_its_repeated_heading():
+    first = (TITLE, NUMBER, under(870, PLAIN_HEADING), under(885, FIVE), under(900, FIFTEEN))
+    invoice = pages(first, [under(85, PLAIN_HEADING), under(100, FIVE)])
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_rate_table_split_over_pages_reads_its_printed_total():
+    total_row = [(100, "Total"), (450, "4,500.00"), (650, "575.00"), (820, "5,075.00")]
+    invoice = pages((*PAGE_ONE, under(900, FIFTEEN)), [under(100, total_row)])
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("4500.00", "575.00")
+
+
+def test_a_later_page_with_nothing_under_the_columns_changes_nothing():
+    invoice = pages(PAGE_ONE, [(100, (100, "Terms"), (170, "30"), (200, "days"))])
+    assert figure(invoice, "tax") == figure(summary(PLAIN_HEADING, FIVE), "tax") is not None
+
+
+@pytest.mark.parametrize("words", [("Tax", "Amount", "SR47362"), ("VAT", "Amount", "RO", "2026"), ("GST", "SR", "47362")])
+def test_a_two_letter_mark_with_a_whole_number_is_no_tax(words):
+    assert figure(totals(row_of(880, *words)), "tax") is None
+
+
+@pytest.mark.parametrize("words", [("Taxable", "Amount", "KD2026"), ("Net", "Amount", "BD12345")])
+def test_a_two_letter_mark_with_a_whole_number_is_no_net(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+@pytest.mark.parametrize("line, field", [
+    ("Tax Amount SR47362", "tax"), ("VAT Amount RO 2026", "tax"), ("Taxable Amount KD2026", "net"), ("Net Amount BD12345", "net"),
+])
+def test_the_same_marks_with_no_word_boxes_stay_blank(line, field):
+    assert figure(extract_invoice(f"Tax Invoice\nInvoice No: ZZ-1\nDate: 2026-10-24\n{line}\n", None), field) is None
+
+
+@pytest.mark.parametrize("words, tax", [(("Tax", "Amount", "SR47,362.50"), "47362.50"), (("VAT", "Amount", "RO", "2,026.500"), "2026.500")])
+def test_a_two_letter_mark_with_decimals_still_reads(words, tax):
+    assert figure(totals(row_of(880, *words)), "tax") == tax
+
+
+COUNTS = [(450, "2"), (650, "1"), (820, "3")]
+
+
+@pytest.mark.parametrize("heading", [
+    [(450, "Taxable"), (520, "Items"), (650, "VAT"), (690, "Items"), (820, "Total"), (870, "Items")],
+    [(450, "Taxable"), (650, "VAT"), (820, "Total"), (870, "Qty")],
+    [(450, "Taxable"), (650, "Tax"), (690, "Lines"), (820, "Total")],
+])
+def test_a_table_of_counts_is_no_summary(heading):
+    invoice = summary(heading, COUNTS)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_counts_printed_along_one_row_are_no_summary():
+    invoice = totals(row_of(880, "Taxable", "Items", "2", "VAT", "Items", "1", "Total", "Items", "3"))
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_last_row_with_no_total_word_is_no_summary_even_when_it_adds_up():
+    sums = [(450, "4,500.00"), (650, "575.00"), (820, "5,075.00")]
+    invoice = summary(PLAIN_HEADING, FIVE, FIFTEEN, sums)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_tax_word_before_percent_heads_no_amount():
+    heading = [(450, "Taxable"), (540, "VAT"), (580, "Percent"), (650, "VAT"), (690, "Amount"), (820, "Total")]
+    invoice = summary(heading, RATE_FIGURES)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("4500.00", "225.00")

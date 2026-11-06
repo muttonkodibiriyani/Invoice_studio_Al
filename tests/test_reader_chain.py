@@ -289,3 +289,19 @@ def test_the_count_of_rows_decides_only_between_two_zero_value_reads():
     assert _rows_ahead(invoice("0", 3), invoice("5", 2)) == 0
     assert _rows_ahead(invoice("5", 3), invoice("5", 2)) == 0
     assert Decimal("0") == invoice("0", 1).net
+
+
+def test_zero_value_reads_count_only_coded_rows_when_the_earlier_read_has_codes():
+    from app.engines import _rows_ahead
+    from app.models import Invoice
+
+    def invoice(coded, uncoded):
+        line = {**INVOICE["lines"][0], "price": "0", "net_amount": None}
+        return Invoice.model_validate({**INVOICE, "net": "0", "tax": "0", "lines": [
+            *(line for _ in range(coded)), *({**line, "sku": None, "gtin": None} for _ in range(uncoded))]})
+
+    assert _rows_ahead(invoice(2, 3), invoice(2, 0)) == 0  # more rows, no more codes
+    assert _rows_ahead(invoice(3, 0), invoice(2, 0)) == 1
+    assert _rows_ahead(invoice(1, 5), invoice(2, 0)) == -1  # more rows that lose a code
+    assert _rows_ahead(invoice(0, 3), invoice(0, 2)) == 1  # no codes yet: the priced rows decide
+    assert _rows_ahead(invoice(2, 0), invoice(0, 3)) == -1  # likewise: the earlier read has none to count

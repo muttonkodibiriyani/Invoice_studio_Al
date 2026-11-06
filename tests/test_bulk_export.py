@@ -194,3 +194,113 @@ def test_the_draft_of_everything_includes_held_ones_and_is_marked_draft_on_every
         assert [c.value for c in workbook[name][1]] == columns
     assert column(workbook["Header"], "Transaction Number") == [1, 2, 3]
     assert not any(app.state.store.job(jid).get("export_id") for jid in three)
+
+
+BY_OWNER_RULE = {"Ref No. 1", "Ref No. 2", "Ref No. 3", "Comment", "UPC"}
+
+
+def blanks_written(workbook, transaction):
+    """The empty cells the exported file holds for one transaction, read back from the file itself."""
+    count = 0
+    for sheet in workbook.worksheets:
+        names = [c.value for c in sheet[1]]
+        for row in sheet.iter_rows(min_row=2):
+            if row[0].value == transaction:
+                count += sum(c.value in (None, "") and name not in BY_OWNER_RULE for name, c in zip(names, row))
+    return count
+
+
+def edit_rules(app, jid, change):
+    store = app.state.store
+    j = store.job(jid)
+    change(j["rules"])
+    store.job(jid, j)
+
+
+def test_a_clean_invoice_reports_no_blank_fields_though_ref_comment_and_upc_are_empty(client, owner, app, three):
+    [item] = check(client, owner, app, "a")["ready"]
+    assert item["blank_fields"] == 0 and item["status"] == app.state.store.job("a")["rules"]["status"]
+    workbook = book(client.get(export(client, owner, app, "a").json()["url"], headers=bearer(owner)))
+    assert column(workbook["Header"], "Comment") == [None] and column(workbook["Details"], "UPC") == [None, None]
+
+
+def test_blank_fields_are_the_cells_the_exported_file_leaves_empty(client, owner, app, three):
+    # The inbox's empty_flagged count misses a filled value with no evidence and a flagged value: both are written blank.
+    def change(rules):
+        rules["status"] = "Blocked"
+        rules["fields"]["site"]["evidence"] = []  # filled, no evidence
+        rules["fields"]["po"]["flagged"] = True  # filled, flagged
+        rules["fields"]["net"]["value"] = None  # two cells: Total Cost Ex Tax and Tax Basis
+        rules["lines"][1]["cells"]["Quantity"]["value"] = None
+    edit_rules(app, "b", change)
+    items = {item["id"]: item for item in check(client, owner, app, *three)["ready"]}
+    assert (items["b"]["status"], items["b"]["blank_fields"]) == ("Blocked", 5)
+    assert items["a"]["blank_fields"] == 0 and items["c"]["blank_fields"] == 1  # c: no Location
+    workbook = book(client.get(export(client, owner, app, *three).json()["url"], headers=bearer(owner)))
+    assert {jid: blanks_written(workbook, items[jid]["transaction_number"]) for jid in three} == \
+           {jid: items[jid]["blank_fields"] for jid in three}
+
+
+def test_an_empty_blocked_invoice_counts_every_blank_and_the_single_export_still_goes_through(client, owner, app, three):
+    def change(rules):
+        rules["status"] = "Blocked"
+        for field in rules["fields"].values():
+            field.update(value=None, evidence=[], flagged=True)
+        for line in rules["lines"]:
+            for cell in line["cells"].values():
+                cell.update(value=None, evidence=[], flagged=True)
+    edit_rules(app, "a", change)
+    [item] = check(client, owner, app, "a")["ready"]
+    assert item["status"] == "Blocked" and item["blank_fields"] == 8 + 2 + 2 * 4  # D11: asked about, never refused
+    response = client.post("/api/jobs/a/export", headers=bearer(owner), json={"revision": app.state.store.job("a")["revision"]})
+    assert response.status_code == 200, response.text
+    workbook = book(client.get(response.json()["url"], headers=bearer(owner)))
+    assert blanks_written(workbook, 1) == item["blank_fields"]
+
+
+def test_a_blank_upc_counts_only_when_the_export_mode_writes_barcodes(client, owner, app, three):
+    from app.excel import blank_fields
+    view = app.state.store.job("a")["rules"]
+    view["lines"][0]["cells"]["UPC"]["value"] = None
+    assert blank_fields(view, "empty") == 0 and blank_fields(view, "barcode") == 1
+
+
+def test_the_check_counts_upc_in_the_mode_the_export_is_set_to(client, owner, app, three):
+    def blanks_in(mode):
+        response = client.post("/api/target-export/config", headers=bearer(owner), json={"upc": mode})
+        assert response.status_code == 200, response.text
+        [item] = check(client, owner, app, "a")["ready"]
+        return item["blank_fields"]
+    # The two invoice lines carry no barcode: empty by owner rule by default, real gaps once barcodes are written.
+    assert blanks_in("barcode") == blanks_in("empty") + 2
+
+
+def test_a_cell_of_only_spaces_counts_as_blank(client, owner, app, three):
+    edit_rules(app, "a", lambda rules: rules["fields"]["number"].update(value="   "))
+    assert check(client, owner, app, "a")["ready"][0]["blank_fields"] == 1
+
+
+def test_the_check_says_how_many_lines_the_excel_will_hold(client, owner, app, three):
+    edit_rules(app, "b", lambda rules: rules.update(lines=[]))
+    items = {item["id"]: item for item in check(client, owner, app, "a", "b")["ready"]}
+    assert items["a"]["line_count"] == 2
+    assert items["b"]["line_count"] == 0 and items["b"]["blank_fields"] == 0  # no Details row to be blank, so it needs its own say
+    response = client.post("/api/jobs/b/export", headers=bearer(owner), json={"revision": app.state.store.job("b")["revision"]})
+    assert response.status_code == 200, response.text  # D11: asked about, never refused
+    assert column(book(client.get(response.json()["url"], headers=bearer(owner)))["Details"], "Transaction Number") == []
+
+
+@pytest.fixture
+def demo_references(identity, monkeypatch):
+    monkeypatch.delenv("INV_STUDIO_CLOUD", raising=False)  # the mode refuses to start in the cloud; identity set it
+    monkeypatch.setenv("INV_STUDIO_DEMO_REFERENCES", "1")
+    monkeypatch.setattr("app.main.validate", lambda *args: {"issues": [], "matches": []})  # valid against any references
+
+
+@pytest.mark.usefixtures("demo_references")
+def test_the_check_counts_nothing_where_there_is_no_rules_view(client, owner, app, tmp_path):
+    # Test-only legacy mode stores no rules view, so there is no Excel row to count: the check still answers, and Export Excel asks nothing.
+    app.state.store.job("d", {"id": "d", "filename": "d.pdf", "status": "review", "revision": 1,
+                              "invoice": {"number": "D1", "lines": []}})
+    [item] = check(client, owner, app, "d")["ready"]
+    assert not {"status", "blank_fields", "line_count"} & set(item)

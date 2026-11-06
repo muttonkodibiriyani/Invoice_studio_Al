@@ -47,7 +47,7 @@ ROUTES = (("/api/rules-assistant/search", {"query": "rose cream"}),
 def completed(answer):
     text = answer if isinstance(answer, str) else json.dumps(answer)
     return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 900, "output_tokens": 40},
-                                     "output": [{"content": [{"type": "output_text", "text": text}]}]})
+                                     "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]})
 
 
 class Foundry:
@@ -210,6 +210,9 @@ def test_an_explanation_that_mentions_saving_is_only_text(studio_app, foundry):
     httpx.Response(200, content=b"{" + b" " * 300_000 + b"}"),
     httpx.Response(200, json={"status": "incomplete", "output": []}),
     httpx.Response(200, content=b"<html>proxy page</html>"),
+    # A well-formed answer anywhere but a message item is not the answer.
+    httpx.Response(200, json={"status": "completed", "output": [{"type": "reasoning", "content": [
+        {"type": "output_text", "text": json.dumps({"explanation": "from reasoning", "steps": []})}]}]}),
 ])
 def test_malformed_model_output_is_refused_cleanly(studio_app, foundry, reply):
     """c) Non-JSON, wrong types, oversized: a 502 with a fixed message, no model text and no trace."""
@@ -329,7 +332,8 @@ def test_changing_the_azure_connection_turns_the_assistant_off(studio_app, found
     connection_test(client, token)
     assert state(client, token)["enabled"]
     if change == "connect":
-        r = client.post("/api/connections/azure", json={"endpoint": ENDPOINT, "api_key": "another-key"},
+        app.state.providers.test_azure = lambda connection: None  # the connection test has its own tests
+        r = client.post("/api/connections/azure", json={"endpoint": ENDPOINT, "name": "reader", "api_key": "another-key"},
                         headers=bearer(token))
     else:
         r = client.delete("/api/connections/azure", headers=bearer(token))

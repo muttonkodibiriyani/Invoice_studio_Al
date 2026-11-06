@@ -678,6 +678,15 @@ def _mapped_row(row, roles, bounds, expected_serial=None):
         if glued:
             values[column] = glued.group(1)
             values[column + 1] = glued.group(2) + (glued.group(3) or "")
+    # Or the unit price and the column beside it are one word ("120.5012.50VAT5"), which can centre
+    # under either heading. Only two figures of two decimals each, so a four-decimal price stays whole.
+    for column in range(len(roles) - 1):
+        if roles[column][0] != "price" or (values[column] and values[column + 1]):
+            continue
+        glued = re.fullmatch(r"(\d[\d,]*\.\d{2})(\d[\d,]*\.\d{2})(?:\s*[A-Za-z].*)?",
+                             values[column] or values[column + 1] or "")
+        if glued:
+            values[column], values[column + 1] = glued.group(1), glued.group(2)
     for column, role in enumerate(roles):
         if role[0] == "description" and values[column]:
             # OCR reads a printed size's 0 as O and l as I ("3OML", "10mI").

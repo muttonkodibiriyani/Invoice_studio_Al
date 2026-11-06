@@ -7,10 +7,10 @@ import pathlib
 import openpyxl
 import pytest
 
-from app import engines, item_rules, item_search, matching
+from app import ai_context, ai_rules, engines, item_rules, item_search, matching
 from app.fine_rules_source import LookupRulesSource
 from app.master_catalog import COLUMNS, HEADERS, inspect_workbook, install
-from app.models import ProcessingOptions
+from app.models import Invoice, ProcessingOptions
 from app.reference_lookup import ReferenceLookup
 from app.store import Store
 
@@ -165,3 +165,64 @@ def test_a_job_searches_at_the_invoice_supplier_site(tmp_path, monkeypatch, stor
     result, trace = job(tmp_path, monkeypatch, store, [{**LINE, "sku": "VPN-4"}], supplier_name, supplier_site)
     assert result["invoice"]["lines"][0].get("item_id") == item_id
     assert [h["status"] for h in trace["held"]] == held
+
+
+def test_a_pick_through_the_real_job_child_adds_a_rule_that_fills_this_invoice_and_the_next(tmp_path, monkeypatch, store):
+    """The AI fallback's whole path with the child running: context, pick, rule, marked as AI, counted on the rule."""
+    installed(store)
+    line = {"sku": "PRINTED-77", "description": "Rose hand cream synthetic 50 ml", "qty": "2", "price": "5.00", "net_amount": "10.00"}
+    read = {"text": "INVOICE SYN-1\nTotal 10.00\n", "boxes": [], "tables": [], "extraction_method": "template",
+            "invoice": {"number": "SYN-1", "supplier_name": "Synthetic Co", "currency": "AED", "date": "2026-10-01",
+                        "net": "10.00", "tax": "0.50", "lines": [line]}}
+    monkeypatch.setattr(engines, "local_read", lambda *a, **k: json.loads(json.dumps(read)))
+    monkeypatch.setattr(engines, "capabilities", lambda: [
+        {"id": e, "installed": e == "invoice2data", "models_blocked": False, "version": None, "note": ""}
+        for e in ("invoice2data", "paddleocr", "docling")])
+    asked = []
+
+    def foundry(path, text, options, examples=None, context=None):
+        asked.append(context)
+        wanted = next(c for c in context["candidates"] if c["fields"].get("item_id") == "100000001")
+        suggestions, _ = ai_context.accept(context, {"suggestions": [
+            {"candidate_id": wanted["id"], "field": "item_id", "why": "same item"}]})
+        return Invoice.model_validate(read["invoice"]), {"evidence": {"header": {}}, "suggestions": suggestions}
+
+    options = ProcessingOptions(engine="auto", ai_fallback=True, provider="azure", model="agent")
+    first = engines.process_job(ROOT / "samples" / "invoice.pdf", options, store, foundry, filename="SYN-1.pdf")
+    assert len(asked) == 1 and asked[0]["rules"] and asked[0]["candidates"]
+    ai = first["readers"]["ai"]
+    assert len(ai["rules_added"]) == 1 and first["invoice"]["lines"][0]["item_id"] == "100000001"
+    assert first["readers"]["lines"][0]["item_id"] == "ai" and ai["rules_applied"][0]["rule"] == ai["rules_added"][0]
+    rule = ai_rules.all_rules(store)[0]
+    assert (rule["kind"], rule["printed"], rule["item_id"], rule["lines_filled"]) == ("sku", "printed77", "100000001", 1)
+    second = engines.process_job(ROOT / "samples" / "invoice.pdf", options, store, foundry, filename="SYN-2.pdf")
+    assert second["invoice"]["lines"][0]["item_id"] == "100000001" and second["readers"]["lines"][0]["item_id"] == "ai"
+    assert ai_rules.all_rules(store)[0]["lines_filled"] == 2
+    assert len(asked) == 1 and second["readers"]["ai"]["need"] == "cross_check"  # the rule answered; no second call
+    removed = ai_rules.remove(store, rule["id"])
+    assert removed and ai_rules.all_rules(store) == []
+
+
+def test_a_pick_on_a_read_that_fails_its_checks_adds_no_rule_through_the_real_job_child(tmp_path, monkeypatch, store):
+    installed(store)
+    line = {"sku": "PRINTED-77", "description": "Rose hand cream synthetic 50 ml", "qty": "2", "price": "5.00", "net_amount": "10.00"}
+    read = {"text": "INVOICE SYN-1\nTotal 10.00\n", "boxes": [], "tables": [], "extraction_method": "ocr",
+            "invoice": {"number": "SYN-1", "supplier_name": "Synthetic Co", "currency": "AED", "date": "2026-10-01",
+                        "net": "99.00", "tax": "0.50", "lines": [line]}}
+    monkeypatch.setattr(engines, "local_read", lambda *a, **k: json.loads(json.dumps(read)))
+    monkeypatch.setattr(engines, "capabilities", lambda: [
+        {"id": e, "installed": e in ("invoice2data", "paddleocr"), "models_blocked": False, "version": None, "note": ""}
+        for e in ("invoice2data", "paddleocr", "docling")])
+    asked = []
+
+    def foundry(path, text, options, examples=None, context=None):
+        asked.append(context)
+        wanted = next(c for c in context["candidates"] if c["fields"].get("item_id") == "100000001")
+        suggestions, _ = ai_context.accept(context, {"suggestions": [
+            {"candidate_id": wanted["id"], "field": "item_id", "why": "same item"}]})
+        return Invoice.model_validate({**read["invoice"], "lines": []}), {"evidence": {"header": {}}, "suggestions": suggestions}
+
+    options = ProcessingOptions(engine="auto", ai_fallback=True, provider="azure", model="agent")
+    result = engines.process_job(ROOT / "samples" / "invoice-scan.png", options, store, foundry, filename="SYN-1.png")
+    assert len(asked) == 1 and result["readers"]["ai"]["status"] == "not_read"
+    assert ai_rules.all_rules(store) == [] and not result["readers"]["ai"].get("rules_added")

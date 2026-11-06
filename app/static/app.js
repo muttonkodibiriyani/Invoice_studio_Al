@@ -341,6 +341,8 @@ function renderAiReader(job) {
     if (reason) box.append(make("span", "", `${used ? "Why the AI ran" : "Why"}: ${reason}`));
     box.title = (ai.notes || []).join("\n");
   }
+  (ai?.rules_applied || []).forEach((fill) => box.append(make("span", "", `Line ${fill.line + 1}: item ${fill.item_id} filled by AI-added rule ${fill.rule} · ${fill.source}`)));
+  (ai?.suggestions || []).forEach((hint) => box.append(make("span", "", `Suggestion${hint.line === null || hint.line === undefined ? "" : ` for line ${hint.line + 1}`}, not filled: ${humanize(hint.field)} ${hint.value} · ${hint.source} · ${hint.why}`)));
   missing.forEach((entry) => box.append(make("span", "", `${humanize(entry.engine)}: ${entry.hint}`)));
 }
 
@@ -1172,6 +1174,16 @@ async function downloadExtractionDraft() {
   }
 }
 
+function isPossibleCopy(issue) {
+  return issue.code === "Possible Duplicate";
+}
+
+function savedMessage(validation) {
+  if (validation?.ready) return "Review confirmed. This invoice is ready to export.";
+  const copy = validation?.issues?.find(isPossibleCopy);
+  return copy ? `Saved. ${copy.message}` : "Saved and revalidated. Resolve the listed issues before export.";
+}
+
 function notify(message, type = "success", duration = 4600) {
   const banner = $("#global-message");
   banner.textContent = message;
@@ -1910,23 +1922,29 @@ function renderValidation(job) {
   summary.hidden = false;
   // After the reviewer's confirm, what remains are the notes they accepted, not open issues.
   const confirmed = job.status === "ready" || job.status === "exported";
-  // One plain verdict first, then the issues in three groups: must fix (holds the invoice whatever the reviewer does),
-  // check then confirm (the reviewer's confirm accepts them) and warnings (for information, never holding it).
+  // One plain verdict first, then the issues in groups: a possible copy (a confirm does not clear it, so its own words),
+  // must fix (holds the invoice whatever the reviewer does), check then confirm (the reviewer's confirm accepts them)
+  // and warnings (for information, never holding it).
   const confirmStep = issues.some((issue) => issue.code === "REVIEW" && issue.blocking !== false);
   const listed = issues.filter((issue) => issue.code !== "REVIEW");
+  const copy = listed.find(isPossibleCopy);
   const groups = [
+    ["Possible copy: export anyway or delete", copy ? [copy] : []],
     ["Must fix", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level !== "review" && issue.level !== "warning")],
-    ["Check, then confirm review", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level === "review")],
+    ["Check, then confirm review", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level === "review" && !isPossibleCopy(issue))],
     ["Warnings, for information", listed.filter((issue) => issue.blocking === false && !issue.accepted)],
     ["Accepted at review", listed.filter((issue) => issue.accepted)],
   ];
-  const [mustFix, toCheck, warnings] = groups.map(([, items]) => items.length);
+  const [, mustFix, toCheck, warnings] = groups.map(([, items]) => items.length);
   const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   let verdict;
   let tone;
   if (confirmed) {
     verdict = listed.length ? `Confirmed at review · ${count(listed.length, "note")} accepted` : "Confirmed at review";
     tone = "accepted";
+  } else if (copy) {
+    verdict = copy.message;
+    tone = "";
   } else if (mustFix) {
     verdict = `Cannot approve yet · ${count(mustFix, "issue")} must be fixed`;
     tone = "error";
@@ -1941,7 +1959,8 @@ function renderValidation(job) {
   const details = make("details", "validation-details");
   const heading = make("summary");
   const title = make("strong", "", verdict);
-  if (!confirmed && warnings) title.append(make("small", "", `${count(warnings, "warning")} to read · they do not block approval`));
+  if (copy && mustFix + toCheck) title.append(make("small", "", `${count(mustFix + toCheck, "other issue")} listed below`));
+  else if (!confirmed && warnings) title.append(make("small", "", `${count(warnings, "warning")} to read · they do not block approval`));
   heading.append(title, make("span", "", listed.length ? "Show all" : ""));
   details.append(heading);
   groups.forEach(([title, items]) => {
@@ -1958,7 +1977,7 @@ function renderValidation(job) {
     });
     details.append(make("h4", "validation-group", `${title} (${items.length})`), list);
   });
-  if (confirmStep && !confirmed) details.append(make("p", "validation-extra", "Last step: compare the values with the document, then confirm review."));
+  if (confirmStep && !confirmed && !copy) details.append(make("p", "validation-extra", "Last step: compare the values with the document, then confirm review."));
   summary.append(details);
   if (issues.some((issue) => issue.code === "Several Invoices")) summary.append(oneInvoiceButton(job));
 }
@@ -2086,7 +2105,7 @@ async function submitReview(extra = {}, done = "") {
     replaceJobSummary(job);
     renderSelectedJob(job);
     if (done) notify(done, "success");
-    else notify(job.validation?.ready ? "Review confirmed. This invoice is ready to export." : "Saved and revalidated. Resolve the listed issues before export.", job.validation?.ready ? "success" : "error");
+    else notify(savedMessage(job.validation), job.validation?.ready ? "success" : "error");
     return true;
   } catch (error) {
     notify(error.message, "error", 7000);
@@ -2451,7 +2470,7 @@ async function exportBatch() {
       make("li", "", `${item.filename || item.id}: ${item.reasons.map((reason) => reason.message).join("; ")}`)));
     $("#batch-export-held").hidden = !blocked.length;
     $("#batch-export-attention-list").replaceChildren(...attention.map((item) =>
-      make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
+      make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => isPossibleCopy(hold) ? hold.message : hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
     $("#batch-export-attention").hidden = !attention.length;
     const confirm = $("#confirm-batch-export");
     confirm.textContent = `Export ${ready.length} invoice${ready.length === 1 ? "" : "s"}`;
@@ -3537,6 +3556,7 @@ function renderPolicy() {
 }
 
 function renderEngines() {
+  renderAiRules();
   const list = $("#engine-list");
   list.replaceChildren();
   const engineHelp = {
@@ -3587,6 +3607,9 @@ function renderConnections() {
   const azureEndpoint = $("[data-azure-endpoint]");
   azureEndpoint.textContent = app.state?.azure_endpoint ? `Connected endpoint: ${app.state.azure_endpoint}` : "";
   azureEndpoint.hidden = !app.state?.azure_endpoint;
+  const azureRefused = $("[data-azure-refused]");
+  azureRefused.textContent = app.state?.azure_refused ? `AI is off: ${app.state.azure_refused}` : "";
+  azureRefused.hidden = !app.state?.azure_refused;
   $("#connect-chatgpt").disabled = cloud;
   $("#chatgpt-account").disabled = false;
   ["settings-provider", "upload-provider", "retry-provider"].forEach((id) => {
@@ -3657,16 +3680,52 @@ async function fetchModels() {
 
 async function saveAzureConnection(form) {
   const endpoint = form.elements.endpoint.value.trim();
-  const apiKey = form.elements.api_key.value;
+  const auth = form.elements.auth.value;
+  const apiKey = auth === "key" ? form.elements.api_key.value : null;
   form.elements.api_key.value = "";
+  const submit = form.querySelector("button[type=submit]");
+  submit.disabled = true;
+  submit.textContent = "Testing…";
   try {
-    await api("/api/connections/azure", { method: "POST", body: { endpoint, api_key: apiKey } });
+    await api("/api/connections/azure", { method: "POST", body: { endpoint, name: form.elements.name.value.trim(), auth, api_key: apiKey } });
     delete app.providerModels.azure;
     delete app.providerVerified.azure;
     await loadState();
     if ($("#settings-provider").value === "azure") loadProviderModels("settings", { force: true });
-    notify("Azure AI Foundry connection saved on the server.");
-  } catch (error) { notify(error.message, "error", 7000); }
+    notify("The connection test passed. Azure AI Foundry is saved on the server.");
+  } catch (error) { notify(error.message, "error", 9000); }
+  finally { submit.disabled = false; submit.textContent = "Test and save"; }
+}
+
+function azureAuthChanged(form) {
+  const key = form.elements.auth.value === "key";
+  form.querySelector("[data-azure-key]").hidden = !key;
+  form.elements.api_key.required = key;
+}
+
+// The rules the AI added (app/ai_rules.py). Listing and removing only: there is no approval step (owner, 6 Nov).
+async function renderAiRules() {
+  const box = $("#ai-rules-list");
+  let rules = [];
+  try { rules = (await api("/api/ai-rules")).rules; } catch (error) { box.replaceChildren(make("p", "small", error.message)); return; }
+  box.replaceChildren();
+  if (!rules.length) box.append(make("p", "small", "None yet."));
+  rules.forEach((rule) => {
+    const row = make("div", "engine-item");
+    row.dataset.aiRule = rule.id;
+    row.append(make("strong", "", `${rule.supplier_name}: printed ${rule.kind} ${rule.printed} → item ${rule.item_id}`));
+    row.append(make("small", "", `Lines filled: ${rule.lines_filled || 0} · ${rule.source} · ${rule.why} · ${rule.model} · ${rule.from_file} · ${rule.added}`));
+    if (app.authMode === "local" || app.sessionUser?.role === "admin") {
+      const remove = make("button", "button button-quiet", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        try { await api(`/api/ai-rules/${encodeURIComponent(rule.id)}`, { method: "DELETE" }); renderAiRules(); notify("Rule removed."); }
+        catch (error) { notify(error.message, "error", 7000); }
+      });
+      row.append(remove);
+    }
+    box.append(row);
+  });
 }
 
 async function saveApiKey(form) {
@@ -3977,6 +4036,10 @@ function bindEvents() {
     const save = form.dataset.provider === "azure" ? saveAzureConnection : saveApiKey;
     form.addEventListener("submit", (event) => { event.preventDefault(); save(form); });
     $(".remove-connection", form).addEventListener("click", () => removeApiConnection(form.dataset.provider));
+    if (form.elements.auth) {
+      form.elements.auth.addEventListener("change", () => azureAuthChanged(form));
+      azureAuthChanged(form);
+    }
   });
   $("#connect-chatgpt").addEventListener("click", connectChatGPT);
   $("#export-chatgpt").addEventListener("click", exportChatGPT);

@@ -419,19 +419,26 @@ def _without_buyer_side(value, buyer_rows):
     return value.strip(" :|-,")
 
 
-def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=()):
+def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=(), owner_name=""):
     """ALG-002: every supplier-name candidate across all pages, with page and region.
 
     Buyer-side party text is removed by position, never by name, since group companies sell to each other.
-    A reader buyer that is only company-type words (a reader miss) excludes nothing."""
+    A reader buyer that is only company-type words (a reader miss) excludes nothing. The configured owner entity
+    is never its own supplier, by the whole name: a sibling printing another company form or a longer name stays."""
     found = []
+
+    def is_owner(value):
+        form = lambda name: "".join(w for w in _tokens(name) if w in _COMPANY_TYPES)
+        return bool(entity_tokens(owner_name)) and entity_tokens(value) == entity_tokens(owner_name) \
+            and form(value) in ("", form(owner_name))
+
     printed_buyer = fold(buyer_name) if buyer_name and entity_tokens(buyer_name) else ""
     buyer_rows = [r for r in buyer_rows if entity_tokens(r)]
 
     def add(value, page, line_no, lines, how):
         value = " ".join(text(value).split()).strip(" :|-,")
         value = _without_buyer_side(value, buyer_rows)
-        if len(value) < 2 or (printed_buyer and printed_buyer in fold(value)):
+        if len(value) < 2 or (printed_buyer and printed_buyer in fold(value)) or is_owner(value):
             return
         position = (line_no + 0.5) / max(1, len(lines))
         region = "top" if position < 1 / 3 else "bottom" if position > 2 / 3 else "body"
@@ -445,7 +452,7 @@ def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=())
 
     # The reader's supplier field loses any buyer-side text it took across the party row.
     printed_name = _without_buyer_side(" ".join(text(printed_name).split()), buyer_rows) if printed_name else ""
-    if len(printed_name) >= 2:
+    if len(printed_name) >= 2 and not is_owner(printed_name):
         found.append({"name": printed_name, "page": None, "line": None, "region": "extracted",
                       "method": "extracted supplier field"})
     for page, page_value in scan["pages"].items():
@@ -1994,7 +2001,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
 
     # Supplier discovery uses issuer evidence, followed by scoped product search.
     buyer_page, buyer_rows = buyer_party(scan)
-    candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows)
+    candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows, config.buyer_name)
     candidates = tolerant_supplier_names(run, source, candidates)
     # Resolve the issuer/site or approved family before any product search (M2).
     probe = Run(invoice, config, filename)

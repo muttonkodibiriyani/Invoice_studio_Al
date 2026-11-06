@@ -1,6 +1,60 @@
+import re
 from decimal import Decimal
 from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+# docs/FIELD_RULES.md's unit-of-measure vocabulary: spelling, not meaning, so EA and PCS stay different codes.
+UOM_SPELLINGS = {
+    "PCS": ("pcs", "pc", "piece", "pieces", "unit", "units", "nos", "no"),
+    "EA": ("ea", "each"),
+    "BOX": ("box", "bx", "boxes"),
+    "CTN": ("ctn", "carton", "cartons", "cs", "case"),
+    "SET": ("set", "sets"),
+    "PKT": ("pkt", "packet", "pack", "pk"),
+    "BTL": ("btl", "bottle"),
+    "CAN": ("can", "tin"),
+    "BAG": ("bag",),
+    "ROL": ("rol", "roll"),
+    "KG": ("kg", "kgs", "kilo", "kilogram"),
+    "G": ("g", "gm", "gram"),
+    "L": ("l", "ltr", "litre", "liter"),
+    "ML": ("ml",),
+    "M": ("m", "mtr", "metre", "meter"),
+    "DZ": ("dz", "dzn", "dozen"),
+    "PR": ("pr", "pair"),
+}
+_UOM_CODES = {spelling: code for code, spellings in UOM_SPELLINGS.items() for spelling in spellings}
+
+
+def uom_code(value):
+    """The vocabulary code of a unit, for comparing two units. A read keeps the unit as printed, so its evidence
+    still points at the page. Case, a trailing '.' and a plural 's' do not count; a unit outside the vocabulary
+    is itself upper-cased, and a blank is None."""
+    text = " ".join(str(value or "").split()).rstrip(". ")
+    spelling = text.casefold()
+    return _UOM_CODES.get(spelling) or _UOM_CODES.get(spelling.removesuffix("s")) or text.upper() or None
+
+
+# What a workbook's XML cannot hold, NUL (PostgreSQL neither) and the other control characters. Tab and newlines stay.
+UNWRITABLE_TEXT = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ud800-\udfff\ufffe\uffff]")
+
+
+def has_unwritable_text(value):
+    if isinstance(value, str):
+        return bool(UNWRITABLE_TEXT.search(value))
+    if isinstance(value, dict):
+        return any(has_unwritable_text(x) for pair in value.items() for x in pair)
+    return isinstance(value, list) and any(has_unwritable_text(x) for x in value)
+
+
+def storable(value):
+    """A reader's result without what PostgreSQL's JSON cannot hold. Only that: form feeds in the text mark its pages."""
+    if isinstance(value, str):
+        return re.sub("[\x00\ud800-\udfff]", "", value)
+    if isinstance(value, dict):
+        return {storable(k): storable(v) for k, v in value.items()}
+    return [storable(x) for x in value] if isinstance(value, (list, tuple)) else value
 
 
 class StrictModel(BaseModel):
@@ -26,7 +80,8 @@ class _Capped(StrictModel):
     matching, the target check, the workbooks, text_key) run patterns over these values, so
     the cap is what bounds their input. A read (local reader, AI, a stored invoice) keeps an
     over-cap field empty, so it shows as a gap to fill or review instead of a wrong value;
-    a member edit over a cap is refused with a 422 (the Edited* models below).
+    a member edit over a cap is refused with a 422 (the Edited* models below). A read also loses
+    any character a workbook cannot hold; the review save refuses one with a 400.
     """
     refuse_over_cap: ClassVar[bool] = False
 
@@ -35,6 +90,7 @@ class _Capped(StrictModel):
     def _drop_over_cap(cls, data):
         if cls.refuse_over_cap or not isinstance(data, dict):
             return data
+        data = {k: UNWRITABLE_TEXT.sub("", v) if isinstance(v, str) else v for k, v in data.items()}
         over = [name for name, value in data.items() if isinstance(value, str) and name in cls.model_fields
                 and len(value.strip()) > _max_length(cls.model_fields[name])]
         return {**data, **dict.fromkeys(over)} if over else data

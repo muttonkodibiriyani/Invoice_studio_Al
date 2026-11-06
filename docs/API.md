@@ -177,10 +177,10 @@ Review edits, retry, approve and export one invoice.
 
 | Method | Path | Access | What it does |
 |---|---|---|---|
-| `POST` | `/api/jobs/{jid}/review` | Member | **Save review edits.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409. |
+| `POST` | `/api/jobs/{jid}/review` | Member | **Save review edits.** Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is refused with 409; a control character or another a workbook cannot hold with 400 (a value read from a document is cleaned instead). |
 | `POST` | `/api/jobs/{jid}/one-invoice` | Member | **Release a several-invoices hold.** A person checked a file held as possibly binding several invoices and says it is one. Audited. 409 when the file is not held. |
 | `POST` | `/api/jobs/{jid}/retry` | Member | **Read again.** Reads the invoice again under a new confirmed plan. |
-| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. 409 only if it is still processing, not read, changed, a duplicate or a file held as possibly binding several invoices; an invoice already exported returns its existing export. |
+| `POST` | `/api/jobs/{jid}/export` | Member | **Export one invoice.** Creates the Excel export for an invoice at the given revision: the three template sheets with what was found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt records them as open_holds. A duplicate is the same number from the same supplier site; with a site or number blank nothing can be called one, so the invoice exports. It gets the hold Possible Duplicate, listed first and naming the match, which a review confirm does not clear, when the same file or (a site missing on either side) the same number was already exported: export anyway or delete. Until the original exports the copy can read as approved. A held invoice records no receipt allocations, so a false positive (a different supplier's same number) leaves its quantities uncounted in later receipt checks. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed, a duplicate or a file held as possibly binding several invoices; an invoice already exported returns its existing export. |
 | `POST` | `/api/jobs/{jid}/extraction-draft` | Member | **Unvalidated extraction workbook.** Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated. |
 | `POST` | `/api/jobs/{jid}/draft` | Member | **Manual draft workbook.** Builds a target workbook from hand-entered Header, Tax_Breakdown and Details. Never approves. |
 
@@ -245,7 +245,7 @@ Download exports and batch workbooks; long downloads run in the background.
 | `GET` | `/api/exports/{eid}` | Member | **Download an export.** The export workbook. |
 | `GET` | `/api/exports/{eid}/evidence` | Member | **Evidence of an export.** The evidence record behind an export: sources, hashes, approvals. |
 | `POST` | `/api/exports/batch` | Member | **Export a batch.** One workbook for several invoices; each item names the invoice and its revision. Holds do not block (owner decision D11): each invoice is written with what was found, blanks blank, and its receipt records the open holds for the export team to validate by hand. All or nothing on integrity: an invoice still processing or not read, changed, already exported, duplicated or held as possibly several invoices refuses the batch with 409. The workbook holds only the Header, Tax_Breakdown and Details sheets, Transaction Number 1..n (no Checks sheet). |
-| `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Send the ready ones to /api/exports/batch. |
+| `POST` | `/api/exports/batch/check` | Member | **Check a batch before export.** Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the holds still open on it, information only since D11) and blocked, each blocked one with its reasons as code and message (Processing, Not Read, Changed, Exported, Duplicate). Possible Duplicate is a hold, so it shows under attention, not blocked; see Export one invoice. Send the ready ones to /api/exports/batch. |
 | `GET` | `/api/batches/{bid}` | Member | **Download a batch export.** The batch workbook. |
 | `POST` | `/api/exports/extraction-batch` | Member | **Unvalidated batch workbook.** What was read for several invoices, before validation. |
 | `POST` | `/api/exports/target-draft` | Member | **Target draft for unapproved invoices.** The draft of everything: the target workbook for all selected invoices, held ones included, with the Checks sheet. Marked DRAFT in the file name and on every sheet (red tab and header row, a note on A1, the printed header); sheet names and headers stay the template's. Never an export. |
@@ -531,7 +531,9 @@ Admin control of AI. The Azure deployment allows Azure AI Foundry only (INV_STUD
 | Method | Path | Access | What it does |
 |---|---|---|---|
 | `POST` | `/api/settings` | Admin | **AI settings.** Default provider and model, and the AI on/off switch (ai_fallback). With it off the server refuses every AI read. |
-| `POST` | `/api/connections/azure` | Admin | **Connect Azure AI Foundry.** Endpoint (an Azure resource host only) and api-key, stored encrypted. Not needed when the deployment uses its managed identity. |
+| `GET` | `/api/ai-rules` | Member | **Rules the AI added.** The rules the AI added, each with its source, reason, model, file and the lines it has filled. There is no approval step. |
+| `DELETE` | `/api/ai-rules/{rule_id}` | Admin | **Remove a rule the AI added.** Removes one rule the AI added, so it fills nothing more. Audited. |
+| `POST` | `/api/connections/azure` | Admin | **Connect Azure AI Foundry.** Endpoint (an Azure resource host or Foundry project), agent or deployment name, and an api-key or managed identity. Makes a real call first: only a completed answer saves it, stored encrypted; a failed test saves nothing and keeps the previous connection. |
 | `DELETE` | `/api/connections/azure` | Admin | **Disconnect Azure AI Foundry.** Removes the saved connection. |
 | `POST` | `/api/connections/{provider}` | Admin | **Connect OpenAI or Anthropic.** Refused with 403 on the Azure deployment. |
 | `DELETE` | `/api/connections/{provider}` | Admin | **Disconnect OpenAI or Anthropic.** Removes a saved key. |
@@ -557,6 +559,8 @@ Admin control of AI. The Azure deployment allows Azure AI Foundry only (INV_STUD
 ```json
 {
   "endpoint": "https://<resource>.openai.azure.com",
+  "name": "<deployment or agent>",
+  "auth": "key",
   "api_key": "<key>"
 }
 ```
@@ -610,7 +614,7 @@ Delete invoices, costs, users.
 
 | Method | Path | Access | What it does |
 |---|---|---|---|
-| `POST` | `/api/jobs/delete` | Admin | **Delete invoices.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean). |
+| `POST` | `/api/jobs/delete` | Admin | **Delete invoices.** Permanently deletes invoices and their files. Each item names the invoice and its current revision; needs confirm_permanent: true (a boolean). For an exported invoice a minimal record stays so it is still noticed if sent again: its key, line quantities, the file's SHA-256 and its invoice number. |
 | `GET` | `/api/costs` | Admin | **AI spend.** Daily and month-to-date AI spend. ?days=30. |
 | `GET` | `/api/users` | Admin | **Users.** Everyone who has signed in, their role and last sign-in. Read-only: roles are granted in Entra ID. |
 
@@ -630,4 +634,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 87 routes: 1 public, 47 member, 38 admin, 1 without a token (health).
+Totals: 89 routes: 1 public, 48 member, 39 admin, 1 without a token (health).

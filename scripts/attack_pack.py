@@ -91,6 +91,7 @@ ROUTES = [
     ("POST", "/api/mapping-tables/uploads/x/activate", "admin"),
     ("POST", "/api/mapping-tables/versions/x/rollback", "admin"),
     ("GET", "/api/mapping-tables/active/workbook", "admin"), ("GET", "/api/health/dependencies", "member"),
+    ("GET", "/api/ai-rules", "member"), ("DELETE", "/api/ai-rules/x", "admin"),
     ("GET", "/api/rules-assistant", "member"), ("POST", "/api/rules-assistant/test", "admin"),
     ("POST", "/api/rules-assistant/search", "member"), ("POST", "/api/rules-assistant/explain", "member"),
     ("POST", "/api/rules-assistant/propose", "member"),

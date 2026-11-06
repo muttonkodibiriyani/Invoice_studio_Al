@@ -144,6 +144,10 @@ Matching is case-insensitive, with a trailing `.` and plural `s` ignored.
 
 A unit not in the table: write it upper-cased as printed, and propose it here.
 
+The table lives in code as `app/models.py` `UOM_SPELLINGS`; a test keeps the two equal. A read in the app keeps the unit
+as printed so its evidence still points at the page, and every comparison goes through `uom_code`: the PO unit check,
+the product search price clue, reader agreement and the truth check.
+
 ## Where the truth and the scorecard stand
 
 - Scorecard comparison rules agree with these rules (amounts by value within 0.0005, `date` normalised, everything

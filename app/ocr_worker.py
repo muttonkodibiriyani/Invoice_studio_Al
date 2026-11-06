@@ -263,6 +263,18 @@ def structured_extract(text, boxes, templates, tables=None):
     return None, "text_only"
 
 
+def restore_capital_i(number):
+    """An OCR reader's 'Sl/2099/0007' is a capital I: a lower-case l among the capitals of the prefix.
+
+    The page's other printing, if any, is not consulted here, and the target check still has to find the restored
+    value printed before it calls the Document verified, so a number only ever restored stays for a reviewer."""
+    from .target_check import lookalike_prefix
+    if not number or not lookalike_prefix(number):return number
+    prefix=re.match(r"\D*",number).group()
+    if "l" not in prefix or not any(ch.isupper() for ch in prefix):return number
+    return prefix.replace("l","I")+number[len(prefix):]
+
+
 def digital(path, with_tables=False):
     import pdfplumber
     suffix=path.suffix.lower()
@@ -771,6 +783,8 @@ def main():
             )
         if learned_templates and parser_error is None and not args.learned_only:
             parsed,extraction_method,learned=apply_learned(text,learned_templates,parsed,extraction_method)
+        # Only a reader that looks at glyphs confuses the two; a PDF's own text layer says what it says.
+        if args.engine in ("paddleocr","docling") and parsed:parsed["number"]=restore_capital_i(parsed.get("number"))
         payload={"text":text[:150000],"boxes":boxes[:10000],
             "invoice":parsed,"extraction_method":extraction_method,"tables":tables,
             "parser_error":parser_error}

@@ -48,6 +48,12 @@ def resolve(invoice, item_search, ruleset):
     return out
 
 
+def rerun_lines(resolved, lines, item_search, ruleset):
+    """AI lines stood in for the local ones: the rules run again on them, so a rule value sits on the row it was found for."""
+    again = resolve({"lines": lines}, item_search, ruleset)
+    resolved.invoice["lines"], resolved.sources["lines"], resolved.held = again.invoice["lines"], again.sources["lines"], again.held
+
+
 def identified(resolved, n):
     """Line n (1-based) has its item from the item master, so a missing printed code is not a gap."""
     lines = resolved.sources["lines"] if resolved else []

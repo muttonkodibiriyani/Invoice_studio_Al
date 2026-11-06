@@ -80,6 +80,13 @@ class Slot:
         self.release()
 
 
+def _searchable(invoice):
+    """What the parent searches the item master and the AI-added rules with: the read's identity fields, positions kept."""
+    invoice=invoice or {}
+    return {"supplier_name":invoice.get("supplier_name"),"po":invoice.get("po"),
+            "lines":[{f:line.get(f) for f in ("sku","gtin","barcode_unchecked","description","item_id")} for line in invoice.get("lines") or []]}
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--cpu-seconds",type=int,default=0)
@@ -100,14 +107,20 @@ def main():
         if extra:raise ValueError("A job reads with the default reader options")
         return parent.call("local_read",engine=engine)
 
-    def ai_reader(path,text,options):
+    def ai_reader(path,text,options,local=None):
         # The supplier examples (LearnedStore.prompt_examples) are matched against the read text here, not there.
         examples=""
         if learned is not None:
             try:examples=learned.prompt_examples(text or "")
             except Exception:examples=""
-        read=parent.call("ai",text=text,examples=examples)
+        read=parent.call("ai",text=text,examples=examples,local=_searchable(local))
         return Invoice.model_validate(read["invoice"]),read["meta"]
+
+    def ai_rule_fill(invoice):
+        return parent.call("ai_rule_fill",invoice=_searchable(invoice))
+
+    def ai_rule_keep():
+        return parent.call("ai_rule_keep")
 
     def item_master(invoice):
         # The live item master is searched in the parent (engines.process_job): it holds the store.
@@ -123,7 +136,7 @@ def main():
     progress=lambda engine,message,details=None:parent.call("progress",engine=engine,message=message,details=details)
     try:
         result=engines.process(Path(start["path"]),ProcessingOptions.model_validate(start["options"]),
-                               SimpleNamespace(root=root),ai_reader,progress,item_master=item_master)
+                               SimpleNamespace(root=root),ai_reader,progress,item_master=item_master,ai_local=True,ai_rule_fill=ai_rule_fill,ai_rule_keep=ai_rule_keep)
         result["annotated_evidence"]=annotate(result.get("evidence"),result["invoice"],filename=start["filename"])
         several=several_in_read(Path(start["path"]),result)
         if several:result["several_read"]=several

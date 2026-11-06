@@ -27,6 +27,8 @@ param memory string = '8Gi'
 param extraAllowedOrigins array = []
 param foundryEndpoint string = ''
 param foundryDeployment string = ''
+param foundryGatewayHost string = ''
+param foundryTokenScope string = ''
 @description('Entra ID tenant (GUID). The app refuses to start in cloud mode without it.')
 param entraTenantId string
 @description('Client id of the Entra app registration: the audience of the access tokens the API accepts.')
@@ -178,7 +180,9 @@ var baseEnv = [
 
 var endpointEnv = empty(foundryEndpoint) ? [] : [{ name: 'INV_STUDIO_AZURE_ENDPOINT', value: foundryEndpoint }]
 var deploymentEnv = empty(foundryDeployment) ? [] : [{ name: 'INV_STUDIO_AZURE_DEPLOYMENT', value: foundryDeployment }]
-var appEnv = concat(baseEnv, endpointEnv, deploymentEnv)
+var gatewayEnv = empty(foundryGatewayHost) ? [] : [{ name: 'INV_STUDIO_AZURE_GATEWAY_HOST', value: foundryGatewayHost }]
+var scopeEnv = empty(foundryTokenScope) ? [] : [{ name: 'INV_STUDIO_AZURE_TOKEN_SCOPE', value: foundryTokenScope }]
+var appEnv = concat(baseEnv, endpointEnv, deploymentEnv, gatewayEnv, scopeEnv)
 
 // The image is about 5.6 GB and warms the OCR readers, so the first start of a revision is slow.
 // No liveness probe: a long invoice run must not be restarted under it.

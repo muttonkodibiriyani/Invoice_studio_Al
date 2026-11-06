@@ -54,15 +54,17 @@ def documents(root):
 class Live(deployed.Deployed):
     """The deployed app with production options; keeps each finished job instead of judging it."""
 
+    options = OPTIONS
+
     def read(self, path, run=None):
         content = path.read_bytes()
         start = self.clock()
         try:
-            plan = self.post("/api/preflight", json={"options": OPTIONS, "files": [{"name": path.name, "size": len(content)}]})
+            plan = self.post("/api/preflight", json={"options": self.options, "files": [{"name": path.name, "size": len(content)}]})
             if plan.get("blocking"):
                 return {"status": "error", "detail": "preflight blocking"}, 0.0
             self.post("/api/preflight/confirm", json={"token": plan["token"]})
-            job = self.post("/api/invoices", data={"options": json.dumps(OPTIONS), "preflight_token": plan["token"]},
+            job = self.post("/api/invoices", data={"options": json.dumps(self.options), "preflight_token": plan["token"]},
                             files={"file": (path.name, content)})
         except httpx.HTTPStatusError as e:
             return {"status": "error", "detail": f"{e.request.url.path} HTTP {e.response.status_code}"}, 0.0

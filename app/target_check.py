@@ -115,8 +115,9 @@ def printed(text, original):
     return amount is not None and amount in text.amounts
 
 
+# Day-first is tried first: month-first only reads a date whose day cannot be a month, so "03/04/2031" stays day-first.
 DATE_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%d-%b-%Y", "%d %b %Y", "%d-%m-%y", "%d/%m/%y",
-                "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d-%B-%Y", "%B %d %Y")
+                "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d-%B-%Y", "%B %d %Y", "%m/%d/%Y", "%m-%d-%Y")
 ORDINAL_DAY = re.compile(r"(?i)\b(\d{1,2})(st|nd|rd|th)\b")
 
 

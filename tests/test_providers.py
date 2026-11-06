@@ -84,7 +84,7 @@ def options(provider="openai"):
 def test_openai_mocked_success_uses_strict_schema_and_disables_storage(tmp_path, store, monkeypatch):
     store.secret("openai", "openai-test-secret")
     payload = {"status": "completed", "usage": {"input_tokens": 12, "output_tokens": 7},
-               "output": [{"content": [{"type": "output_text", "text": json.dumps(sample_invoice())}]}]}
+               "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(sample_invoice())}]}]}
     fake = FakeClient(post=FakeResponse(payload))
     monkeypatch.setattr(provider_module.httpx, "Client", lambda *a, **k: fake)
     path = tmp_path / "invoice.txt"

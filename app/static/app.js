@@ -341,6 +341,8 @@ function renderAiReader(job) {
     if (reason) box.append(make("span", "", `${used ? "Why the AI ran" : "Why"}: ${reason}`));
     box.title = (ai.notes || []).join("\n");
   }
+  (ai?.rules_applied || []).forEach((fill) => box.append(make("span", "", `Line ${fill.line + 1}: item ${fill.item_id} filled by AI-added rule ${fill.rule} · ${fill.source}`)));
+  (ai?.suggestions || []).forEach((hint) => box.append(make("span", "", `Suggestion${hint.line === null || hint.line === undefined ? "" : ` for line ${hint.line + 1}`}, not filled: ${humanize(hint.field)} ${hint.value} · ${hint.source} · ${hint.why}`)));
   missing.forEach((entry) => box.append(make("span", "", `${humanize(entry.engine)}: ${entry.hint}`)));
 }
 
@@ -3517,6 +3519,7 @@ function renderPolicy() {
 }
 
 function renderEngines() {
+  renderAiRules();
   const list = $("#engine-list");
   list.replaceChildren();
   const engineHelp = {
@@ -3567,6 +3570,9 @@ function renderConnections() {
   const azureEndpoint = $("[data-azure-endpoint]");
   azureEndpoint.textContent = app.state?.azure_endpoint ? `Connected endpoint: ${app.state.azure_endpoint}` : "";
   azureEndpoint.hidden = !app.state?.azure_endpoint;
+  const azureRefused = $("[data-azure-refused]");
+  azureRefused.textContent = app.state?.azure_refused ? `AI is off: ${app.state.azure_refused}` : "";
+  azureRefused.hidden = !app.state?.azure_refused;
   $("#connect-chatgpt").disabled = cloud;
   $("#chatgpt-account").disabled = false;
   ["settings-provider", "upload-provider", "retry-provider"].forEach((id) => {
@@ -3637,16 +3643,52 @@ async function fetchModels() {
 
 async function saveAzureConnection(form) {
   const endpoint = form.elements.endpoint.value.trim();
-  const apiKey = form.elements.api_key.value;
+  const auth = form.elements.auth.value;
+  const apiKey = auth === "key" ? form.elements.api_key.value : null;
   form.elements.api_key.value = "";
+  const submit = form.querySelector("button[type=submit]");
+  submit.disabled = true;
+  submit.textContent = "Testing…";
   try {
-    await api("/api/connections/azure", { method: "POST", body: { endpoint, api_key: apiKey } });
+    await api("/api/connections/azure", { method: "POST", body: { endpoint, name: form.elements.name.value.trim(), auth, api_key: apiKey } });
     delete app.providerModels.azure;
     delete app.providerVerified.azure;
     await loadState();
     if ($("#settings-provider").value === "azure") loadProviderModels("settings", { force: true });
-    notify("Azure AI Foundry connection saved on the server.");
-  } catch (error) { notify(error.message, "error", 7000); }
+    notify("The connection test passed. Azure AI Foundry is saved on the server.");
+  } catch (error) { notify(error.message, "error", 9000); }
+  finally { submit.disabled = false; submit.textContent = "Test and save"; }
+}
+
+function azureAuthChanged(form) {
+  const key = form.elements.auth.value === "key";
+  form.querySelector("[data-azure-key]").hidden = !key;
+  form.elements.api_key.required = key;
+}
+
+// The rules the AI added (app/ai_rules.py). Listing and removing only: there is no approval step (owner, 6 Nov).
+async function renderAiRules() {
+  const box = $("#ai-rules-list");
+  let rules = [];
+  try { rules = (await api("/api/ai-rules")).rules; } catch (error) { box.replaceChildren(make("p", "small", error.message)); return; }
+  box.replaceChildren();
+  if (!rules.length) box.append(make("p", "small", "None yet."));
+  rules.forEach((rule) => {
+    const row = make("div", "engine-item");
+    row.dataset.aiRule = rule.id;
+    row.append(make("strong", "", `${rule.supplier_name}: printed ${rule.kind} ${rule.printed} → item ${rule.item_id}`));
+    row.append(make("small", "", `Lines filled: ${rule.lines_filled || 0} · ${rule.source} · ${rule.why} · ${rule.model} · ${rule.from_file} · ${rule.added}`));
+    if (app.authMode === "local" || app.sessionUser?.role === "admin") {
+      const remove = make("button", "button button-quiet", "Remove");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        try { await api(`/api/ai-rules/${encodeURIComponent(rule.id)}`, { method: "DELETE" }); renderAiRules(); notify("Rule removed."); }
+        catch (error) { notify(error.message, "error", 7000); }
+      });
+      row.append(remove);
+    }
+    box.append(row);
+  });
 }
 
 async function saveApiKey(form) {
@@ -3957,6 +3999,10 @@ function bindEvents() {
     const save = form.dataset.provider === "azure" ? saveAzureConnection : saveApiKey;
     form.addEventListener("submit", (event) => { event.preventDefault(); save(form); });
     $(".remove-connection", form).addEventListener("click", () => removeApiConnection(form.dataset.provider));
+    if (form.elements.auth) {
+      form.elements.auth.addEventListener("change", () => azureAuthChanged(form));
+      azureAuthChanged(form);
+    }
   });
   $("#connect-chatgpt").addEventListener("click", connectChatGPT);
   $("#export-chatgpt").addEventListener("click", exportChatGPT);

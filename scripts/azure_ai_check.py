@@ -187,11 +187,11 @@ class Check:
             origin = azure_foundry.normalise_endpoint(endpoint)
         except ValueError as error:
             host = (urlparse(endpoint if "://" in endpoint else "https://" + endpoint).hostname or "").casefold()
-            gateway = (f" {host} is an Azure API Management gateway (Citadel runs on one): the app accepts only the "
-                       "Foundry resource hosts, so connecting through the gateway needs an app change first."
+            gateway = (f" {host} is an Azure API Management gateway (Citadel runs on one): name exactly this host in "
+                       f"{azure_foundry.ENV_GATEWAY} (deploy kit CITADEL_GATEWAY_HOST) to allow it."
                        if host.endswith(GATEWAY_SUFFIX) else "")
             self.report("configuration", FAILED, f"{azure_foundry.ENV_ENDPOINT} is refused: {error}.{gateway} While "
-                        "it is set the app's pages fail to load (/api/state answers 400): unset it or correct it")
+                        "it is set the app keeps working with AI off and says why on Engines & AI")
             return None
         try:
             ProcessingOptions(engine="ai", provider="azure", model=deployment)
@@ -218,7 +218,9 @@ class Check:
             headers = providers.headers("azure")  # the api-key, or a managed identity token: what every read sends
         except ValueError as error:
             return self.report("connection", FAILED, str(error))
-        body = {"model": deployment, "input": "Reply with the word OK.", "store": False}
+        agent = providers.azure.agent()
+        body = {"input": "Reply with the word OK.", "store": False,
+                **({"agent_reference": {"name": agent, "type": "agent_reference"}} if agent else {"model": deployment})}
         started = time.monotonic()
         try:
             with httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=False) as http:

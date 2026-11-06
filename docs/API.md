@@ -530,7 +530,9 @@ Admin control of AI. The Azure deployment allows Azure AI Foundry only (INV_STUD
 | Method | Path | Access | What it does |
 |---|---|---|---|
 | `POST` | `/api/settings` | Admin | **AI settings.** Default provider and model, and the AI on/off switch (ai_fallback). With it off the server refuses every AI read. |
-| `POST` | `/api/connections/azure` | Admin | **Connect Azure AI Foundry.** Endpoint (an Azure resource host only) and api-key, stored encrypted. Not needed when the deployment uses its managed identity. |
+| `GET` | `/api/ai-rules` | Member | **Rules the AI added.** The rules the AI added, each with its source, reason, model, file and the lines it has filled. There is no approval step. |
+| `DELETE` | `/api/ai-rules/{rule_id}` | Admin | **Remove a rule the AI added.** Removes one rule the AI added, so it fills nothing more. Audited. |
+| `POST` | `/api/connections/azure` | Admin | **Connect Azure AI Foundry.** Endpoint (an Azure resource host or Foundry project), agent or deployment name, and an api-key or managed identity. Makes a real call first: only a completed answer saves it, stored encrypted; a failed test saves nothing and keeps the previous connection. |
 | `DELETE` | `/api/connections/azure` | Admin | **Disconnect Azure AI Foundry.** Removes the saved connection. |
 | `POST` | `/api/connections/{provider}` | Admin | **Connect OpenAI or Anthropic.** Refused with 403 on the Azure deployment. |
 | `DELETE` | `/api/connections/{provider}` | Admin | **Disconnect OpenAI or Anthropic.** Removes a saved key. |
@@ -556,6 +558,8 @@ Admin control of AI. The Azure deployment allows Azure AI Foundry only (INV_STUD
 ```json
 {
   "endpoint": "https://<resource>.openai.azure.com",
+  "name": "<deployment or agent>",
+  "auth": "key",
   "api_key": "<key>"
 }
 ```
@@ -629,4 +633,4 @@ Delete invoices, costs, users.
 `GET /api/costs`
 query: `days=30`
 
-Totals: 86 routes: 1 public, 46 member, 38 admin, 1 without a token (health).
+Totals: 88 routes: 1 public, 47 member, 39 admin, 1 without a token (health).

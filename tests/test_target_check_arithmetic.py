@@ -462,9 +462,6 @@ def test_with_no_proof_the_missing_lines_are_an_estimate():
 
 
 def discount_exceptions(*rows, qty="2", price="100.00", amount="110.00"):
-
-
-def lines_total_flags(net, text_value, amounts=("100.00", "50.00")):
     from app.fine_rules import RowsSource, RulesConfig, run_invoice
     from app.models import Invoice, Line
     source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
@@ -532,6 +529,11 @@ def test_a_printed_line_discount_does_not_pass_a_net_the_lines_do_not_make(v):
     assert status_of(result, "lines_to_net") == tc.FAIL
 
 
+def lines_total_flags(net, text_value, amounts=("100.00", "50.00")):
+    from app.fine_rules import RowsSource, RulesConfig, run_invoice
+    from app.models import Invoice, Line
+    source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
+                          "SUPPLIER SITE NAME": "Synthetic Co", "ITEM_DESC": "Rose red"}])
     invoice = Invoice(supplier_name="Synthetic Co", currency="AED", net=net, lines=[
         Line(sku="VPN-1", description="Rose red", qty="1", price=amount, net_amount=amount) for amount in amounts])
     result = run_invoice(invoice, source, RulesConfig(), text_value=text_value)

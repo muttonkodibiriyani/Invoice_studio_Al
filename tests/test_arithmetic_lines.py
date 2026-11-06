@@ -633,3 +633,182 @@ def test_the_tax_is_not_taken_for_the_amount_when_net_tax_and_gross_are_all_prin
 
     assert [line.net_amount for line in lines] == [Decimal("13785.84"), Decimal("2613.20")]
     assert [line.tax_amount for line in lines] == [Decimal("1378.58"), Decimal("261.32")]
+
+
+def test_a_credit_slip_takes_money_back_like_any_credit_title():
+    invoice = {"net": "10.00", "lines": [{"net_amount": "10.00", "tax_amount": None}]}
+
+    signed = credit_signed(invoice, "Saltworks Ltd\nCredit Slip\nRef 4471")
+
+    assert signed["net"] == Decimal("-10.00") and signed["lines"][0]["net_amount"] == Decimal("-10.00")
+
+
+def test_a_row_whose_discount_rate_did_not_read_still_settles_in_the_tables_column():
+    lines = read(
+        ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Gross"), ("d", "Off"), ("e", "Net")],
+        row("BR-104 Brass hinge", "10", "5.00", "50.00", ("d", "10%"), ("e", "45.00")),
+        row("TL-221 Tile adhesive", "4", "25.00", "100.00", ("e", "95.00")),
+        row("PX-330 Pipe clip", "20", "10.00", "200.00", ("d", "5%"), ("e", "190.00")),
+    )
+
+    assert [line.net_amount for line in lines] == [Decimal("45.00"), Decimal("95.00"), Decimal("190.00")]
+
+
+def test_bars_of_a_table_ruled_in_text_are_not_part_of_its_cells():
+    lines = read(
+        ["|Item", "No", "|Goods", "|Lifted|", "Each|", ("c", "Sum|")],
+        ["|BR-104", "|Brass", "hinge", ("a", "12|"), ("b", "4.50|"), ("c", "54.00|")],
+        ["|TL-221", "|Tile", "adhesive", ("a", "3|"), ("b", "19.25|"), ("c", "57.75|")],
+    )
+
+    assert [line.net_amount for line in lines] == [Decimal("54.00"), Decimal("57.75")]
+    assert [line.sku for line in lines] == ["BR-104", "TL-221"]
+
+
+def test_a_price_headed_per_hundred_multiplies_at_its_scale():
+    lines = read(
+        ["Goods", ("a", "Lifted"), ("b", "per 100"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "12", "450.00", "54.00"),
+        row("TL-221 Tile adhesive", "3", "1,925.00", "57.75"),
+    )
+
+    assert [line.net_amount for line in lines] == [Decimal("54.00"), Decimal("57.75")]
+
+
+def test_a_rate_times_a_base_with_no_per_hundred_heading_is_no_line():
+    assert read(
+        ["Rate", ("a", "Base"), ("c", "Charge")],
+        ["Band one", ("a", "5"), ("b", "1,000.00"), ("c", "50.00")],
+        ["Band two", ("a", "10"), ("b", "2,000.00"), ("c", "200.00")],
+    ) == []
+
+
+def _sections(last_row):
+    return (
+        ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Sum")],
+        ["Section one"],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Section total", ("c", "111.75")],
+        ["Section two"],
+        row("PX-330 Pipe clip", "10", "1.25", "12.50"),
+        row("GS-512 Glass sheet", "2", "40.00", "80.00"),
+        ["Section total", ("c", "92.50")],
+        ["Goods total", ("c", last_row)],
+    )
+
+
+def test_a_section_total_does_not_end_a_table_when_all_rows_add_up_below():
+    assert len(read(*_sections("204.25"))) == 4
+
+
+def test_rows_after_a_total_are_not_lines_unless_all_of_them_add_up():
+    assert len(read(*_sections("999.99"))) == 2
+
+
+def test_a_tax_block_after_a_subtotal_never_joins_the_table():
+    lines = read(
+        ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Subtotal", ("c", "111.75")],
+        ["Standard band", ("a", "5"), ("b", "1.00"), ("c", "5.00")],
+        ["Lower band", ("a", "10"), ("b", "2.00"), ("c", "20.00")],
+        ["Total tax", ("c", "25.00")],
+        ["To pay", ("c", "136.75")],
+    )
+
+    assert len(lines) == 2
+
+
+def test_fees_with_no_price_are_lines_only_when_they_add_up_to_the_total_below():
+    rows = [
+        ["Particulars of work", ("c", "Fee")],
+        ["Pump maintenance visit", ("c", "500.25")],
+        ["Forklift hire week", ("c", "300.50")],
+        ["Cold room repair", ("c", "199.25")],
+    ]
+
+    lines = read(*rows, ["Sum", ("c", "1,000.00")])
+    assert [line.net_amount for line in lines] == [Decimal("500.25"), Decimal("300.50"), Decimal("199.25")]
+    assert [line.qty for line in lines] == [None, None, None] and [line.price for line in lines] == [None, None, None]
+    assert lines[0].description == "Pump maintenance visit"
+    assert read(*rows, ["Sum", ("c", "1,000.01")]) == []
+
+
+def test_figures_with_no_heading_over_them_are_not_fees():
+    assert read(
+        ["Pump maintenance visit", ("c", "500.25")],
+        ["Forklift hire week", ("c", "300.50")],
+        ["Sum", ("c", "800.75")],
+    ) == []
+
+
+def test_a_tax_column_adding_up_is_not_lines():
+    assert read(
+        ["Band of goods", ("c", "VAT")],
+        ["Standard band", ("c", "500.25")],
+        ["Lower band", ("c", "300.50")],
+        ["Sum", ("c", "800.75")],
+    ) == []
+
+
+def test_two_panels_of_one_table_read_as_one():
+    def cells(y, left, right):
+        return [_box(text, x, y, x + 6 * len(text), 1) for x, text in zip((30, 100, 200, 260), left)] + [
+            _box(text, x, y, x + 6 * len(text), 1) for x, text in zip((320, 390, 490, 550), right)]
+    boxes = cells(100, ("Code", "Goods", "Count", "Ext."), ("Code", "Goods", "Count", "Ext."))
+    boxes += cells(118, ("BR-104", "Hinge", "12", "54.00"), ("PX-330", "Clip", "10", "12.50"))
+    boxes += cells(136, ("TL-221", "Tile", "3", "57.75"), ("GS-512", "Glass", "2", "80.00"))
+    boxes += [_box("Goods", 300, 170, 330, 1), _box("Total", 336, 170, 366, 1), _box("204.25", 550, 170, 586, 1)]
+
+    lines = read_lines(_normalise_words(boxes))
+
+    assert [line.net_amount for line in lines] == [Decimal(v) for v in ("54.00", "57.75", "12.50", "80.00")]
+
+
+def test_a_barcode_in_brackets_is_not_the_description():
+    lines = read(
+        ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Sum")],
+        row("BR-104 Brass hinge [4006381333931]", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive[4006381333948]", "3", "19.25", "57.75"),
+    )
+
+    assert [line.description for line in lines] == ["Brass hinge", "Tile adhesive"]
+    assert [line.gtin for line in lines] == ["4006381333931", "4006381333948"]
+
+
+def test_a_description_cut_at_a_column_edge_takes_the_rows_own_text():
+    words = _normalise_words(page(*TWO_ROWS))
+    found = {line.net_amount: line for line in read_lines(words)}
+    amount = next(iter(found))
+    other = found[amount]
+    line = {"sku": other.sku[:3], "description": other.description[:4], "qty": str(other.qty), "price": str(other.price),
+            "net_amount": str(amount), "uom": None, "gtin": None}
+
+    checked = checked_lines([line], words)[0]
+
+    assert checked["sku"] == other.sku and checked["description"] == other.description
+
+
+def test_a_unit_that_is_a_word_of_the_description_was_a_cut_of_it():
+    words = _normalise_words(page(*TWO_ROWS))
+    other = read_lines(words)[0]
+    first, *rest = other.description.split()
+    line = {"sku": other.sku.split("-")[0], "description": " ".join(rest), "uom": first, "qty": str(other.qty),
+            "price": str(other.price), "net_amount": str(other.net_amount), "gtin": None}
+
+    checked = checked_lines([line], words)[0]
+
+    assert checked["uom"] is None and checked["description"] == other.description
+
+
+def test_a_code_joined_to_its_barcode_is_split():
+    words = _normalise_words(page(*TWO_ROWS))
+    other = read_lines(words)[0]
+    line = {"sku": None, "description": other.description, "uom": None, "gtin": "KT-51 4006381333931", "qty": str(other.qty),
+            "price": str(other.price), "net_amount": str(other.net_amount)}
+
+    checked = checked_lines([line], words)[0]
+
+    assert checked["gtin"] == "4006381333931"

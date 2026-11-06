@@ -55,8 +55,11 @@ _OTHER_DOCUMENT = re.compile(
 # The title on a line of its own, as "Credit Note" or "Sales Return Note"; "Credit Note No: 12" against an invoice is
 # a reference. Wording a credit under no such title reads as printed: the rules still see its printed signs.
 _CREDIT_TITLE = re.compile(
-    r"(?im)^[\s#*]*(?:\w+\s+){0,2}?(?:credit|return|refund)s?\s+(?:note|memo|invoice|voucher|advice|adjustment)[\s:.*]*$"
+    r"(?im)^[\s#*]*(?:\w+\s+){0,2}?(?:credit|return|refund)s?\s+(?:note|memo|invoice|voucher|advice|adjustment|slip)[\s:.*]*$"
 )
+_BARCODE_WORD = re.compile(r"(?:(.*?)\[([0-9]{8,14})\])|([0-9]{8,14})")
+_TAX_WORD = re.compile(r"(?i)\b(?:vat|tax|gst)\b")
+_PER_QUANTITY = re.compile(r"(?i)\bper\s+(100|1000)\b")
 _UOM_SHAPE = re.compile(r"[A-Z]{1,5}\.?")
 # A share of the rows that must agree before a text column is read as codes or units.
 _COLUMN_VOTE = 0.6
@@ -350,6 +353,34 @@ def _build_rows(words: list[_Word]) -> list[_Row]:
     return rows
 
 
+def _per_quantity_prices(rows: list[_Row]) -> list[_Row]:
+    """A column headed "per 100" prices a hundred units: its figures are divided, so a row multiplies as any other."""
+    for n, row in enumerate(rows):
+        match = _PER_QUANTITY.search(_row_text(row.words))
+        if not match or row.numbers and sum(bool(_LETTER.search(word.text)) for word in row.words) < 2:
+            continue
+        marks = [word for word in row.words if match.group(1) in word.text.split()]
+        heading = _Number(Decimal(0), 0, (), marks[0].x0 / marks[0].page_width, marks[0].x1 / marks[0].page_width) if marks else None
+        if heading is None:
+            continue
+        scaled = list(rows)
+        for m, other in enumerate(rows[n + 1:], start=n + 1):
+            if other.page != row.page:
+                break
+            numbers = [_divided(number, Decimal(match.group(1))) if not number.percent and not number.unit and number.lines_up(heading, _COLUMN_TOLERANCE) else number
+                       for number in other.numbers]
+            if numbers != other.numbers:
+                products = [] if other.closes or not any(_LETTER.search(word.text) for word in other.words) else _products(numbers)
+                scaled[m] = replace(other, numbers=numbers, products=products)
+        return scaled
+    return rows
+
+
+def _divided(number: _Number, by: Decimal) -> _Number:
+    value = number.value / by
+    return replace(number, value=value, decimals=max(0, -value.normalize().as_tuple().exponent))
+
+
 def _best_shape(rows: list[_Row]) -> _Product | None:
     """The one set of columns most rows multiply in, by the rows with real arithmetic first."""
     best, score = None, (0, 0)
@@ -380,15 +411,40 @@ def _out_of_line(row: _Row, shape: _Product) -> list[_Product]:
     return [product for product in row.products if product.strong and product.amount is last]
 
 
+def _table_end(on_page: list[_Row], fits: list[int], shape: _Product, kept: list[_Row]) -> int:
+    """What closes the table: the first closing row, or a later one when a section's total only stood between the rows
+    and all of them, to that later one, add up to a figure the page prints from there on."""
+    closers = [n for n in range(fits[0], len(on_page)) if on_page[n].closes]
+    if not closers:
+        return len(on_page)
+    if closers[0] + 1 == len(on_page):
+        return closers[0]
+    earlier = sum((abs(_settled(_fitting(row, shape)[0], row.numbers)[0].value) for row in kept if _fitting(row, shape)), Decimal(0))
+    between = on_page[closers[0] + 1]
+    if between.products or any(number.decimals for number in between.numbers) or _TAX_WORD.search(_row_text(between.words)):
+        return closers[0]
+    for end in reversed(closers[1:]):
+        if any(_TAX_WORD.search(_row_text(row.words)) for row in on_page[closers[0] : end + 1]):
+            continue
+        within = [_settled(_fitting(on_page[n], shape)[0], on_page[n].numbers)[0] for n in fits if n < end and _fitting(on_page[n], shape)]
+        total = earlier + sum((abs(number.value) for number in within), Decimal(0))
+        if any(n > closers[0] for n in fits if n < end) and any(
+            abs(number.value) == total and number.decimals == within[0].decimals
+            for row in on_page[end:] for number in row.numbers if not number.percent
+        ):
+            return end
+    return closers[0]
+
+
 def _table_rows(rows: list[_Row], shape: _Product) -> list[_Row]:
     """Per page, the rows from the first that multiplies to the last before anything closes the table."""
     kept: list[_Row] = []
     for page in dict.fromkeys(row.page for row in rows):
         on_page = [row for row in rows if row.page == page]
-        fits = [n for n, row in enumerate(on_page) if _fitting(row, shape)]
+        fits = [n for n, row in enumerate(on_page) if _fitting(row, shape) or _out_of_line(row, shape)]
         if not fits:
             continue
-        end = next((n for n in range(fits[0], len(on_page)) if on_page[n].closes), len(on_page))
+        end = _table_end(on_page, fits, shape, kept)
         fits = [n for n in fits if n < end]
         if fits:
             kept.extend(on_page[fits[0] : fits[-1] + 1])
@@ -402,9 +458,17 @@ def _amount_of(row: _Row, shape: _Product) -> _Number | None:
     return next((n for n in row.numbers if not n.percent and n.lines_up(shape.amount, _COLUMN_TOLERANCE)), None)
 
 
+def _settled_column(priced: list[tuple[_Row, _Product | None]]) -> _Number | None:
+    """Where a table that discounts its rows prints what they settle on, when at least two rows settle past the product."""
+    past = [settled for settled, product in ((_settled(product, row.numbers)[0], product) for row, product in priced if product)
+            if settled is not product.amount]
+    return past[0] if len(past) >= 2 and all(number.lines_up(past[0], _COLUMN_TOLERANCE) for number in past) else None
+
+
 def _sum_printed_below(rows: list[_Row], table: list[_Row], shape: _Product) -> bool:
     """The amounts add up to a figure printed below them, as exactly as the amounts print."""
-    settled = [_settled(_fitting(row, shape)[0], row.numbers)[0] for row in table if _fitting(row, shape)]
+    products = [fits[0] for fits in (_fitting(row, shape) or _out_of_line(row, shape) for row in table) if fits]
+    settled = [_settled(product, row.numbers)[0] for row, product in zip([row for row in table if _fitting(row, shape) or _out_of_line(row, shape)], products)]
     total = abs(sum((number.value for number in settled), Decimal(0)))
     last = table[-1]
     below = [row for row in rows if (row.page, row.y) > (last.page, last.y)]
@@ -507,8 +571,11 @@ def _text_of(row: _Row, used: set[int]) -> _Text:
         text = word.text.strip()
         if index in used:
             segments.append([])
-        elif re.fullmatch(r"[0-9]{8,14}", text) and gtin is None:
-            gtin = text
+        elif _BARCODE_WORD.fullmatch(text) and gtin is None:
+            before, bracketed, plain = _BARCODE_WORD.fullmatch(text).groups()
+            gtin = bracketed or plain
+            if before:
+                segments[-1].append(before)
         elif text.endswith("%") or _CURRENCY_WORD.fullmatch(text) or text in _ROW_SIGNS:
             continue
         else:
@@ -579,7 +646,7 @@ def _text_words(row: _Row, used: set[int]) -> list[_Word]:
         text = word.text.strip()
         if index in used or not text or text.endswith("%") or _CURRENCY_WORD.fullmatch(text) or text in _ROW_SIGNS:
             continue
-        if not gtin and re.fullmatch(r"[0-9]{8,14}", text):
+        if not gtin and _BARCODE_WORD.fullmatch(text):
             gtin = True
             continue
         words.append(word)
@@ -743,15 +810,109 @@ def _marks_disagree(products: list[_Product]) -> bool:
     return False
 
 
+def _side_by_side(words: list[_Word]) -> list[_Word]:
+    """Two panels of one table across a page print one heading twice on a row: the right panel is put below the left,
+    and what closes the table below that, so the rows read in order."""
+    out = list(words)
+    for page, row in _group_all_rows(words):
+        ordered = sorted((word for word in row if word.text.strip()), key=lambda word: word.x0)
+        half = len(ordered) // 2
+        heading = [word.text.strip().casefold() for word in ordered]
+        if half < 2 or len(ordered) % 2 or heading[:half] != heading[half:] or not all(map(_LETTER.search, heading)):
+            continue
+        cut, top = ordered[half].x0, min(word.y0 for word in ordered)
+        lower = [other for number, other in _group_all_rows([word for word in words if word.page == page])
+                 if min(word.y0 for word in other) > top + 1]
+        closing = next((other for other in lower if _is_totals_or_footer(_normal(_row_text(sorted(other, key=lambda word: word.x0))))), None)
+        bottom = min(word.y0 for word in closing) if closing else max(word.y1 for word in words if word.page == page)
+        shift = bottom - top
+
+        def placed(word: _Word) -> _Word:
+            if word.page != page or word.y0 < top - 1:
+                return word
+            if word.y0 >= bottom - 1:
+                return replace(word, y0=word.y0 + shift, y1=word.y1 + shift)
+            if word.x0 >= cut - 1:
+                left = ordered[0].x0 - cut
+                return replace(word, x0=word.x0 + left, x1=word.x1 + left, y0=word.y0 + shift, y1=word.y1 + shift)
+            return word
+        out = [placed(word) for word in out]
+    return out
+
+
+def _amount_at_end(row: _Row) -> _Number | None:
+    return max((number for number in row.numbers if not number.percent), key=lambda number: number.x1, default=None)
+
+
+def _summed_lines(rows: list[_Row]) -> list[Line]:
+    """A table with no price to multiply, such as fees: rows under a heading, each ending on a figure in one column,
+    are its lines only when those figures add up exactly to a total printed right below them."""
+    for n, heading in enumerate(rows):
+        if heading.numbers or heading.closes or sum(bool(_LETTER.search(word.text)) for word in heading.words) < 2:
+            continue
+        body: list[_Row] = []
+        amounts: list[_Number] = []
+        proved = False
+        for row in rows[n + 1:]:
+            if not row.numbers and not row.closes:
+                continue
+            amount = _amount_at_end(row)
+            if amount is None or not amount.decimals or not any(_LETTER.search(word.text) for word in row.words):
+                break
+            if len(amounts) >= 2 and amount.value == sum((number.value for number in amounts), Decimal(0)) and amount.decimals == amounts[0].decimals:
+                proved = True
+                break
+            if row.closes or amounts and (abs(amount.x1 - amounts[0].x1) > _COLUMN_TOLERANCE or amount.decimals != amounts[0].decimals):
+                break
+            body.append(row)
+            amounts.append(amount)
+        if not proved:
+            continue
+        over = [word for word in heading.words if word.x0 / word.page_width - _COLUMN_TOLERANCE <= amounts[0].x1
+                and amounts[0].x0 <= word.x1 / word.page_width + _COLUMN_TOLERANCE]
+        if over and not _TAX_WORD.search(_row_text(over)):
+            return _lines_of_sum(rows, body, amounts)
+    return []
+
+
+def _lines_of_sum(rows: list[_Row], body: list[_Row], amounts: list[_Number]) -> list[Line]:
+    def quantity_of(row: _Row, amount: _Number) -> _Number | None:
+        before = [number for number in row.numbers if number is not amount and not number.percent and number.x1 < amount.x0]
+        if not before:
+            return None
+        last = max(before, key=lambda number: number.x1)
+        return last if _heading_role(rows, body, last) == "qty" else None
+    quantities = [quantity_of(row, amount) for row, amount in zip(body, amounts)]
+    used = [set(amount.words) | set(quantity.words if quantity else ()) for amount, quantity in zip(amounts, quantities)]
+    priced = list(zip(body, used))
+    texts = [_text_of(row, words) for row, words in priced]
+    # Rows with no words of their own need the arithmetic to tie them to the row above: nothing here does.
+    if all(sum(bool(_LETTER.search(part)) for segment in text.segments for word in segment for part in word.split()) <= 1 for text in texts):
+        return []
+    texts = _kept_columns(texts, rows, body, priced)
+    lines = []
+    for row, amount, quantity, described in zip(body, amounts, quantities, _describe(texts)):
+        lines.append(Line(
+            sku=described["sku"],
+            gtin=described["gtin"],
+            description=_clean_description(described["description"] or ""),
+            qty=quantity.value if quantity else None,
+            uom=_clean_uom(described["uom"]) if described["uom"] else None,
+            price=None,
+            net_amount=amount.value,
+            evidence=_row_text(row.words)[:500] or None,
+            page=row.page,
+        ))
+    return lines
+
+
 def read_lines(words: Iterable[_Word]) -> list[Line]:
     """The lines of a table found by its arithmetic; empty unless the page confirms the table."""
-    rows = _build_rows(list(words))
+    rows = _per_quantity_prices(_build_rows(_side_by_side(list(words))))
     shape = _best_shape(rows)
-    if shape is None:
-        return []
-    table = _table_rows(rows, shape)
+    table = _table_rows(rows, shape) if shape else []
     if not table or not _confirmed(rows, table, shape):
-        return []
+        return _summed_lines(rows)
     side = _quantity_side(rows, table, shape)
     scale_lost = _marks_disagree([fits[0] for fits in (_fitting(row, shape) for row in table) if fits])
     priced: list[tuple[_Row, _Product | None]] = []
@@ -790,6 +951,7 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
             if other.numbers or other.closes or not _wraps_under(last_row, wrapped.get(id(last_row), [last_row])[-1] if wrapped.get(id(last_row)) else last_row, other):
                 break
             wrapped.setdefault(id(last_row), []).append(other)
+    settled_column = _settled_column(priced)
     lines: list[Line] = []
     for (row, product), described in zip(priced, _describe(texts)):
         evidence = _row_text(row.words)[:500]
@@ -801,6 +963,11 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
             amount = qty = price = tax = None
         else:
             settled, tax = _settled(product, row.numbers)
+            if settled is product.amount and settled_column:
+                # The rate of its discount did not read, but the column the table settles in did.
+                settled = next((number for number in row.numbers if number is not product.amount and not number.percent
+                                and number.lines_up(settled_column, _COLUMN_TOLERANCE)
+                                and 0 < number.value < abs(product.amount.value)), settled)
             amount = settled
             if _marked_credit(row, amount):
                 amount = replace(amount, value=-abs(amount.value))
@@ -866,11 +1033,13 @@ def _text_doubtful(line: dict[str, Any]) -> bool:
     described = str(line.get("description") or "").split()
     return (
         not sku
+        or " " in sku and bool(re.search(r"(?<![^\s])[a-z]{2,}(?![^\s])", sku))
         or not any(character.isdigit() for character in sku) or (_is_barcode_text(sku) and not line.get("gtin"))
         or any(map(_is_barcode_text, described))
         or any(_PRESENTATION_FORM.search(word) for word in described)
         or bool(described) and bool(_FIGURE_END.search(described[-1]))
         or any(character.isdigit() for character in str(line.get("uom") or ""))
+        or bool(line.get("uom")) and not _is_unit(str(line["uom"]))
     )
 
 
@@ -888,8 +1057,11 @@ def _checked_text(line: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]
     sku = str(line.get("sku") or "")
     if not other.get("sku") and (not sku or not line.get("uom") or any(character.isdigit() for character in sku)):
         return line
+    # A unit that is a word of the row's own description was a cut of it, not a unit.
+    cut_unit = str(line.get("uom") or "").casefold() in str(other.get("description") or "").casefold().split()
     return {
         **line,
+        **({"uom": None} if cut_unit else {}),
         **{field: other[field] for field in ("sku", "uom", "description") if other.get(field)},
         "gtin": line.get("gtin") or other.get("gtin"),
     }
@@ -899,11 +1071,36 @@ def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[d
     """A heading can name the wrong column: "Ext. Price" read as the price, with no amount left to check it against.
     A row whose figures do not multiply takes them from the rows' own arithmetic, when the page confirms a table;
     otherwise the figure nothing confirms is cleared, so the line rules flag it. Rows that multiply are left alone."""
-    figures_fail = not all(_row_multiplies(line) for line in lines)
-    mixed_scale = _mixed_scale(lines)
-    if not lines or not figures_fail and not mixed_scale and not any(_text_doubtful(line) for line in lines):
+    if not lines:
         return lines
     found = [line.model_dump(mode="json") for line in read_lines(words)]
+    return _uncut(_checked_figures(lines, found), found)
+
+
+def _uncut(lines: list[dict[str, Any]], found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A cell cut at a column edge: the same row's own text starts the same and goes on. A code joined to its barcode is split."""
+    amounts = {abs(_as_decimal(other["net_amount"])): other for other in found if other.get("net_amount") not in (None, "")}
+    whole = []
+    for line in lines:
+        parts = str(line.get("gtin") or "").split()
+        if len(parts) == 2 and _is_barcode_text(parts[1]):
+            line = {**line, "gtin": parts[1], "sku": line.get("sku") or parts[0]}
+        amount = _as_decimal(line.get("net_amount"))
+        other = amounts.get(abs(amount)) if amount is not None else None
+        if other:
+            for field in ("sku", "description"):
+                mine, theirs = str(line.get(field) or ""), str(other.get(field) or "")
+                if mine and len(theirs) > len(mine) and theirs.startswith(mine):
+                    line = {**line, field: theirs}
+        whole.append(line)
+    return whole if whole != lines else lines
+
+
+def _checked_figures(lines: list[dict[str, Any]], found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    figures_fail = not all(_row_multiplies(line) for line in lines)
+    mixed_scale = _mixed_scale(lines)
+    if not figures_fail and not mixed_scale and not any(_text_doubtful(line) for line in lines):
+        return lines
     if len(found) > len(lines) and figures_fail:
         return found
     if mixed_scale and len(found) != len(lines):

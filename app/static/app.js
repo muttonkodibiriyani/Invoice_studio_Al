@@ -243,7 +243,7 @@ function rulesCell(cell, name, line, prompted = false) {
   const empty = !cell || cell.value === null || cell.value === undefined;
   if (empty) td.append(make("span", "rules-flagged", cell?.reason === "No evidence" ? "Empty · no evidence" : cell?.reason || "Not found"));
   else td.append(make("span", "", cell.value), make("small", "", evidenceText(cell.evidence)));
-  td.append(...readerNotes(app.currentJob, "line", name, line));
+  td.append(...readerNotes(app.currentJob, "line", name, line, enteredByReviewer(cell)));
   if (!prompted && ((empty && RULES_REQUIRED_LINE.has(name)) || enteredByReviewer(cell))) td.append(rulesEntry(cell, name, "line", name, line));
   return td;
 }
@@ -294,14 +294,16 @@ function noteFor(input, note) {
 }
 const hasLineReview = (job) => (job?.evidence?.lines || []).some((entry) => Object.values(entry || {}).some((value) => value?.review?.reason));
 
-function readerNotes(job, scope, column, line, blank = false) {
+function readerNotes(job, scope, column, line, entered = false) {
   const key = scope === "header" ? READER_HEADER_FIELDS[column] || column : READER_LINE_FIELDS[column];
   const readers = scope === "header" ? job?.readers?.header : job?.readers?.lines?.[line - 1];
   const evidence = scope === "header" ? job?.evidence?.header : lineReviews(job)?.[line - 1];
   const notes = [];
-  const badge = readerBadge(readers?.[key]);
+  // A typed value is the reviewer's: no read made it and no read compared it.
+  const badge = entered ? null : readerBadge(readers?.[key]);
   if (badge) notes.push(badge);
-  const mark = aiCheckBadge(job, scope, key, line, blank || column === "site" || column === "Item");
+  const written = job?.rules?.ai_check?.written;
+  const mark = aiCheckBadge(scope === "header" ? written?.header?.[column] : written?.lines?.[line - 1]?.[column]);
   if (mark) notes.push(mark);
   const note = reviewNote(evidence?.[key]?.review);
   if (note) notes.push(note);
@@ -317,13 +319,10 @@ function readerBadge(reader) {
 }
 
 // A cell's AI check (rules.ai_check). Two reads agreeing is not proof, so it says "AI confirmed", never verified. A filled
-// cell already has the AI badge. A derived cell (site, item) was not read by the AI, so it only carries a dispute, and so
-// does an empty target cell, which holds nothing the reads agreed on.
+// cell already has the AI badge. Target cells read ai_check.written, which the server ties to the value they hold.
 const AI_CHECK_MARKS = { confirmed: "AI confirmed", disputed: "In dispute", settled: "Settled" };
-function aiCheckBadge(job, scope, key, line, derived = false) {
-  const check = job?.rules?.ai_check;
-  const state = scope === "header" ? check?.header?.[key] : check?.lines?.[line - 1]?.[key];
-  if (!AI_CHECK_MARKS[state] || (derived && state !== "disputed")) return null;
+function aiCheckBadge(state) {
+  if (!AI_CHECK_MARKS[state]) return null;
   return make("span", `reader-badge ai-check-${state}`, AI_CHECK_MARKS[state]);
 }
 
@@ -594,7 +593,7 @@ function renderRulesResult(job) {
         // "Not found" is the view's placeholder for every blank field, not a reason of its own.
         : (field.reason !== "Not found" && field.reason) || headerException(job, field.target) || "Not found in owner sheets or on the invoice"));
     } else dd.append(make("span", "", field.value), make("small", "", evidenceText(field.evidence)));
-    dd.append(...readerNotes(job, "header", key, undefined, empty));
+    dd.append(...readerNotes(job, "header", key, undefined, enteredByReviewer(field)));
     if ((empty && RULES_REQUIRED_HEADER.has(key)) || enteredByReviewer(field)) dd.append(entries[key] = rulesEntry(field, field.label, "header", key));
     if (key === "site") renderSupplierPick(dd, job);
     if (field.target === "Order No" && Number(rules.po_candidates) > 1) {
@@ -1797,7 +1796,7 @@ function renderInvoiceForm(job) {
     wrapper.append(input);
     const badge = readerBadge(job.readers?.header?.[name]);
     if (badge) wrapper.append(badge);
-    const mark = aiCheckBadge(job, "header", name);
+    const mark = aiCheckBadge(job.rules?.ai_check?.header?.[name]);
     if (mark) wrapper.append(mark);
     const review = noteFor(input, reviewNote(job.evidence?.header?.[name]?.review));
     if (review) wrapper.append(review);

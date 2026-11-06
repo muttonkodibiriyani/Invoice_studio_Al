@@ -58,11 +58,19 @@ The two reads are compared afterwards, field by field and line by line, on norma
 | They differ | In dispute | The local value stays. A blocking `AI Dispute` issue shows both values, and neither export goes out until a person picks. A confirm alone does not clear it. |
 | No read | Not AI-confirmed | AI off, failed, timed out or a malformed reply: one call at most, no retry, and the invoice still finishes. |
 
-Line descriptions are never a dispute, because two reads rarely word them alike; they stay unchecked. A printed date
-in another format is no dispute when the date agrees. Different line counts are one dispute holding both reads.
+Text agrees by letters, digits and marks of any script, with each run of separators as one mark: `SI/123` is `SI-123`,
+but `12-3` is not `1-23` and `A-1` is not `A1`, which is a dispute. A line description stays unchecked while the two
+could name the same goods, allowing for OCR's misread letters and lost spaces; a dispute only when they share no
+significant word. A printed date in another format is no dispute when the date agrees. Different line counts are one
+dispute holding both reads.
+
+A dispute nobody settled stays open through a re-read, unless the new AI read compared that cell, so a retry with the AI
+off or failing cannot clear it. While one is open the rules status is not Approved, and the final template refuses like
+the export.
 
 Local checks and holds still run: AI agreement clears neither a failed arithmetic check nor a Possible Duplicate. Each
-mark stands only while the cell holds the compared value, so an edited cell loses it. The Excel shows each state as a
+mark stands only while the cell holds the compared or settled value, so an edited cell loses it. A target cell the rules
+derived or a person typed shows no agreement, even when it equals what the reads saw. The Excel shows each state as a
 cell fill and note, and says the invoice's status on its Transaction Number cell, with no column or sheet added.
 
 Learning: a value only the AI read does not teach templates until a person settles it, and an AI item rule needs both

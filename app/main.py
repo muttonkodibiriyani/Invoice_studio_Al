@@ -505,7 +505,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             # P-LOC / P-LOCTYPE: what the user must answer about the location (rules workbook Prompts).
             view["prompts"]=result.get("prompts") or []
             view["ai_check"]=ai_check.view(j.get("readers"),invoice.model_dump(mode="json"))
+            view["ai_check"]["written"]=ai_check.written(j.get("readers"),view["ai_check"],view)
             view["issues"]=[*view.get("issues",[]),*ai_check.issues(view["ai_check"])]
+            # The rules set the status before the AI check spoke: an open dispute means this invoice is not approved.
+            if view["ai_check"]["disputes"] and view["status"]=="Approved":view["status"]="Review"
             return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
@@ -623,6 +626,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             if identity.cloud:store.ensure_blob(Path(job["path"]))
             result=storable(process_job(Path(job["path"]),opts,store,providers.extract,progress,learned=learned,filename=job.get("filename"),
                                         supplier_site=job.get("owner_supplier_site")))
+            result["readers"]={**(result.get("readers") or {}),"ai_check":ai_check.carry((job.get("readers") or {}).get("ai_check"),(result.get("readers") or {}).get("ai_check"))}
             annotated=result.pop("annotated_evidence")
             lines=Invoice.model_validate(result["invoice"]).model_dump(mode="json")["lines"]
             view=None
@@ -1082,7 +1086,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             evaluate(j,c)
             if demo_references and not j["validation"]["ready"]:
                 raise HTTPException(409,"Invoice is held. Resolve every validation issue and confirm evidence review.")
-            blocked=[i["message"] for i in j["validation"]["issues"] if i["code"] in INTEGRITY and i.get("blocking",True)]
+            blocked=integrity_stops(j)
             if blocked:raise HTTPException(409,blocked[0])
             # V7.1: the Coverage_Tiers tier of the lines the rules found; since D11 a hold the receipt records, not a refusal.
             why=None if demo_references else refusal(coverage(j["rules"],item_rules().coverage_tiers()))
@@ -1299,6 +1303,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     # Only integrity blocks: not read yet, changed since the check, already exported, the same invoice twice.
     D11="exported unvalidated by owner decision D11"
     INTEGRITY=("Duplicate","Rules Pending",SEVERAL_CODE,ai_check.ISSUE)
+    def integrity_stops(j):
+        return [i["message"] for i in j["validation"]["issues"] if i["code"] in INTEGRITY and i.get("blocking",True)]
     def open_holds(result,why=None):
         """The holds still open at export time, each with the cell it applies to when it names one (D11)."""
         holds=[{"code":i["code"],"cell":i.get("field"),"line":i.get("line"),"message":i["message"]}
@@ -1666,9 +1672,14 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             # The same stored result the review screen shows; never a second, different run.
             views=[]
             for jid in dict.fromkeys(body.job_ids):
-                ensure_rules(jid);j=job_or_404(jid)
-                if not fresh_rules(j):raise HTTPException(409,f"Invoice {j['filename']} has no current fine-rules result")
-                if several_pages(j):raise HTTPException(409,hold_message(several_pages(j)))
+                ensure_rules(jid)
+                with store.connection() as c:
+                    j=job_or_404(jid,c)
+                    if not fresh_rules(j):raise HTTPException(409,f"Invoice {j['filename']} has no current fine-rules result")
+                    if several_pages(j):raise HTTPException(409,hold_message(several_pages(j)))
+                    # The final template, so what stops the export stops it here too.
+                    evaluate(j,c);blocked=integrity_stops(j)
+                if blocked:raise HTTPException(409,blocked[0])
                 views.append(j["rules"])
             try:content,_=rules_workbook(views,target_upc())
             except ValueError as exc:raise HTTPException(409,str(exc))

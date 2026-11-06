@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from app import ai_check, ai_context, ai_rules, costs
 from app.excel import MARKS, rules_workbook
+from app.location_type import STORE
 from app.providers import Providers
 from app.store import Store
 from fastapi.testclient import TestClient
@@ -299,6 +300,7 @@ def workbook_of(client, owner, app, tmp_path, readers, invoice):
     for line in view["lines"]:
         for name, value in (("Unit Cost", "5"), ("Quantity", "1")):
             line["cells"][name].update(value=value, flagged=False, evidence=[{"kind": "document"}])
+    view["ai_check"]["written"] = ai_check.written(readers, view["ai_check"], view)
     return load_workbook(io.BytesIO(rules_workbook([view], "empty", blanks=True)[0]))
 
 
@@ -421,3 +423,236 @@ def test_tokens_and_calls_are_counted_per_invoice(read):
 def test_a_failed_read_costs_a_call_on_the_reader_and_no_tokens(read):
     result, _, _ = read(local=whole(), ai=RuntimeError("down"), **FOUNDRY)
     assert result["readers"]["ai"]["calls"] == 1 and costs.usage_of(result["trace"])["calls"] == 0
+
+
+# What the reviewer of #53 found: agreement by a fold that lost separators and marks
+
+@pytest.mark.parametrize("field,one,other", [
+    ("number", "INV-12-3", "INV-1-23"), ("po", "12/34", "1/234"), ("number", "---", "///"),
+    ("date_printed", "1/11/2026", "11/1/2026"), ("number", "SI/5.5", "SI/55"), ("number", "A½", "A12"),
+    ("supplier_name", "कल", "काल"), ("number", "A-1", "A1"),
+])
+def test_values_that_differ_in_a_separator_or_a_mark_are_a_dispute(field, one, other):
+    assert not ai_check.same(field, one, other)
+    assert ai_check.view(record_for({field: one}, {field: other}), {field: one})["status"] == "disputed"
+
+
+@pytest.mark.parametrize("one,other", [("SI/123", "SI-123"), ("SI--123", "si 123"), ("A-1.", "A-1"), ("شركة", "شَركة"), ("A‏1", "A1")])
+def test_the_same_value_in_other_print_still_agrees(one, other):
+    assert ai_check.same("number", one, other)
+
+
+def test_a_sku_that_differs_in_a_separator_is_a_dispute():
+    readers = record_for({"lines": [{"sku": "AB-1-2"}]}, {"lines": [{"sku": "AB-12"}]})
+    assert ai_check.view(readers, {"lines": [{"sku": "AB-1-2"}]})["lines"] == [{"sku": "disputed"}]
+
+
+# Retry
+
+def test_a_read_that_says_nothing_keeps_an_open_dispute():
+    old = record_for({"net": "5", "number": "A1"}, {"net": "6", "number": "A1"})["ai_check"]
+    readers = {"ai_check": ai_check.carry(old, ai_check.not_read("failed"))}
+    shown = ai_check.view(readers, {"net": "5", "number": "A1"})
+    assert shown["status"] == "disputed" and shown["header"] == {"net": "disputed"} and [x["key"] for x in shown["disputes"]] == ["net"]
+    assert shown["why"] == ai_check.NOT_READ["failed"] and ai_check.issues(shown)[0]["code"] == ai_check.ISSUE
+    assert ai_check.carry(readers["ai_check"], ai_check.not_read("off"))["carried"], "a second empty read keeps it too"
+    settled = ai_check.settle(readers, {"net": "local"}, {"net": "5"}, "someone", "now")
+    assert ai_check.view(settled, {"net": "5"})["status"] == "not_confirmed", "a person can still settle it, and nothing was read"
+
+
+@pytest.mark.parametrize("new,left", [({"net": "5"}, []), ({"net": "7"}, []), ({"net": None}, ["net"]), ({"number": "A1"}, ["net"])])
+def test_only_a_new_read_that_compared_the_cell_answers_a_dispute(new, left):
+    old = record_for({"net": "5"}, {"net": "6"})["ai_check"]
+    fresh = record_for({"net": "5"}, new)["ai_check"]
+    assert [x["key"] for x in ai_check.carry(old, fresh).get("carried", [])] == left
+    assert [x["key"] for x in ai_check.disputes(ai_check.carry(old, fresh))] == (["net"] if new.get("net") == "7" else left)
+
+
+def test_a_settled_dispute_is_not_carried():
+    readers = ai_check.settle(record_for({"net": "5"}, {"net": "6"}), {"net": "local"}, {"net": "5"}, "someone", "now")
+    assert "carried" not in ai_check.carry(readers["ai_check"], ai_check.not_read("failed"))
+
+
+@pytest.mark.parametrize("new,left", [({"lines": [{"qty": "1"}, {"qty": "2"}]}, []), ({"lines": []}, ["lines"])])
+def test_a_line_count_dispute_needs_rows_compared_to_end(new, left):
+    rows = [{"qty": "1"}, {"qty": "2"}]
+    old = record_for({"lines": rows}, {"lines": rows[:1]})["ai_check"]
+    fresh = record_for({"lines": rows}, new)["ai_check"]
+    assert [x["key"] for x in ai_check.carry(old, fresh).get("carried", [])] == left
+
+
+def test_a_retry_with_the_ai_off_does_not_open_the_export(tmp_path, monkeypatch):
+    from tests.test_batch import OPTIONS, FakeReader, finished, plan, studio, upload
+    app, client, token = studio(tmp_path, monkeypatch, FakeReader())
+    job = upload(client, token, plan(client, token, ["a.txt"], OPTIONS), "a.txt", OPTIONS).json()
+    assert finished(app, [job["id"]])
+    stored = app.state.store.job(job["id"])
+    stored["readers"] = {**stored["readers"], "ai_check": ai_check.compare({"net": "5"}, {"net": "6"}, {"net": "5"}, {}, [])}
+    app.state.store.job(job["id"], stored)
+    retry = client.post(f"/api/jobs/{job['id']}/retry", json={"options": OPTIONS, "preflight_token": plan(client, token, ["a.txt"], OPTIONS)}, headers=bearer(token))
+    assert retry.status_code == 200, retry.text
+    assert finished(app, [job["id"]])
+    after = client.get(f"/api/jobs/{job['id']}", headers=bearer(token)).json()
+    assert after["rules"]["ai_check"]["status"] == "disputed" and [x["key"] for x in after["rules"]["ai_check"]["disputes"]] == ["net"]
+    refused = client.post(f"/api/jobs/{job['id']}/export", headers=bearer(token), json={"revision": after["revision"]})
+    assert refused.status_code == 409 and "differ" in refused.json()["detail"]
+
+
+# The target workbook
+
+@pytest.fixture
+def approved(monkeypatch):
+    """Rules that approve everything with evidence, so only the AI check is left to stop the workbook."""
+    from app import main
+    real = main.rules_view
+
+    def approving(*args, **kwargs):
+        view = real(*args, **kwargs)
+        for cell in [*view["fields"].values(), *(c for line in view["lines"] for c in line["cells"].values())]:
+            cell.update(value=cell["value"] or "5", flagged=False, reason="", evidence=[{"kind": "document"}])
+        view["fields"]["date"]["value"] = "2026-10-04"
+        view["fields"]["location_type"]["value"] = STORE
+        return {**view, "status": "Approved", "issues": []}
+    monkeypatch.setattr(main, "rules_view", approving)
+
+
+def background(client, owner, kind, body):
+    return client.post(f"/api/background/{kind}", headers=bearer(owner), json=body)
+
+
+def test_the_final_template_is_refused_like_the_export_while_a_dispute_is_open(client, owner, app, tmp_path, approved):
+    invoice = job_with(app.state.store, tmp_path)
+    job = client.get("/api/jobs/dis", headers=bearer(owner)).json()
+    assert job["rules"]["status"] == "Review", "not Approved with a dispute open"
+    refused = client.post("/api/fine-rules/target.xlsx", headers=bearer(owner), json={"job_ids": ["dis"]})
+    assert refused.status_code == 409 and "differ" in refused.json()["detail"]
+    started = background(client, owner, "fine-rules-target", {"job_ids": ["dis"]})
+    assert started.status_code == 409 and "differ" in started.json()["detail"]
+    settled = review(client, owner, "dis", {**invoice, "net": "6"}, 1, settled={"net": "ai"}).json()
+    assert settled["rules"]["status"] == "Approved" and settled["rules"]["ai_check"]["disputes"] == []
+    allowed = client.post("/api/fine-rules/target.xlsx", headers=bearer(owner), json={"job_ids": ["dis"]})
+    assert allowed.status_code == 200, allowed.text
+
+
+def test_the_final_template_is_refused_for_a_duplicate_like_the_export(client, owner, app, tmp_path, approved):
+    assert agreed_export(client, owner, app, tmp_path, "one", "501").status_code == 200
+    assert agreed_export(client, owner, app, tmp_path, "two", "501").status_code == 409
+    assert client.post("/api/fine-rules/target.xlsx", headers=bearer(owner), json={"job_ids": ["two"]}).status_code == 409
+
+
+# A mark belongs to the value in the cell
+
+def test_a_typed_value_gets_no_ai_mark_on_screen_or_in_the_excel(client, owner, app, tmp_path):
+    invoice = {"number": "A1", "net": "5", "tax": "1", "po": "LPO-9", "date": "2026-10-04", "lines": [{"sku": "ABC-1", "qty": "1", "price": "5"}]}
+    job_with(app.state.store, tmp_path, readers=record_for(invoice, invoice), invoice=invoice)
+    job = review(client, owner, "dis", invoice, 1, entries={"header": {"net": "777", "tax": "1", "po": "999999"}}).json()
+    check = job["rules"]["ai_check"]
+    assert check["header"]["net"] == "confirmed", "the invoice's own net still agrees"
+    assert not {"net", "tax", "po"} & set(check["written"]["header"]), "typed, even when equal to what the reads saw"
+    book = load_workbook(io.BytesIO(rules_workbook([job["rules"]], "empty", blanks=True)[0]))
+    assert book["Header"]["H2"].value == 777 and book["Header"]["H2"].comment is None and book["Header"]["H2"].fill.fill_type is None
+    assert book["Header"]["I2"].comment is None and book["Header"]["D2"].comment is None and book["Tax_Breakdown"]["C2"].comment is None
+
+
+def rules_with(**values):
+    return {"fields": {k: {"value": v, "evidence": [{"kind": "document"}]} for k, v in values.items()}, "lines": []}
+
+
+def test_a_target_value_other_than_the_compared_one_gets_no_mark():
+    invoice = {"number": "A1", "po": "LPO-9", "net": "5"}
+    readers = record_for(invoice, invoice)
+    check = ai_check.view(readers, invoice)
+    assert ai_check.written(readers, check, rules_with(number="A1", po="RF-1", net="5.00"))["header"] == {"number": "confirmed", "net": "confirmed"}, "a derived Order No"
+
+
+def test_a_target_line_cell_shows_only_its_own_compared_value():
+    invoice = {"lines": [{"sku": "ABC", "gtin": "6291000000001", "qty": "2", "price": "5"}]}
+    readers = record_for(invoice, invoice)
+    cell = {"evidence": [{"kind": "document"}]}
+    rules = {"fields": {}, "lines": [{"line": 1, "cells": {"Item": {**cell, "value": "1001"}, "UPC": {**cell, "value": "6291000000001"},
+                                                           "Unit Cost": {**cell, "value": "5.00"}, "Quantity": {**cell, "value": "3"}}}]}
+    assert ai_check.written(readers, ai_check.view(readers, invoice), rules)["lines"] == [{"UPC": "confirmed", "Unit Cost": "confirmed"}]
+
+
+def test_a_dispute_stays_on_a_derived_target_cell_and_an_agreement_does_not():
+    local = {"supplier_name": "One", "buyer_name": "Two"}
+    readers = record_for(local, {"supplier_name": "Other", "buyer_name": "Two"})
+    shown = ai_check.written(readers, ai_check.view(readers, local), rules_with(site="501", location="9"))
+    assert shown["header"] == {"site": "disputed"}
+
+
+def test_the_screen_marks_target_cells_from_the_written_states():
+    script = (ai_check.__file__.rsplit("/", 1)[0] + "/static/app.js")
+    with open(script, encoding="utf-8") as source:
+        text = source.read()
+    assert "written?.header?.[column]" in text and "written?.lines?.[line - 1]?.[column]" in text
+    assert 'readerNotes(job, "header", key, undefined, enteredByReviewer(field))' in text
+
+
+# Settled shows only while it holds
+
+def test_settled_stops_showing_when_the_value_is_edited():
+    invoice = {"net": "6"}
+    readers = ai_check.settle(record_for({"net": "5"}, invoice), {"net": "ai"}, invoice, "someone", "now")
+    assert ai_check.view(readers, {"net": "6.00"})["header"] == {"net": "settled"}
+    shown = ai_check.view(readers, {"net": "999"})
+    assert shown["header"] == {} and shown["disputes"] == [] and shown["counts"]["settled"] == 0
+
+
+def test_a_settled_line_mark_does_not_land_on_another_row():
+    rows = [{"sku": "A", "qty": "1"}, {"sku": "B", "qty": "2"}]
+    readers = record_for({"lines": rows}, {"lines": [rows[0], {"sku": "B", "qty": "3"}]})
+    readers = ai_check.settle(readers, {"line 2 qty": "local"}, {"lines": rows}, "someone", "now")
+    assert ai_check.view(readers, {"lines": rows})["lines"][1]["qty"] == "settled"
+    assert "qty" not in ai_check.view(readers, {"lines": [rows[0], {"sku": "C", "qty": "8"}]})["lines"][1]
+    assert "qty" not in ai_check.view(readers, {"lines": rows[1:]})["lines"][1], "nor after a row went"
+
+
+# A wholly different description
+
+@pytest.mark.parametrize("one,other", [("Rose hand cream", "Totally different product"), ("كريم اليدين", "Blue shampoo"), ("Soap and water", "Nails and screws")])
+def test_a_wholly_different_description_is_a_dispute(one, other):
+    readers = record_for({"lines": [{"description": one}]}, {"lines": [{"description": other}]})
+    assert [x["key"] for x in ai_check.view(readers, {"lines": [{"description": one}]})["disputes"]] == ["line 1 description"]
+
+
+@pytest.mark.parametrize("one,other", [
+    ("Serum 30ml", "Serum 30 ml box"), ("ROSE HAND CREAM", "R0SE HAND CREAM"), ("Shampoo", "Shamp00"), ("Rosehandcream", "Rose hand cream"),
+    ("Moisturiser", "Moisturizer"), ("30 ml", "Totally different"), ("AB 12", "CD 34"),
+])
+def test_ordinary_differences_in_a_description_stay_quiet(one, other):
+    readers = record_for({"lines": [{"description": one}]}, {"lines": [{"description": other}]})
+    assert ai_check.view(readers, {"lines": [{"description": one}]})["disputes"] == []
+
+
+# A lines pick
+
+def test_a_lines_pick_keeps_every_field_of_the_row():
+    full = {"item_id": "1001", "part_code": "P-7", "evidence": "the row", "page": 2, "sku": "A", "qty": "1", "barcode_unchecked": "123"}
+    readers = record_for({"lines": [full]}, {"lines": [{"sku": "A", "qty": "1"}, {"sku": "B", "qty": "1"}]})
+    dispute = ai_check.view(readers, {"lines": [full]})["disputes"][0]
+    assert dispute["key"] == "lines" and dispute["local_lines"] == [full]
+
+
+# Learning, once the rows moved
+
+@pytest.mark.parametrize("rows", [
+    lambda line: [line],  # line 2 removed
+    lambda line: [line, {"qty": "2"}, {"qty": "3"}],  # a row added
+    lambda line: [{"qty": "2"}, line],  # moved
+])
+def test_an_ai_fill_does_not_teach_when_the_rows_changed(rows):
+    local = {"lines": [{"qty": "1", "uom": None, "gtin": None}, {"qty": "2"}]}
+    filled = {"qty": "1", "uom": "CTN", "gtin": "6291000000001"}
+    final = {"lines": [filled, {"qty": "2"}]}
+    readers = {"ai_check": ai_check.compare(local, final, final, {}, [{"uom": "ai", "gtin": "ai"}, {}])}
+    assert not any(row.get("uom") or row.get("gtin") for row in ai_check.learnable(final, readers)["lines"])
+    taught = ai_check.learnable({"lines": rows(filled)}, readers)["lines"]
+    assert not any(row.get("uom") or row.get("gtin") for row in taught)
+
+
+def test_learning_keeps_a_cell_both_reads_agree_on_beside_the_same_ai_fill():
+    local = {"lines": [{"qty": "1", "uom": None}, {"qty": "2", "uom": "CTN"}]}
+    final = {"lines": [{"qty": "1", "uom": "CTN"}, {"qty": "2", "uom": "CTN"}]}
+    readers = {"ai_check": ai_check.compare(local, final, final, {}, [{"uom": "ai"}, {}])}
+    assert [row["uom"] for row in ai_check.learnable(final, readers)["lines"]] == [None, "CTN"]

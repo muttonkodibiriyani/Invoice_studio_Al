@@ -115,7 +115,9 @@ ROUTES = {
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("POST", "/api/exports/batch/check"): dict(area="exports", title="Check a batch before export",
         text="Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the "
-             "holds still open on it, information only since D11) and blocked, each blocked one with its reasons as "
+             "holds still open on it, information only since D11; status: its rules status; blank_fields: the empty "
+             "cells its row in the workbook would hold, not counting the Ref No., Comment and default-mode UPC cells "
+             "that are empty by owner rule) and blocked, each blocked one with its reasons as "
              "code and message (Processing, Not Read, Changed, Exported, Duplicate). Possible Duplicate is a hold, so it "
              "shows under attention, not blocked; see Export one invoice. Send the ready ones to /api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("GET", "/api/batches/{bid}"): dict(area="exports", title="Download a batch export", text="The batch workbook."),

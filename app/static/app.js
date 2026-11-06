@@ -2110,7 +2110,41 @@ function replaceJobSummary(job) {
   renderJobs();
 }
 
+// D11 stays: a Blocked or blank invoice can always be exported, Export Excel just says so first. The server counts the
+// blanks on the sheets the writer fills, so this is what the file will hold, not the inbox's cell scores.
+function exportWarning(item) {
+  const blank = Number(item?.blank_fields || 0);
+  if (item?.status !== "Blocked" && !blank) return "";
+  const status = item.status === "Review" ? "in Review" : item.status;
+  return `This invoice is ${status} and has ${blank} blank field${blank === 1 ? "" : "s"}.`;
+}
+
 async function exportCurrentJob() {
+  const job = app.currentJob;
+  if (!job) return;
+  if (job.export_id) return writeCurrentExport();
+  const button = $("#export-job");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  let warning = "";
+  try {
+    const response = await studioBackground("export-check", { jobs: [{ id: job.id, revision: job.revision }] });
+    if (!response.ok) throw await responseError(response);
+    warning = exportWarning((await response.json()).ready[0]);
+  } catch (error) {
+    notify(error.message, "error", 7000);
+    return;
+  } finally {
+    button.textContent = "Export Excel";
+    button.disabled = false;
+  }
+  if (!warning) return writeCurrentExport();
+  $("#export-confirm-text").textContent = `${warning} Export anyway?`;
+  $("#export-confirm-dialog").showModal();
+}
+
+async function writeCurrentExport() {
+  $("#export-confirm-dialog").close();
   if (!app.currentJob) return;
   const button = $("#export-job");
   button.disabled = true;
@@ -2452,8 +2486,11 @@ async function exportBatch() {
     $("#batch-export-attention-list").replaceChildren(...attention.map((item) =>
       make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => isPossibleCopy(hold) ? hold.message : hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
     $("#batch-export-attention").hidden = !attention.length;
+    const warnings = ready.filter((item) => exportWarning(item));
+    $("#batch-export-warning-list").replaceChildren(...warnings.map((item) => make("li", "", `${item.filename || item.id}: ${exportWarning(item)}`)));
+    $("#batch-export-warning").hidden = !warnings.length;
     const confirm = $("#confirm-batch-export");
-    confirm.textContent = `Export ${ready.length} invoice${ready.length === 1 ? "" : "s"}`;
+    confirm.textContent = `Export ${ready.length} invoice${ready.length === 1 ? "" : "s"}${warnings.length ? " anyway" : ""}`;
     confirm.disabled = !ready.length;
     $("#batch-export-dialog").showModal();
   } catch (error) {
@@ -3884,6 +3921,7 @@ function bindEvents() {
   $("#save-review").addEventListener("click", () => submitReview());
   $("#update-item-master").addEventListener("click", updateItemMaster);
   $("#export-job").addEventListener("click", exportCurrentJob);
+  $("#confirm-export-anyway").addEventListener("click", writeCurrentExport);
   $("#batch-review").addEventListener("click", openBatchReview);
   $("#confirm-batch-review").addEventListener("click", downloadBatchReview);
   $("#batch-export").addEventListener("click", exportBatch);

@@ -713,8 +713,16 @@
       <form method="dialog" class="dialog-shell small-dialog">
         <div class="dialog-header"><div><p class="eyebrow">Target workbook · export</p><h2 id="batch-export-title">Export the selected invoices?</h2><p id="batch-export-count"></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
         <div id="batch-export-held" class="validation-summary" hidden><strong>Blocked, not exported</strong><p>These stay as they are and can go in a later batch.</p><ul id="batch-export-held-list"></ul></div>
+        <div id="batch-export-warning" class="validation-summary error" hidden><strong>Export anyway?</strong><ul id="batch-export-warning-list"></ul></div>
         <div id="batch-export-attention" class="validation-summary" hidden><strong>Needs attention</strong><p>Exported with what was found; blanks stay blank. The export team validates these by hand (owner decision D11).</p><ul id="batch-export-attention-list"></ul></div>
         <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Cancel</button><button id="confirm-batch-export" class="button button-primary" type="button">Export</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="export-confirm-dialog" aria-labelledby="export-confirm-title">
+      <form method="dialog" class="dialog-shell small-dialog">
+        <div class="dialog-header"><div><p class="eyebrow">Target workbook · export</p><h2 id="export-confirm-title">Export this invoice?</h2><p id="export-confirm-text"></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
+        <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel" autofocus>Cancel</button><button id="confirm-export-anyway" class="button button-primary" type="button">Export anyway</button></div>
       </form>
     </dialog>
 

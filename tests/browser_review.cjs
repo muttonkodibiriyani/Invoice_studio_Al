@@ -107,6 +107,101 @@ async function main() {
     assert(old.textContent === "Held at review" && old.className.includes("warning"), `a held pre-#41 job reads as "${old.textContent}"`);
     return;
   }
+  if (scenario === "export-confirm") {
+    // Export Excel asks first only for a Blocked or blank invoice (D11: it asks, it never refuses). The count comes
+    // from the server check, which reads the sheets the writer fills; a draft download shows nothing new.
+    const source = fs.readFileSync(script, "utf8");
+    vm.runInContext(source, context);
+    // bindEvents needs a real page; the browser run covers it. Here, that it binds these two handlers.
+    assert(source.includes('$("#confirm-export-anyway").addEventListener("click", writeCurrentExport)'));
+    assert(source.includes('$("#confirm-batch-export").addEventListener("click", confirmBatchExport)'));
+    let reply = { ready: [], blocked: [] };
+    const calls = [];
+    context.calls = calls;
+    context.studioBackground = async (kind, body) => {
+      calls.push(kind);
+      return { ok: true, status: 200, json: async () => (kind === "export-batch" ? { id: "b1", url: "/api/batches/b1", count: body.jobs.length } : reply) };
+    };
+    context.api = async (path) => { calls.push(path); return { id: "e1234567", url: "/api/exports/e1" }; };
+    context.studioFetch = async (path) => { calls.push(path); return { ok: true, status: 200, blob: async () => ({}), headers: new Map() }; };
+    vm.runInContext(`
+      downloadApi = async () => {}; loadState = async () => {}; selectJob = async () => {}; notify = () => {}; downloadBlob = () => {};
+      updateBatchControls = () => {};
+      $("#confirm-export-anyway").addEventListener("click", writeCurrentExport);
+      $("#confirm-batch-export").addEventListener("click", confirmBatchExport);
+      app.state = { jobs: [{ id: "j1", revision: 3, filename: "one.pdf", status: "review" }, { id: "j2", revision: 1, filename: "two.pdf", status: "review" }] };
+      app.currentJob = app.state.jobs[0];
+    `, context);
+    const dialog = node("#export-confirm-dialog");
+    const exportOne = () => vm.runInContext("exportCurrentJob()", context);
+    const single = "/api/jobs/j1/export";
+    const answer = (status, blank) => { reply = { ready: [{ id: "j1", filename: "one.pdf", revision: 3, transaction_number: 1, attention: [], status, blank_fields: blank }], blocked: [] }; calls.length = 0; dialog.open = false; };
+
+    answer("Approved", 0);
+    await exportOne();
+    assert(!dialog.open && calls.includes(single), "a clean invoice exports with no extra step");
+    answer("Review", 0);
+    await exportOne();
+    assert(!dialog.open && calls.includes(single), "no blanks and not Blocked is not asked about");
+
+    answer("Blocked", 18);
+    await exportOne();
+    assert(dialog.open && !calls.includes(single), "a Blocked invoice is not exported before the answer");
+    assert.equal(node("#export-confirm-text").textContent, "This invoice is Blocked and has 18 blank fields. Export anyway?");
+    assert.equal(node("#export-job").textContent, "Export Excel");
+    assert(!node("#export-job").disabled, "cancelling leaves the button usable");
+    await node("#confirm-export-anyway").emit("click");
+    assert(calls.includes(single), "Export anyway exports");
+    assert(!dialog.open, "the dialog closes when the export starts");
+
+    answer("Approved", 1);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "This invoice is Approved and has 1 blank field. Export anyway?");
+    answer("Review", 2);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "This invoice is in Review and has 2 blank fields. Export anyway?");
+    answer("Blocked", 0);
+    await exportOne();
+    assert.equal(node("#export-confirm-text").textContent, "This invoice is Blocked and has 0 blank fields. Export anyway?");
+
+    // An already exported invoice downloads its file; nothing to ask, and no check.
+    answer("Blocked", 9);
+    vm.runInContext("app.currentJob = { ...app.currentJob, export_id: 'e1' }", context);
+    await exportOne();
+    assert(!dialog.open && calls.includes(single) && !calls.includes("export-check"), "Download Excel asks nothing");
+    vm.runInContext("app.currentJob = app.state.jobs[0]", context);
+    // An integrity refusal is the server's to word: the export runs and says why.
+    reply = { ready: [], blocked: [{ id: "j1", reasons: [{ code: "Duplicate", message: "Duplicate" }] }] };
+    calls.length = 0;
+    await exportOne();
+    assert(!dialog.open && calls.includes(single), "a blocked check still reaches the export's own refusal");
+
+    // Batch: the existing dialog is the one step. A clean selection reads as it did; a Blocked or blank one names each.
+    const batch = () => vm.runInContext("app.selectedForBatch = new Set(['j1', 'j2']); exportBatch()", context);
+    const item = (id, filename, status, blank) => ({ id, filename, revision: 1, transaction_number: 1, attention: [], status, blank_fields: blank });
+    const warning = node("#batch-export-warning");
+    reply = { ready: [item("j1", "one.pdf", "Approved", 0), item("j2", "two.pdf", "Approved", 0)], blocked: [] };
+    calls.length = 0;
+    await batch();
+    assert(warning.hidden && !calls.includes("export-batch") && node("#batch-export-dialog").open);
+    assert.equal(node("#confirm-batch-export").textContent, "Export 2 invoices");
+    reply = { ready: [item("j1", "one.pdf", "Blocked", 18), item("j2", "two.pdf", "Approved", 0)], blocked: [] };
+    await batch();
+    assert(!warning.hidden && !calls.includes("export-batch"));
+    assert.deepEqual(node("#batch-export-warning-list").children.map((row) => row.textContent),
+      ["one.pdf: This invoice is Blocked and has 18 blank fields."]);
+    assert.equal(node("#confirm-batch-export").textContent, "Export 2 invoices anyway");
+    await node("#confirm-batch-export").emit("click");
+    assert(calls.includes("export-batch"), "Export anyway exports the batch");
+
+    // A draft download asks nothing new and checks nothing.
+    calls.length = 0;
+    dialog.open = false;
+    vm.runInContext("app.currentJob = { ...app.state.jobs[0], status: 'review' }", context);
+    await vm.runInContext("downloadExtractionDraft()", context);
+    assert(!dialog.open && !calls.includes("export-check"), "the extraction draft shows nothing new");
+    return;
+  }
   if (scenario === "reader-marks") {
     // Every value names its reader, an AI value is marked as the AI's, and the view says why the AI ran
     // and which local reader was not installed, with its install hint.

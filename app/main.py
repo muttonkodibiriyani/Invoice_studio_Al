@@ -34,7 +34,7 @@ from .logging_setup import new_request_id, request_id
 from .users import UserDirectory
 from .engines import AI_CONCURRENCY, ChecksBusy, LOCAL_OCR_CONCURRENCY, capabilities, needs_scan_evidence, process_job, reader_env, split_check, stored_learn, text_checks, verify_evidence, verify_scan
 from .learned import LearnedStore
-from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook
+from .excel import UPC_MODES, workbook, batch_workbook, rules_workbook, blank_fields
 from . import costs
 from . import target_check as tc
 from .extraction_draft import extraction_workbook, extraction_batch_workbook
@@ -1283,7 +1283,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     @access(MEMBER)
     def check_batch(body:Batch):
         """Before 'Export selected' (owner decision A): the selected invoices a real export would take now, in
-        transaction order, each with the holds still open on it (information only, D11), and the blocked ones with every
+        transaction order, each with the holds still open on it (information only, D11), its rules status and the blank
+        fields its row in the workbook would hold, and the blocked ones with every
         reason. Exports nothing; blocked invoices stay as they are."""
         if len({x.id for x in body.jobs})!=len(body.jobs):raise ValueError("Select each invoice only once")
         for request in body.jobs:
@@ -1295,7 +1296,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 j,_,reasons,holds=batch_readiness(request,c,ledger)
                 item={"id":request.id,"filename":(j or {}).get("filename",""),"revision":(j or {}).get("revision")}
                 if reasons:blocked.append({**item,"reasons":[{"code":code,"message":message} for code,message in reasons]})
-                else:ready.append({**item,"transaction_number":len(ready)+1,"attention":holds})
+                else:
+                    # What Export Excel asks about first (D11: it asks, it never refuses); read from the writer's own sheets.
+                    counted={} if demo_references else {"status":j["rules"]["status"],"blank_fields":blank_fields(j["rules"],target_upc(c))}
+                    ready.append({**item,"transaction_number":len(ready)+1,"attention":holds,**counted})
         return {"ready":ready,"blocked":blocked}
 
     @app.post("/api/exports/batch")

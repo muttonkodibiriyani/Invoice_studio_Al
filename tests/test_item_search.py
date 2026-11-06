@@ -198,7 +198,8 @@ def test_a_pick_through_the_real_job_child_adds_a_rule_that_fills_this_invoice_a
     second = engines.process_job(ROOT / "samples" / "invoice.pdf", options, store, foundry, filename="SYN-2.pdf")
     assert second["invoice"]["lines"][0]["item_id"] == "100000001" and second["readers"]["lines"][0]["item_id"] == "ai"
     assert ai_rules.all_rules(store)[0]["lines_filled"] == 2
-    assert len(asked) == 1 and second["readers"]["ai"]["need"] == "cross_check"  # the rule answered; no second call
+    # The rule answered, so nothing was a gap; Foundry still reads every invoice, and no rule is added twice.
+    assert len(asked) == 2 and second["readers"]["ai"]["need"] == "cross_check" and len(ai_rules.all_rules(store)) == 1
     removed = ai_rules.remove(store, rule["id"])
     assert removed and ai_rules.all_rules(store) == []
 

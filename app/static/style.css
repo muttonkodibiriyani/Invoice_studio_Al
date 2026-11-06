@@ -927,6 +927,10 @@ dialog:has(.fine-rules-dialog) { width: min(1180px, calc(100vw - 28px)); }
 .ai-reader { display: grid; gap: 2px; margin: 0 0 10px; color: var(--muted); font-size: 11px; }
 .ai-reader.ai-used { padding: 6px 8px; color: #52605d; background: var(--warning-bg); border-radius: 6px; }
 .reader-badge.reader-ai { color: var(--warning); background: var(--warning-bg); }
+.reader-badge.ai-check-confirmed, .ai-check-status.ai-check-confirmed { color: #1f6b3a; }
+.reader-badge.ai-check-disputed, .ai-check-status.ai-check-disputed { color: var(--danger, #a4262c); font-weight: 600; }
+.ai-dispute { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.ai-dispute button { font-size: 11px; padding: 1px 6px; }
 
 /* Users (administrators) */
 .users-table { min-width: 760px; }

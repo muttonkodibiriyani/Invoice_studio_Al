@@ -90,6 +90,6 @@ version). Two things specific to this release:
   best read by score) or one named reader, with `ai` for the AI read alone.
 - `INV_STUDIO_VERIFY_SCANS=1` adds an evidence pass when a scan was read by the AI alone; it is off, and now rarely
   reachable, because the local chain reads scans.
-- `INV_STUDIO_AI_CROSS_CHECK=1` makes the AI check a complete local read instead of only filling gaps. It costs a
-  call per invoice, so it is off by default and chosen per request.
+- On Azure AI Foundry the AI reads every invoice for the AI check, one call per invoice, unproven until a real
+  Foundry run. On another provider `INV_STUDIO_AI_CROSS_CHECK=1` does the same; it is off by default there.
 - Every field records which reader produced it (`readers`), so a disagreement can be traced to the engine that won.

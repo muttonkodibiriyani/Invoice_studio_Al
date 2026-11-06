@@ -103,10 +103,13 @@ def test_a_line_the_rules_could_not_identify_asks_the_ai_and_a_conflict_does_not
 
     def conflicting(line):
         return lambda column, match: {"VPN": ["1001"], "BARCODE": ["1002"]}.get(column, [])
-    result, calls = run(with_codes, conflicting, RULES, provider="azure")
+    # Foundry reads every invoice now, and the Conflict is still the reviewer's: the AI's ids fill nothing.
+    ai = {**with_codes, "lines": [{**line, "item_id": "9999"} for line in with_codes["lines"]]}
+    result, calls = run(with_codes, conflicting, RULES, ai=ai, provider="azure")
     held = {t["engine"]: t for t in result["trace"]}["item_rules"]["held"]
     assert {h["status"] for h in held} == {"Conflict"}
-    assert calls == [] and result["readers"]["ai"]["need"] == "cross_check"
+    assert calls == ["ai"] and result["readers"]["ai"]["need"] == "cross_check"
+    assert [x["item_id"] for x in result["invoice"]["lines"]] == [None, None]
 
 
 def test_the_ai_is_asked_only_for_the_fields_the_rules_left_open_and_never_overwrites_them(run):

@@ -55,7 +55,7 @@ Where this is weaker:
 **What leaves the machine, and when.**
 - **Invoice content goes to an AI provider only if** an admin connected one and one of these is true: the local
   readers left a gap or the totals do not add up (with AI fallback on); a person picked the AI as the reader;
-  or a person turned on cross-check (`docs/AI_BOUNDARY.md`).
+  or a person turned on cross-check (`docs/AI_BOUNDARY.md`). On Azure AI Foundry every invoice goes to it, for the AI check.
   - On Google Cloud the provider can be Vertex AI, which uses the service's own identity, so no key is stored.
   - On Azure it is the Azure AI Foundry endpoint the operator sets.
   - An admin can also connect OpenAI, Anthropic, Claude or ChatGPT. That sends invoices to that company, and the

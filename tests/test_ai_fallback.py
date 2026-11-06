@@ -174,6 +174,8 @@ def read(monkeypatch, tmp_path):
         def foundry(path, read_text, opts):
             calls.append("ai")
             seen_text.append(read_text)
+            if isinstance(ai, Exception):
+                raise ai
             return ai or sample_ai(), {"evidence": {}, **(meta or {})}
 
         result = engines.process(ROOT / "samples" / sample,

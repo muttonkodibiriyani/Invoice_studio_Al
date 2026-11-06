@@ -48,15 +48,27 @@ _GLUED = re.compile(r"([0-9][0-9,]*[.,][0-9]{%d})([0-9][0-9,]*[.,][0-9]+)")
 _CURRENCY_WORD = re.compile(r"(?i)(?:AED|USD|EUR|GBP|KWD|SAR|QAR|BHD|OMR|INR|EGP|JPY|Rs\.?|Dhs?\.?|[€$£₹¥])")
 # What a document calling itself one of these is not, however well its rows multiply.
 _OTHER_DOCUMENT = re.compile(
-    r"(?im)^[\s#]*(?:(?:sales\s+|price\s+)?quot(?:e|ation)|pro\s*-?\s*forma(?:\s+invoice)?|estimate"
-    r"|delivery\s+(?:note|order)|goods\s+received(?:\s+note)?|packing\s+(?:list|slip)"
-    r"|(?:account\s+)?statement(?:\s+of\s+account)?|purchase\s+order|order\s+confirmation)[\s:.]*$"
+    r"(?im)^(?:[^\S\n]|#)*(?:(?:(?:sales[^\S\n]+|price[^\S\n]+)?quot(?:e|ation)|pro[^\S\n]*-?[^\S\n]*forma(?:[^\S\n]+invoice)?|estimate"
+    r"|delivery[^\S\n]+(?:note|order)|goods[^\S\n]+received(?:[^\S\n]+note)?|packing[^\S\n]+(?:list|slip)"
+    r"|(?:account[^\S\n]+)?statement(?:[^\S\n]+of[^\S\n]+account)?|purchase[^\S\n]+order|order[^\S\n]+confirmation)(?:[^\S\n]|[:.])*$)"
 )
+# On a page with no invoice title these say what the document is even with a number or period after them.
+_NUMBERED_DOCUMENT = re.compile(
+    r"(?im)^(?:[^\S\n]|#)*(?:quotation|delivery[^\S\n]+note|statement[^\S\n]+of[^\S\n]+account|price[^\S\n]+list|purchase[^\S\n]+requisition)\b"
+)
+# "VAT Invoice" alone on its line. A proforma is refused before this is asked.
+_OWN_LINE_INVOICE = re.compile(r"(?im)^[^\w\n]*(?:[a-z]+[^\S\n]+)?invoice[^\w\n]*$")
 # The title on a line of its own, as "Credit Note" or "Sales Return Note"; "Credit Note No: 12" against an invoice is
 # a reference. Wording a credit under no such title reads as printed: the rules still see its printed signs.
 _CREDIT_TITLE = re.compile(
-    r"(?im)^[\s#*]*(?:\w+\s+){0,2}?(?:credit|return|refund)s?\s+(?:note|memo|invoice|voucher|advice|adjustment|slip)[\s:.*]*$"
+    r"(?im)^(?:[^\S\n]|[#*])*(?:\w+[^\S\n]+){0,2}?(?:credit|return|refund)s?[^\S\n]+(?:note|memo|invoice|voucher|advice|adjustment|slip)(?:[^\S\n]|[:*])*$"
 )
+_CREDIT_WORD = re.compile(r"(?i)\b(?:credit|return|refund)")
+_INVOICE_TITLE = re.compile(r"(?i)^\W*(?:tax[^\S\n]+invoice\b|invoice\W*$)")
+_MONEY = re.compile(r"[0-9][.,][0-9]{2}\b")
+_TOTAL_NAMED = re.compile(r"(?i)total|\bsum\b")
+# Figures that add up without being goods or services sold: when money falls due, and how old it is.
+_NOT_CHARGES = re.compile(r"(?i)\b(?:age?ing|schedule|instal+ments?|overdue|due|days?|advance|delivery|balance|payments?)\b")
 _BARCODE_WORD = re.compile(r"(?:(.*?)\[([0-9]{8,14})\])|([0-9]{8,14})")
 _TAX_WORD = re.compile(r"(?i)\b(?:vat|tax|gst)\b")
 _PER_QUANTITY = re.compile(r"(?i)\bper\s+(100|1000)\b")
@@ -427,6 +439,8 @@ def _table_end(on_page: list[_Row], fits: list[int], shape: _Product, kept: list
         if any(_TAX_WORD.search(_row_text(row.words)) for row in on_page[closers[0] : end + 1]):
             continue
         within = [_settled(_fitting(on_page[n], shape)[0], on_page[n].numbers)[0] for n in fits if n < end and _fitting(on_page[n], shape)]
+        if not within:
+            continue
         total = earlier + sum((abs(number.value) for number in within), Decimal(0))
         if any(n > closers[0] for n in fits if n < end) and any(
             abs(number.value) == total and number.decimals == within[0].decimals
@@ -761,9 +775,23 @@ def _marked_credit(row: _Row, amount: _Number) -> bool:
     return last + 1 < len(row.words) and row.words[last + 1].text.strip().casefold().strip(".") == "cr"
 
 
+def _credit_titled(text: str) -> bool:
+    """A credit title above the table and above any invoice title, written as a title. Terms that wrap a "credit note"
+    onto a line of their own are not one."""
+    for line in text.splitlines():
+        if len(_MONEY.findall(line)) >= 2:
+            return False
+        if _CREDIT_TITLE.search(line):
+            if _CREDIT_WORD.search(line).group(0)[0].isupper():
+                return True
+        elif _INVOICE_TITLE.search(line):
+            return False
+    return False
+
+
 def credit_signed(invoice: dict[str, Any], text: str) -> dict[str, Any]:
     """A document titled a credit or a return takes money back whatever sign it prints, so its amounts are negative."""
-    if not _CREDIT_TITLE.search(text or ""):
+    if not _credit_titled(text or ""):
         return invoice
     def negative(value: Any) -> Any:
         number = _as_decimal(value)
@@ -776,10 +804,13 @@ def credit_signed(invoice: dict[str, Any], text: str) -> dict[str, Any]:
     }
 
 
-def names_another_document(text: str) -> bool:
+def names_another_document(text: str, titled: bool = False) -> bool:
     """A line of its own says the document is a quotation, an order, a statement or the like. The same words
-    with a value after them are a reference an invoice prints: "Purchase Order: 4471"."""
-    return bool(_OTHER_DOCUMENT.search(text))
+    with a value after them are a reference an invoice prints ("Purchase Order: 4471"), but a page with no invoice
+    title (``titled``) has nothing else saying it is one."""
+    if _OTHER_DOCUMENT.search(text):
+        return True
+    return not titled and not _OWN_LINE_INVOICE.search(text) and bool(_NUMBERED_DOCUMENT.search(text))
 
 
 def _decimals(product: _Product) -> int:
@@ -850,6 +881,8 @@ def _summed_lines(rows: list[_Row]) -> list[Line]:
     for n, heading in enumerate(rows):
         if heading.numbers or heading.closes or sum(bool(_LETTER.search(word.text)) for word in heading.words) < 2:
             continue
+        if _NOT_CHARGES.search(_row_text(heading.words)):
+            continue
         body: list[_Row] = []
         amounts: list[_Number] = []
         proved = False
@@ -860,13 +893,13 @@ def _summed_lines(rows: list[_Row]) -> list[Line]:
             if amount is None or not amount.decimals or not any(_LETTER.search(word.text) for word in row.words):
                 break
             if len(amounts) >= 2 and amount.value == sum((number.value for number in amounts), Decimal(0)) and amount.decimals == amounts[0].decimals:
-                proved = True
+                proved = bool(_TOTAL_NAMED.search(_row_text(row.words)))
                 break
             if row.closes or amounts and (abs(amount.x1 - amounts[0].x1) > _COLUMN_TOLERANCE or amount.decimals != amounts[0].decimals):
                 break
             body.append(row)
             amounts.append(amount)
-        if not proved:
+        if not proved or any(_NOT_CHARGES.search(_row_text(row.words)) for row in body):
             continue
         over = [word for word in heading.words if word.x0 / word.page_width - _COLUMN_TOLERANCE <= amounts[0].x1
                 and amounts[0].x0 <= word.x1 / word.page_width + _COLUMN_TOLERANCE]
@@ -940,9 +973,14 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
             (row, product.used if product else {i for n in row.numbers if n is _amount_of(row, shape) for i in n.words})
             for row, product in priced
         ])
-    if all(_letter_words(text) <= 1 for text in texts):
-        # Figures only on every row: each row's text is the row printed above it.
-        texts = [_with_row_above(rows, row, text) for (row, _), text in zip(priced, texts)]
+    above = [_with_row_above(rows, row, text) for (row, _), text in zip(priced, texts)]
+    if (
+        len(priced) > 1
+        and all(_letter_words(text) <= 1 for text in texts)
+        and all(new is not text for new, text in zip(above, texts))
+    ):
+        # At most one word on every row, and text above every one of them: each row's text is the row above it.
+        texts = above
         wrapped = {}
     elif any(wrapped.values()):
         # Text under the last row could be a footer note, unless this table is seen to wrap its text.
@@ -1079,7 +1117,9 @@ def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[d
 
 def _uncut(lines: list[dict[str, Any]], found: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A cell cut at a column edge: the same row's own text starts the same and goes on. A code joined to its barcode is split."""
-    amounts = {abs(_as_decimal(other["net_amount"])): other for other in found if other.get("net_amount") not in (None, "")}
+    printed = [abs(_as_decimal(other["net_amount"])) for other in found if other.get("net_amount") not in (None, "")]
+    amounts = {abs(_as_decimal(other["net_amount"])): other for other in found
+               if other.get("net_amount") not in (None, "") and printed.count(abs(_as_decimal(other["net_amount"]))) == 1}
     whole = []
     for line in lines:
         parts = str(line.get("gtin") or "").split()

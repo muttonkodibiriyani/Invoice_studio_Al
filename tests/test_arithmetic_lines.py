@@ -254,7 +254,7 @@ def test_a_document_that_names_itself_something_else_gets_no_lines_from_the_arit
     assert invoice is None or not invoice["lines"]
 
 
-@pytest.mark.parametrize("label", ["Purchase Order: 4471", "Delivery Note 88", "Statement of Account 12 for May"])
+@pytest.mark.parametrize("label", ["Purchase Order: 4471", "Our Delivery Note 88", "See Statement of Account 12 for May"])
 def test_a_reference_an_invoice_prints_is_not_a_title(label):
     assert not names_another_document(f"Remittance\n{label}")
 
@@ -812,3 +812,82 @@ def test_a_code_joined_to_its_barcode_is_split():
     checked = checked_lines([line], words)[0]
 
     assert checked["gtin"] == "4006381333931"
+
+
+@pytest.mark.parametrize("words", ["credit note.", "issue a credit note.", "Return Slip"])
+def test_terms_wrapped_onto_their_own_line_flip_no_sign(words):
+    text = f"TAX INVOICE\nBolt 1 10.00 10.00\nNut 1 21.00 21.00\nGoods may be returned against a\n{words}\n"
+    invoice = {"net": "31.00", "lines": [{"net_amount": "10.00"}, {"net_amount": "21.00"}]}
+    assert credit_signed(invoice, text) is invoice
+    assert credit_signed(invoice, f"Terms: on request we\n{words}\nBolt 1 10.00 10.00\nNut 1 21.00 21.00\n")["net"] == (
+        Decimal("-31.00") if words == "Return Slip" else "31.00")
+
+
+def test_a_credit_line_under_a_tax_invoice_title_flips_no_sign():
+    invoice = {"net": "31.00", "lines": []}
+    assert credit_signed(invoice, "Credit slip\n")["net"] == Decimal("-31.00")
+    assert credit_signed(invoice, "TAX INVOICE\nReturn Slip\n") is invoice
+    assert credit_signed(invoice, "Tax Invoice SI/2026/1\nCredit Note\n") is invoice
+    assert credit_signed(invoice, "Credit Note\nTax Invoice\n")["net"] == Decimal("-31.00")
+
+
+def test_rows_of_equal_amount_keep_their_own_text():
+    same = [{"sku": sku, "description": text, "net_amount": "10.00", "qty": "1", "price": "10.00"}
+            for sku, text in (("SKU-1", "Bolt"), ("SKU-2", "Nut"), ("SKU-10", "Bolt M8 zinc"))]
+    from app.arithmetic_lines import _uncut
+    assert _uncut(same, same) is same
+    alone = [{"sku": "SKU-1", "description": "Bolt", "net_amount": "10.00"}]
+    assert _uncut(alone, [{"sku": "SKU-1", "description": "Bolt M8 zinc", "net_amount": "10.00"}])[0]["description"] == "Bolt M8 zinc"
+
+
+@pytest.mark.parametrize("line", ["Quotation No: Q-77", "Delivery Note No: 77", "Statement of Account - January",
+                                  "Price List 2026", "Purchase Requisition 77"])
+def test_a_numbered_title_of_another_document_says_it_is_not_an_invoice(line):
+    assert names_another_document(f"Some Trading LLC\n{line}\nBolt 2 5.00 10.00\n")
+    assert not names_another_document("Some Trading LLC\nPurchase Order: 4471\nOur quotation is attached\n")
+
+
+def test_a_payment_schedule_or_ageing_block_gives_no_lines():
+    assert read(["Payment Schedule", ("c", "Sum")], ["Advance on order", ("c", "400.00")], ["On delivery", ("c", "600.00")],
+                ["Payable", ("c", "1000.00")]) == []
+    assert read(["Stage", ("c", "Sum")], ["First part", ("c", "400.00")], ["Second part", ("c", "600.00")],
+                ["Payable", ("c", "1000.00")]) == []
+    assert read(["Stage", ("c", "Sum")], ["Advance on order", ("c", "400.00")], ["On delivery", ("c", "600.00")],
+                ["Total", ("c", "1000.00")]) == []
+    assert read(["Ageing", ("c", "Amount")], ["Current", ("c", "100.00")], ["30 days", ("c", "200.00")],
+                ["Total", ("c", "300.00")]) == []
+
+
+@pytest.mark.parametrize("above", ["Goods Lifted Each Sum", "Please deliver to the rear gate"])
+def test_a_row_with_its_own_word_does_not_take_the_row_above(above):
+    lines = read([above], row("Bolt", "2", "5.00", "10.00"), row("Nut", "3", "7.00", "21.00"))
+    assert [line.description for line in lines] == ["Bolt", "Nut"]
+
+
+def test_an_invoice_titled_page_printing_a_delivery_note_number_keeps_its_lines():
+    rows = (row("BR-104 Hinge", "2", "5.00", "10.00"), row("TL-221 Tile", "3", "19.25", "57.75"), row("X-3 Nut", "1", "4.00", "4.00"))
+    boxes = page(["TAX", "INVOICE"], ["Delivery", "Note", "No:", "DN-73"], ["Goods", ("a", "Lifted"), ("b", "Each"), ("c", "Sum")], *rows)
+    assert len(extract_invoice("TAX INVOICE\nDelivery Note No: DN-73", boxes)["lines"]) == 3
+
+
+def test_blank_lines_do_not_slow_the_title_patterns():
+    import time
+    text = "\n" * 16000
+    started = time.perf_counter()
+    assert not names_another_document(text) and credit_signed({"net": "1"}, text) == {"net": "1"}
+    assert time.perf_counter() - started < 1
+
+
+def test_out_of_line_rows_with_a_later_zero_do_not_raise():
+    from app.arithmetic_lines import _build_rows, _table_end
+    shape = _build_rows(_normalise_words(page(row("Bolt", "2", "5.00", "10.00"))))[0].products[0]
+    on_page = _build_rows(_normalise_words(page(["Bolt 2 5.00 10.00"], ["Total", ("c", "10.00")], ["Second part"], ["Nut 3 7.00 21.00"], ["Total", ("c", "0.00")])))
+    assert _table_end(on_page, [0, 3], shape, []) == 1
+
+
+def test_a_numbered_delivery_note_under_any_invoice_title_is_still_an_invoice():
+    from app.arithmetic_lines import names_another_document
+
+    assert not names_another_document("## VAT Invoice\nDelivery Note No : DN-1\n")
+    assert names_another_document("Delivery Note No : DN-1\n")
+    assert names_another_document("Proforma Invoice\nDelivery Note No : DN-1\n")

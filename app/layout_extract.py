@@ -469,7 +469,7 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str
     if not extracted_lines:
         from .arithmetic_lines import names_another_document, read_lines
 
-        if not names_another_document(searchable):
+        if not names_another_document(searchable, titled=_has_invoice_heading(searchable)):
             extracted_lines = read_lines(words)
 
     invoice = Invoice(

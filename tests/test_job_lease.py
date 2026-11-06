@@ -184,6 +184,7 @@ def holding_a_job(tmp_path, monkeypatch, gate):
     live, client, token = studio(tmp_path, monkeypatch, reader, INV_STUDIO_WORKERS="1")
     jid = upload(client, token, plan(client, token, ["inv-0.txt"]), "inv-0.txt").json()["id"]
     assert wait_until(lambda: reader.active == 1)  # inside the gated read: the next studio() cannot swap it out
+    assert wait_until(lambda: live.state.store.job(jid).get("progress"))  # its last write until the gate opens
     return live, jid
 
 

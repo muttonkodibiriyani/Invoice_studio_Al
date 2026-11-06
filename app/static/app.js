@@ -1174,6 +1174,16 @@ async function downloadExtractionDraft() {
   }
 }
 
+function isPossibleCopy(issue) {
+  return issue.code === "Possible Duplicate";
+}
+
+function savedMessage(validation) {
+  if (validation?.ready) return "Review confirmed. This invoice is ready to export.";
+  const copy = validation?.issues?.find(isPossibleCopy);
+  return copy ? `Saved. ${copy.message}` : "Saved and revalidated. Resolve the listed issues before export.";
+}
+
 function notify(message, type = "success", duration = 4600) {
   const banner = $("#global-message");
   banner.textContent = message;
@@ -1893,23 +1903,29 @@ function renderValidation(job) {
   summary.hidden = false;
   // After the reviewer's confirm, what remains are the notes they accepted, not open issues.
   const confirmed = job.status === "ready" || job.status === "exported";
-  // One plain verdict first, then the issues in three groups: must fix (holds the invoice whatever the reviewer does),
-  // check then confirm (the reviewer's confirm accepts them) and warnings (for information, never holding it).
+  // One plain verdict first, then the issues in groups: a possible copy (a confirm does not clear it, so its own words),
+  // must fix (holds the invoice whatever the reviewer does), check then confirm (the reviewer's confirm accepts them)
+  // and warnings (for information, never holding it).
   const confirmStep = issues.some((issue) => issue.code === "REVIEW" && issue.blocking !== false);
   const listed = issues.filter((issue) => issue.code !== "REVIEW");
+  const copy = listed.find(isPossibleCopy);
   const groups = [
+    ["Possible copy: export anyway or delete", copy ? [copy] : []],
     ["Must fix", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level !== "review" && issue.level !== "warning")],
-    ["Check, then confirm review", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level === "review")],
+    ["Check, then confirm review", listed.filter((issue) => issue.blocking !== false && !issue.accepted && issue.level === "review" && !isPossibleCopy(issue))],
     ["Warnings, for information", listed.filter((issue) => issue.blocking === false && !issue.accepted)],
     ["Accepted at review", listed.filter((issue) => issue.accepted)],
   ];
-  const [mustFix, toCheck, warnings] = groups.map(([, items]) => items.length);
+  const [, mustFix, toCheck, warnings] = groups.map(([, items]) => items.length);
   const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   let verdict;
   let tone;
   if (confirmed) {
     verdict = listed.length ? `Confirmed at review · ${count(listed.length, "note")} accepted` : "Confirmed at review";
     tone = "accepted";
+  } else if (copy) {
+    verdict = copy.message;
+    tone = "";
   } else if (mustFix) {
     verdict = `Cannot approve yet · ${count(mustFix, "issue")} must be fixed`;
     tone = "error";
@@ -1924,7 +1940,8 @@ function renderValidation(job) {
   const details = make("details", "validation-details");
   const heading = make("summary");
   const title = make("strong", "", verdict);
-  if (!confirmed && warnings) title.append(make("small", "", `${count(warnings, "warning")} to read · they do not block approval`));
+  if (copy && mustFix + toCheck) title.append(make("small", "", `${count(mustFix + toCheck, "other issue")} listed below`));
+  else if (!confirmed && warnings) title.append(make("small", "", `${count(warnings, "warning")} to read · they do not block approval`));
   heading.append(title, make("span", "", listed.length ? "Show all" : ""));
   details.append(heading);
   groups.forEach(([title, items]) => {
@@ -1941,7 +1958,7 @@ function renderValidation(job) {
     });
     details.append(make("h4", "validation-group", `${title} (${items.length})`), list);
   });
-  if (confirmStep && !confirmed) details.append(make("p", "validation-extra", "Last step: compare the values with the document, then confirm review."));
+  if (confirmStep && !confirmed && !copy) details.append(make("p", "validation-extra", "Last step: compare the values with the document, then confirm review."));
   summary.append(details);
 }
 
@@ -2068,7 +2085,7 @@ async function submitReview(extra = {}, done = "") {
     replaceJobSummary(job);
     renderSelectedJob(job);
     if (done) notify(done, "success");
-    else notify(job.validation?.ready ? "Review confirmed. This invoice is ready to export." : "Saved and revalidated. Resolve the listed issues before export.", job.validation?.ready ? "success" : "error");
+    else notify(savedMessage(job.validation), job.validation?.ready ? "success" : "error");
     return true;
   } catch (error) {
     notify(error.message, "error", 7000);
@@ -2433,7 +2450,7 @@ async function exportBatch() {
       make("li", "", `${item.filename || item.id}: ${item.reasons.map((reason) => reason.message).join("; ")}`)));
     $("#batch-export-held").hidden = !blocked.length;
     $("#batch-export-attention-list").replaceChildren(...attention.map((item) =>
-      make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
+      make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => isPossibleCopy(hold) ? hold.message : hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
     $("#batch-export-attention").hidden = !attention.length;
     const confirm = $("#confirm-batch-export");
     confirm.textContent = `Export ${ready.length} invoice${ready.length === 1 ? "" : "s"}`;

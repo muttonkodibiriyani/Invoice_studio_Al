@@ -150,6 +150,38 @@ async function main() {
       ["invoice2data", "paddleocr", "docling", "openai"]);
     return;
   }
+  if (scenario === "possible-copy") {
+    // A confirm does not clear this hold, so nothing on screen may ask for one while it is the thing left to do.
+    vm.runInContext(fs.readFileSync(script, "utf8"), context);
+    const message = "Possible copy of a.pdf, exported 2026-11-06: the same file. Export anyway or delete this one.";
+    const copy = { code: "Possible Duplicate", message, owner: "Accounts payable", line: null, blocking: true, level: "review" };
+    const other = { code: "Blank Cell", message: "A cell is blank", owner: "", line: 1, blocking: true, level: "review" };
+    const render = (issues) => {
+      context.job = { id: "job-1", status: "review", validation: { source: "fine_rules", ready: false, issues } };
+      vm.runInContext("renderValidation(job)", context);
+      const details = node("#validation-summary").children[0];
+      return { verdict: details.children[0].children[0].textContent, text: details.children.map((el) => el.textContent).filter(Boolean),
+               items: details.children.filter((el) => el.tagName === "UL").map((ul) => ul.children.map((li) => li.textContent)) };
+    };
+    const alone = render([copy]);
+    assert.equal(alone.verdict, message);
+    assert(alone.text.includes("Possible copy: export anyway or delete (1)"));
+    assert(!alone.text.some((line) => /confirm review/.test(line)));
+    const unconfirmed = render([copy, { code: "REVIEW", message: "Compare, then confirm review", blocking: true, level: "review" }]);
+    assert.equal(unconfirmed.verdict, message);
+    assert(!unconfirmed.text.some((line) => /Last step/.test(line)));
+    const mixed = render([copy, other]);
+    assert.equal(mixed.verdict, message);
+    assert.deepEqual(mixed.text.filter((line) => /\(\d+\)$/.test(line)), ["Possible copy: export anyway or delete (1)", "Check, then confirm review (1)"]);
+    assert(mixed.items[0][0].includes(message), "the hold is listed first");
+    context.validation = { ready: false, issues: [copy] };
+    const toast = vm.runInContext("savedMessage(validation)", context);
+    assert.equal(toast, `Saved. ${message}`);
+    assert(!/Resolve the listed/.test(toast));
+    context.validation = { ready: false, issues: [other] };
+    assert(/Resolve the listed/.test(vm.runInContext("savedMessage(validation)", context)), "other holds keep their words");
+    return;
+  }
   if (scenario === "review-prompts") {
     // The real payloads: rules.coverage (#604a), Item cell lookup_trace (#23, rules_view) and the rules_view header
     // fields location_type / location (#27), held when value is null. One prompt per problem, the evidence only

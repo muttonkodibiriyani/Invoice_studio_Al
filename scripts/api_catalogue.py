@@ -79,7 +79,8 @@ ROUTES = {
     # edits
     ("POST", "/api/jobs/{jid}/review"): dict(area="edits", title="Save review edits",
         text="Saves edited fields and lines for the given revision; confirm:true approves. A stale revision is "
-             "refused with 409.",
+             "refused with 409; a control character or another a workbook cannot hold with 400 (a value read from a "
+             "document is cleaned instead).",
         body={"invoice": {"number": "INV-1"}, "revision": 1, "confirm": False}),
     ("POST", "/api/jobs/{jid}/retry"): dict(area="edits", title="Read again",
         text="Reads the invoice again under a new confirmed plan.",
@@ -87,7 +88,13 @@ ROUTES = {
     ("POST", "/api/jobs/{jid}/export"): dict(area="edits", title="Export one invoice",
         text="Creates the Excel export for an invoice at the given revision: the three template sheets with what was "
              "found, blanks blank. Open validation and review holds do not block it (owner decision D11); the receipt "
-             "records them as open_holds. 409 only if it is still processing, not read, changed or a duplicate; an "
+             "records them as open_holds. A duplicate is the same number from the same supplier site; with a site or "
+             "number blank nothing can be called one, so the invoice exports. It gets the hold Possible Duplicate, "
+             "listed first and naming the match, which a review confirm does not clear, when the same file or (a site "
+             "missing on either side) the same number was already exported: export anyway or delete. Until the "
+             "original exports the copy can read as approved. A held invoice records no receipt allocations, so a "
+             "false positive (a different supplier's same number) leaves its quantities uncounted in later receipt "
+             "checks. A re-scan with no number cannot be noticed. 409 only if it is still processing, not read, changed or a duplicate; an "
              "invoice already exported returns its existing export.", body={"revision": 1}),
     ("POST", "/api/jobs/{jid}/extraction-draft"): dict(area="edits", title="Unvalidated extraction workbook",
         text="Downloads what was read, before validation, as Excel. Needs acknowledge_unvalidated.",
@@ -109,8 +116,8 @@ ROUTES = {
     ("POST", "/api/exports/batch/check"): dict(area="exports", title="Check a batch before export",
         text="Read-only. Splits the selected invoices into ready (in transaction order, each with attention: the "
              "holds still open on it, information only since D11) and blocked, each blocked one with its reasons as "
-             "code and message (Processing, Not Read, Changed, Exported, Duplicate). Send the ready ones to "
-             "/api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
+             "code and message (Processing, Not Read, Changed, Exported, Duplicate). Possible Duplicate is a hold, so it "
+             "shows under attention, not blocked; see Export one invoice. Send the ready ones to /api/exports/batch.", body={"jobs": [{"id": "{{jobId}}", "revision": 1}]}),
     ("GET", "/api/batches/{bid}"): dict(area="exports", title="Download a batch export", text="The batch workbook."),
     ("POST", "/api/exports/extraction-batch"): dict(area="exports", title="Unvalidated batch workbook",
         text="What was read for several invoices, before validation.",
@@ -253,7 +260,8 @@ ROUTES = {
     # admin
     ("POST", "/api/jobs/delete"): dict(area="admin", title="Delete invoices",
         text="Permanently deletes invoices and their files. Each item names the invoice and its current revision; "
-             "needs confirm_permanent: true (a boolean).",
+             "needs confirm_permanent: true (a boolean). For an exported invoice a minimal record stays so it is still "
+             "noticed if sent again: its key, line quantities, the file's SHA-256 and its invoice number.",
         body={"jobs": [{"id": "{{jobId}}", "revision": 1}], "confirm_permanent": True}),
     ("GET", "/api/costs"): dict(area="admin", title="AI spend", text="Daily and month-to-date AI spend. ?days=30.",
         query={"days": "30"}, smoke=200),

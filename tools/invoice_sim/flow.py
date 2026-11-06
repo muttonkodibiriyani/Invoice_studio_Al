@@ -232,7 +232,16 @@ def export(api, jid):
         return {"status": response.status_code, "detail": response.json().get("detail")}
     eid = response.json()["id"]
     file = api.http.get(f"/api/exports/{eid}")
-    return {"status": 200, "id": eid, "content": file.content, "file_status": file.status_code}
+    return {"status": 200, "id": eid, "content": file.content, "file_status": file.status_code, "open_holds": response.json().get("open_holds")}
+
+
+def duplicate_issues(job):
+    """Duplicate refuses the export, Possible Duplicate only holds it, so a case has to look for both."""
+    return [f'{i["code"]}: {i["message"]}' for i in (job.get("validation") or {}).get("issues", []) if "Duplicate" in (i.get("code") or "")]
+
+
+def hold_codes(made):
+    return [h.get("code") if isinstance(h, dict) else h for h in made.get("open_holds") or []]
 
 
 def full_invoice(api, invoice, folder, note=None):
@@ -308,17 +317,19 @@ def blank_keys(api, by, out):
     def forced(name, inv, number, site):
         path = out / "pdfs" / f"{name}-{inv.id}.pdf"
         path.parent.mkdir(exist_ok=True)
-        render_pdf(inv, path)
+        # The same document twice must be the same bytes, or the same-file check has nothing to find.
+        if not path.exists():
+            render_pdf(inv, path)
         job = api.settle(api.upload(path.name, path.read_bytes()).json()["id"])
         truth = json.loads(json.dumps(inv.truth, default=str))
         truth["number"] = number
         response = review_typed(api, job, truth, site=site)
         now = api.job(job["id"])
         fields = (now.get("rules") or {}).get("fields", {})
-        before = [i["message"] for i in (now.get("validation") or {}).get("issues", []) if i.get("code") == "Duplicate"]
+        before = duplicate_issues(now)
         made = export(api, job["id"])
         result[f"{name}: {inv.id} #{len(result)}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
-                                       "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail")}
+                                       "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail"), "receipt_holds": hold_codes(made)}
     groups = {}
     for inv in by.values():
         groups.setdefault((inv.truth["supplier_name"], inv.style["totals_values"]["code"]), []).append(inv)
@@ -341,10 +352,10 @@ def blank_keys(api, by, out):
         response = api.http.post(f"/api/jobs/{job['id']}/review", json={"invoice": {**job["invoice"], "number": number}, "revision": job["revision"], "confirm": True, "entries": {"header": {}, "lines": {}}})
         now = api.job(job["id"])
         fields = (now.get("rules") or {}).get("fields", {})
-        before = [i["message"] for i in (now.get("validation") or {}).get("issues", []) if i.get("code") == "Duplicate"]
+        before = duplicate_issues(now)
         made = export(api, job["id"])
         result[f"{name}: letter {n}"] = {"review": response.status_code, "review_detail": response.text[:200] if response.status_code != 200 else None, "site": (fields.get("site") or {}).get("value"), "number": (fields.get("number") or {}).get("value"),
-                                         "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail")}
+                                         "duplicate_shown_before_export": before, "export": made["status"], "detail": made.get("detail"), "receipt_holds": hold_codes(made)}
     forced_letter("same number, no site", 1, "SIM-SAME-1")
     forced_letter("same number, no site", 2, "SIM-SAME-1")
     forced_letter("same number lower case, no site", 3, "sim-same-1")

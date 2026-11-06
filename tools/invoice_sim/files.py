@@ -7,6 +7,7 @@ import io
 import json
 import os
 import random
+import re
 import time
 from pathlib import Path
 
@@ -61,31 +62,32 @@ def cases(c, folder: Path) -> list[dict]:
     """Name, bytes, what the file is. The invoices come from the corpus, so the expected number is known."""
     rng = random.Random(c.seed)
     folder.mkdir(parents=True, exist_ok=True)
-    base = [i for i in c.invoices if i.family == "grid-classic"]
-    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:4]]
+    # One invoice per case: the same number twice would stop at the duplicate guard and hide what the export holds.
+    base = [i for i in c.invoices if i.family in ("grid-classic", "ruled-zebra", "plain-whitespace")]
+    native = [render_pdf(i, folder / f"{i.id}.pdf").read_bytes() for i in base[:12]]
     scan_path, _ = scan_pdf(folder / f"{base[1].id}.pdf", folder / f"{base[1].id}.scan.pdf", f"{c.seed}:files", "office")
     scanned = Path(scan_path).read_bytes()
     blank = _pdf(lambda p: p.showPage())
     noise = np.random.default_rng(c.seed).integers(0, 255, (2200, 1700, 3), dtype=np.uint8)
     noise_out = io.BytesIO()
     Image.fromarray(noise).save(noise_out, "PNG")
-    numbers = {"first": base[0].truth["number"], "second": base[1].truth["number"], "third": base[2].truth["number"], "fourth": base[3].truth["number"]}
-    first, second = numbers["first"], numbers["second"]
+    number = [i.truth["number"] for i in base[:12]]
+    net = [str(i.truth["net"]) for i in base[:12]]
     heavy = np.random.default_rng(c.seed + 1).integers(0, 255, (1950, 1800, 3), dtype=np.uint8)
     heavy_out = io.BytesIO()
     Image.fromarray(heavy).save(heavy_out, "PNG")
     pad = bytes(rng.getrandbits(8) for _ in range(1024)) * 1024 * 13
     return [
-        {"case": "JPG", "name": "invoice.jpg", "content": _image(native[1], "JPEG"), "number": second},
-        {"case": "PNG", "name": "invoice.png", "content": _image(native[1], "PNG"), "number": second},
-        {"case": "TIFF", "name": "invoice.tiff", "content": _image(native[1], "TIFF"), "number": second},
-        {"case": "WEBP", "name": "invoice.webp", "content": _image(native[1], "WEBP"), "number": second},
+        {"case": "JPG", "name": "invoice.jpg", "content": _image(native[2], "JPEG"), "number": number[2]},
+        {"case": "PNG", "name": "invoice.png", "content": _image(native[3], "PNG"), "number": number[3]},
+        {"case": "TIFF", "name": "invoice.tiff", "content": _image(native[4], "TIFF"), "number": number[4]},
+        {"case": "WEBP", "name": "invoice.webp", "content": _image(native[5], "WEBP"), "number": number[5]},
         {"case": "HEIC (name and header only, no encoder here)", "name": "invoice.heic", "content": b"\x00\x00\x00\x18ftypheic" + b"\x00" * 2000},
-        {"case": "three invoices in one PDF", "name": "three.pdf", "content": _join(*native[:3]), "numbers": [numbers[k] for k in ("first", "second", "third")]},
-        {"case": "two invoices in one PDF, both numbers readable alone", "name": "two.pdf", "content": _join(native[1], native[3]), "numbers": [second, numbers["fourth"]]},
-        {"case": "native and scanned pages mixed", "name": "mixed.pdf", "content": _join(native[0], scanned), "numbers": [first, numbers["second"]]},
+        {"case": "three invoices in one PDF", "name": "three.pdf", "content": _join(*native[6:9]), "numbers": number[6:9], "nets": net[6:9]},
+        {"case": "two invoices in one PDF, both numbers readable alone", "name": "two.pdf", "content": _join(native[9], native[10]), "numbers": number[9:11], "nets": net[9:11]},
+        {"case": "native and scanned pages mixed", "name": "mixed.pdf", "content": _join(native[0], scanned), "numbers": number[:2], "nets": net[:2]},
         {"case": "blank PDF", "name": "blank.pdf", "content": blank},
-        {"case": "invoice then a blank page", "name": "trailing-blank.pdf", "content": _join(native[1], blank), "number": second},
+        {"case": "invoice then a blank page", "name": "trailing-blank.pdf", "content": _join(native[11], blank), "number": number[11]},
         {"case": "password-protected PDF", "name": "locked.pdf", "content": _pdf(_letter, encrypt=StandardEncryption("sim-secret", canPrint=0))},
         {"case": "corrupt PDF, garbage after the header", "name": "corrupt.pdf", "content": b"%PDF-1.7\n" + bytes(rng.getrandbits(8) for _ in range(4000))},
         {"case": "truncated PDF", "name": "truncated.pdf", "content": native[0][: len(native[0]) // 2]},
@@ -102,16 +104,25 @@ def cases(c, folder: Path) -> list[dict]:
 
 
 def verdict(rec: dict) -> str:
-    """Refused: told at upload. Failed: the job says why. Read: invoice values to review. Empty success: nothing read, nothing said."""
+    """Refused: told at upload. Failed: the job says why. Read: invoice values to review. Empty success: nothing read, nothing said.
+    Invoices lost: a file holding several became fewer records and nothing tells the user. The harness's own sign-in is no verdict on the app."""
     if rec.get("server_error"):
         return "CRASH"
+    if rec["upload_status"] == 401:
+        return "NOT RUN, SIGN-IN EXPIRED"
     if rec["upload_status"] != 200:
         return "refused"
     outcomes = rec.get("jobs") or []
     if any(j["status"] == "timed out" for j in outcomes):
         return "STUCK"
+    if any(j["status"] == "job not found" for j in outcomes):
+        return "UPLOADED, JOB NOT FOUND"
     if all(j["status"] == "error" for j in outcomes):
         return "failed with message" if all(j.get("error") for j in outcomes) else "FAILED WITH NO MESSAGE"
+    if len(outcomes) < rec.get("invoices_in_file", 0) and not any(re.search(r"several|multiple|more than one|other invoice", str(j.get("told")), re.I) for j in outcomes):
+        return "INVOICES LOST, NOT TOLD"
+    if any(e["status"] >= 500 for e in rec.get("export") or []):
+        return "EXPORT CRASH"
     empty = [j for j in outcomes if not j.get("number") and not j.get("lines")]
     if any(not j.get("told") for j in empty):
         return "EMPTY SUCCESS"
@@ -121,7 +132,10 @@ def verdict(rec: dict) -> str:
 def settle(rig, jid, deadline):
     job = {}
     while time.monotonic() < deadline:
-        job = rig.client.get(f"/api/jobs/{jid}", headers=rig.headers).json()
+        response = rig.client.get(f"/api/jobs/{jid}", headers=rig.headers)
+        if response.status_code != 200:
+            return {"status": "job not found", "error": f"{response.status_code} {response.text[:200]}"}
+        job = response.json()
         if job.get("status") not in ("queued", "processing"):
             return job
         time.sleep(1)
@@ -136,7 +150,7 @@ def summary(job: dict) -> dict:
     return {"filename": job.get("filename"), "status": job.get("status"), "error": job.get("error"), "note": job.get("extraction_note"),
             "number": invoice.get("number"), "lines": len(invoice.get("lines") or []), "net": invoice.get("net"),
             "gaps": (job.get("readers") or {}).get("gaps"), "document_type": job.get("document_type_hint"),
-            "told": job.get("extraction_note") or [str(i.get("message"))[:120] for i in issues[:3]]}
+            "told": [*filter(None, [job.get("extraction_note")]), *(str(i.get("message"))[:120] for i in issues)]}
 
 
 def exported(rig, jid) -> dict:
@@ -154,7 +168,11 @@ def files(args):
     c = corpus(args.seed)
     rig = RulesRig(c, out / "files-app" / str(os.getpid()))
     results = []
+    only = tuple(args.only.split(",")) if args.only else ()
     for case in cases(c, out / "files-src"):
+        if only and not case["case"].startswith(only):
+            continue
+        rig.sign_in()
         name, content = case["name"], case["content"]
         rec = {"case": case["case"], "name": name, "size": len(content)}
         planned = rig.client.post("/api/preflight", headers=rig.headers, json={"options": OPTIONS, "files": [{"name": name, "size": max(len(content), 1)}]})
@@ -181,12 +199,15 @@ def files(args):
                 jobs = [settle(rig, jid, deadline) for jid in ids]
                 rec["jobs"] = [summary(j) for j in jobs]
                 rec["refused_note"] = body.get("refusal") or body.get("message")
-                rec["export"] = [exported(rig, j["id"]) for j in jobs if j.get("status") not in ("error", "timed out")]
+                rec["export"] = [exported(rig, j["id"]) for j in jobs if j.get("status") not in ("error", "timed out", "job not found")]
                 read = [j["number"] for j in rec["jobs"] if j["number"]]
                 if case.get("number"):
                     rec["number_right"] = read == [case["number"]]
                 if case.get("numbers"):
                     rec["numbers_right"] = sorted(read) == sorted(case["numbers"])
+                    rec["invoices_in_file"] = len(case["numbers"])
+                    rec["read_values_are_of"] = [{"number": case["numbers"].index(j["number"]) if j["number"] in case["numbers"] else None,
+                                                  "net": next((k for k, v in enumerate(case["nets"]) if j["net"] and float(j["net"]) == float(v)), None)} for j in rec["jobs"]]
         rec["verdict"] = verdict(rec)
         results.append(rec)
         (out / "files.json").write_text(json.dumps(results, indent=1, default=str))

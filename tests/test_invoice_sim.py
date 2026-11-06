@@ -52,6 +52,20 @@ def test_every_item_class_is_in_the_corpus(corpus):
             "other_supplier_code", "other_supplier_barcode"} <= seen
 
 
+def test_file_verdict_says_what_a_user_meets():
+    from tools.invoice_sim.files import verdict
+    read = {"status": "review", "number": "A1", "lines": 2, "told": ["Check the date"]}
+    assert verdict({"upload_status": 200, "jobs": [read], "export": [{"status": 200}]}) == "read, review"
+    assert verdict({"upload_status": 400}) == "refused"
+    # A 401 is the harness's expired sign-in, not the app refusing the file.
+    assert verdict({"upload_status": 401}) == "NOT RUN, SIGN-IN EXPIRED"
+    assert verdict({"upload_status": 200, "jobs": [read], "export": [{"status": 500}]}) == "EXPORT CRASH"
+    assert verdict({"upload_status": 200, "jobs": [read], "invoices_in_file": 2, "export": [{"status": 200}]}) == "INVOICES LOST, NOT TOLD"
+    told = {**read, "told": ["This file holds several invoices"]}
+    assert verdict({"upload_status": 200, "jobs": [told], "invoices_in_file": 2, "export": [{"status": 200}]}) == "read, review"
+    assert verdict({"upload_status": 200, "jobs": [{**read, "number": None, "lines": 0, "told": []}], "export": []}) == "EMPTY SUCCESS"
+
+
 def test_verdicts_tell_blank_from_wrong():
     truth = {"number": "A1", "net": "10.00", "tax": "1.50", "tax_printed": True, "net_printed": True, "date": "2026-01-02", "date_printed": "02/01/2026"}
     assert verdict_header("number", {"number": "a-1"}, truth) == "correct"

@@ -143,8 +143,9 @@ class RulesRig:
         self.app = create_app(Path(data_dir), identity=EntraIdentity(fetch=tenant.jwks), store_type=LocalBlobStore)
         self.client = TestClient(self.app)
         self.client.__enter__()
-        headers = bearer(tenant.token("owner-uid", OWNER, roles=("admin",)))
-        self.headers = headers
+        self.sign_in = lambda: setattr(self, "headers", bearer(tenant.token("owner-uid", OWNER, roles=("admin",))))
+        self.sign_in()
+        headers = self.headers
         assert self.client.get("/api/session", headers=headers).status_code == 200
         upload = self.client.post("/api/item-master/validate", headers=headers, files={"file": ("master.xlsx", master_workbook(c))})
         assert upload.status_code == 200, upload.text[:400]

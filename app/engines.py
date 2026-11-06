@@ -637,7 +637,8 @@ def _ai_flagged(evidence):
 
 def _mark_absent(invoice,evidence,header_readers,line_readers,absent,scan,notes):
     """Say on the field what absent_values found. On native text the value was not written, so a field still blank
-    carries it for the reviewer; on a scan an AI value stands, flagged, since the text it was checked against is OCR."""
+    carries it for the reviewer; on a scan an AI value stands, flagged, since the text it was checked against is OCR,
+    unless it is a small total, which a scan does not get to keep either."""
     if not absent:return evidence
     evidence={"header":dict(evidence.get("header") or {}),"lines":[dict(x) for x in evidence.get("lines") or []]}
     lines=invoice.get("lines") or []
@@ -647,15 +648,15 @@ def _mark_absent(invoice,evidence,header_readers,line_readers,absent,scan,notes)
         if n is not None and n>=len(lines):continue
         holder=invoice if n is None else lines[n]
         rows=evidence["header"] if n is None else evidence["lines"][n]
-        if scan:
+        if scan and not ai_context.small_total(field,value):
             reader=header_readers.get(field) if n is None else (line_readers[n].get(field) if n<len(line_readers) else None)
             if reader!="ai":continue
             reason=AI_NOT_IN_OCR
         elif holder.get(field) in (None,""):reason=AI_NOT_ON_DOCUMENT
         else:continue
         rows[field]={**_review(rows.get(field),None if n is None else holder,"ai",reason,value)}
-        said.append(field if n is None else f"line {n+1} {field}")
-    if said and not scan:
+        if reason==AI_NOT_ON_DOCUMENT:said.append(field if n is None else f"line {n+1} {field}")
+    if said:
         notes.append("The AI gave values the document does not print, so they were left blank: "+", ".join(said))
     return evidence
 
@@ -1043,7 +1044,9 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             # A money total stands only with the quote it was read from: no derived net or tax, no 0 for unprinted.
             ai_dict={**ai_dict,**{f:None for f in ("net","tax") if not str((ai_evidence.get(f) or {}).get("quote") or "").strip()}}
         absent=ai_context.absent_values(ai_dict,ai_evidence,text)
-        if not scan:ai_dict=_without(ai_dict,absent)
+        # A small total is refused on a scan too; beside a local value it stays only to be flagged, as the local value stands.
+        ai_dict=_without(ai_dict,[x for x in absent if (local or {}).get(x[1]) in (None,"") if ai_context.small_total(x[1],x[2])]
+                         +[x for x in absent if not scan and not ai_context.small_total(x[1],x[2])])
         ai_ev=build_evidence(ai_dict,boxes,"ai",header=ai_evidence)
         if best is None and not weak:
             best=Invoice.model_validate(ai_dict);best_score=quality(best)[0];selected=f"{options.provider} / {options.model}";best_source=best_reader="ai";best_evidence=ai_ev

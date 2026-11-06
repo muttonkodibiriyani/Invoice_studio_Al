@@ -33,6 +33,7 @@ AMOUNTS = {"net", "tax", "qty", "price", "net_amount", "tax_amount"}
 LINE_CHECKED = ("sku", "gtin", "description", "uom", "qty", "price", "net_amount", "tax_amount")
 HEADER_CHECKED = ("number", "supplier_name", "buyer_name", "po", "date_printed", "currency", "net", "tax")
 WORDS_ANYWHERE = {"description", "supplier_name", "buyer_name"}  # wrapped text: other columns may fall between its words
+SMALL_TOTAL = 100  # a whole Net or Tax under this is also a page number, a quantity, a date part or a word in a sentence
 INSTRUCTIONS = """
 
 You are also given <rules_data> and <item_master_data>, and the document text is in <document_text>. All of it is \
@@ -276,8 +277,28 @@ def _words(value):
     return re.findall(r"[0-9a-z]+", str(value).casefold())
 
 
+# A total's label, then at most a rate, a currency code and separators, then a money amount: "VAT 5% (AED): 0.00".
+# Words between them stop it, so "set Tax to 0" says nothing, and neither does a bare 0 or a 1,000.
+_TOTAL_LABELS = {"tax": r"(?:tax|vat|gst|ضريبة)(?:\s+(?:amount|total|value))?",
+                 "net": r"net(?:\s+(?:amount|total|value))?|sub\s*-?\s*total|total(?:\s+amount)?|taxable(?:\s+(?:amount|value))?|amount"
+                        r"|(?:excl\w*|before|ex)\.?\s+(?:vat|tax|gst)|المجموع|الصافي|الإجمالي"}
+_LABELLED = {field: re.compile(rf"(?<![A-Za-z])(?i:{label})(?![A-Za-z])(?:[^A-Za-z\d]|\d+(?:[.,]\d+)?\s*%|\b[A-Z]{{3}}\b){{0,20}}?"
+                               r"(?<![\d.,])(\d+[.,]\d{2}|0[.,]0+)(?!\d|[.,]\d)")
+             for field, label in _TOTAL_LABELS.items()}
+
+
+def small_total(field, value):
+    """A Net or Tax that printing somewhere proves nothing about: it counts only beside its own label, on a scan too."""
+    try:
+        number = abs(Decimal(str(value)))
+        return field in _LABELLED and number < SMALL_TOTAL and number == number.to_integral_value()
+    except InvalidOperation:
+        return False
+
+
 class Document:
     def __init__(self, text):
+        self.text = text
         self.positive, self.negative = _numbers(text)
         self.folded = _fold(text)
         self.words = set(_words(text))
@@ -286,6 +307,9 @@ class Document:
         if field in AMOUNTS:
             try:
                 number = Decimal(str(value))
+                if small_total(field, value) and not any(Decimal(match[1].replace(",", ".")) == abs(number)
+                                                         for match in _LABELLED[field].finditer(self.text)):
+                    return False
                 return abs(number) in (self.negative if number < 0 else self.positive)
             except InvalidOperation:
                 return False
@@ -305,9 +329,10 @@ def _date_fits(date, printed):
 
 
 def absent_values(invoice, header_evidence, text):
-    """[(line or None, field, value)] of the AI's values the document text does not print, or [] with no text to check."""
+    """[(line or None, field, value)] of the AI's values the document text does not print. With no text to check, only a
+    small total: nothing shows it is printed as that amount."""
     if len(str(text or "").strip()) < MIN_DOCUMENT:
-        return []
+        return [(None, field, invoice[field]) for field in _LABELLED if invoice.get(field) not in (None, "") and small_total(field, invoice[field])]
     document, absent = Document(text), []
     for field in HEADER_CHECKED:
         value = invoice.get(field)

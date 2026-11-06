@@ -305,3 +305,11 @@ def test_zero_value_reads_count_only_coded_rows_when_the_earlier_read_has_codes(
     assert _rows_ahead(invoice(1, 5), invoice(2, 0)) == -1  # more rows that lose a code
     assert _rows_ahead(invoice(0, 3), invoice(0, 2)) == 1  # no codes yet: the priced rows decide
     assert _rows_ahead(invoice(2, 0), invoice(0, 3)) == -1  # likewise: the earlier read has none to count
+    assert _rows_ahead(invoice(1, 0), invoice(1, 1)) == -1  # the coded rows tie, but it read fewer rows
+
+
+def test_a_later_zero_value_read_with_fewer_rows_never_wins_on_a_tie_of_coded_rows(chain):
+    two = _zero_value(INVOICE, 2)
+    first = {**two, "lines": [two["lines"][0], {**two["lines"][1], "sku": None, "gtin": None}]}
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": _zero_value(INVOICE, 1)}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr" and len(result["invoice"]["lines"]) == 2

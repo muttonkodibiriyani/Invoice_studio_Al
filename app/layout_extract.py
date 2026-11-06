@@ -1558,7 +1558,7 @@ def _labelled_net(row: list[_Word]) -> Decimal | None:
     if first is None:
         return None
     between = re.sub(r"\([^)]*\)", " ", _TAX_ONLY_NAMED.sub(" ", _row_text(ordered[end:first])))
-    if not all(_LABEL_FILLER.fullmatch(word) for word in between.split()):
+    if not all(_LABEL_FILLER.fullmatch(word.rstrip(".:=") or ":") for word in between.split()):
         return None
     stop = next((index for index in range(first, len(ordered)) if not _is_figure(ordered[index])), len(ordered))
     after = ordered[stop:]
@@ -1661,10 +1661,15 @@ def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Deci
     only with one figure under each heading and taxable + tax == total. One such row is the summary. Several are line
     rows or several rates, and one rate's figures are not the invoice's: only a last row printed as the Total, and
     equal to the sum of those above it, is read then. A heading that failed is not tried again where it repeats.
+    A later page that prints amounts anywhere else, however far sideways, may hold the real summary: nothing is read.
     """
 
     def same(first: list[tuple[float, float]], second: list[tuple[float, float]]) -> bool:
         return all(a[0] < b[1] and a[1] > b[0] for a, b in zip(first, second))
+
+    def has_amounts(row: list[_Word]) -> bool:
+        figures = [value for value, _, _ in _summary_figures(row)]
+        return len(figures) >= 3 or any(value.as_tuple().exponent < 0 for value in figures)
 
     refused: list[list[tuple[float, float]]] = []
     for index, row in enumerate(rows):
@@ -1689,6 +1694,9 @@ def _summary_table_totals(rows: list[list[_Word]]) -> tuple[Decimal | None, Deci
             else:
                 found = found[-1:]
         if found:
+            page = found[0][1][0].page
+            if any(later[0].page > page and (has_amounts(later) or _summary_columns(later)) for later in rows):
+                return None, None
             return found[0][0][0], found[0][0][1]
         refused.append(columns)
     return None, None

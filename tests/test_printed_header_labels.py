@@ -728,3 +728,36 @@ def test_a_tax_word_before_percent_heads_no_amount():
     heading = [(450, "Taxable"), (540, "VAT"), (580, "Percent"), (650, "VAT"), (690, "Amount"), (820, "Total")]
     invoice = summary(heading, RATE_FIGURES)
     assert (figure(invoice, "net"), figure(invoice, "tax")) == ("4500.00", "225.00")
+
+
+@pytest.mark.parametrize("words", [("Subtotal", "Amount:", "4,500.00"), ("Subtotal", "AED:", "4,500.00"), ("Sub", "Total", "AED.", "4,500.00")])
+def test_punctuation_on_money_wording_still_reads(words):
+    assert figure(totals(row_of(880, *words)), "net") == "4500.00"
+
+
+@pytest.mark.parametrize("words", [("Subtotal", "Ref:", "47362"), ("Taxable", "Amount", "Ref", "47362")])
+def test_punctuation_does_not_make_a_reference_money_wording(words):
+    assert figure(totals(row_of(880, *words)), "net") is None
+
+
+LINE_HEADING = [(100, "Item"), (250, "Taxable"), (350, "VAT"), (450, "Total")]
+LINE_ROW = [(100, "Pen"), (250, "100.00"), (350, "5.00"), (450, "105.00")]
+FIRST_PAGE = (TITLE, NUMBER, under(470, LINE_HEADING), under(490, LINE_ROW))
+MOVED = [(600, "4,500.00"), (720, "225.00"), (840, "4,725.00")]
+
+
+@pytest.mark.parametrize("second_page", [
+    [(100, (600, "Taxable"), (720, "VAT"), (840, "Total")), under(120, MOVED)],
+    [under(120, MOVED)],
+    [under(120, [(500, "Total"), *MOVED])],
+    [under(120, [(600, "4500"), (720, "225"), (840, "4725")])],
+    [(100, (600, "Taxable"), (720, "VAT"), (840, "Total")), under(120, [(600, "4500"), (720, "225"), (840, "4725")])],
+])
+def test_a_summary_moved_sideways_on_a_later_page_blanks_the_first_pages_figures(second_page):
+    invoice = pages(FIRST_PAGE, second_page)
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == (None, None)
+
+
+def test_a_labelled_net_on_a_later_page_does_not_keep_the_first_pages_tax():
+    invoice = pages(FIRST_PAGE, [(120, (600, "Subtotal"), (800, "4,500.00"))])
+    assert (figure(invoice, "net"), figure(invoice, "tax")) == ("4500.00", None)

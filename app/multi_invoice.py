@@ -143,10 +143,11 @@ class _Page:
         self.dates = {match.group().casefold() for line in top for match in _DATE.finditer(line)}
         titled = any(_TITLE.search(line) for line in top)
         self.tax_ids = {tax for line in top for tax in _TAX_ID.findall(line)}
-        party = bool(self.tax_ids) or any(_PARTY.search(line) for line in top)
+        self.party = bool(self.tax_ids) or any(_PARTY.search(line) for line in top)
         self.amount_lines = sum(1 for line in lines if _AMOUNT.search(line))
-        self.opens = titled and (bool(self.dates) or party) and self.amount_lines >= 2
-        self.letterhead = {word.casefold() for word in _WORD.findall(" ".join(top[:1]))}
+        self.opens = titled and (bool(self.dates) or self.party) and self.amount_lines >= 2
+        # A first line that is the title is a running head, not a supplier's name.
+        self.letterhead = {word.casefold() for word in _WORD.findall(" ".join(top[:1]))} if top and not _TITLE.search(top[0]) else set()
         self.totals = {_AMOUNT.findall(line)[-1] for line in lines[-CLOSE_LINES:]
                        if _TOTAL.search(line) and not _NOT_TOTAL.search(line) and _AMOUNT.search(line)}
         self.counter = page_counter(self.text)
@@ -182,6 +183,8 @@ def _between(first: _Page, previous: _Page, page: _Page) -> str | None:
     if supplier_changed:
         return "unsure"
     if page.opens and first.dates and page.dates and not first.dates & page.dates:
+        return "unsure"
+    if page.opens and page.party and header_changed:  # a full new header, nothing closed before it
         return "unsure"
     if previous.totals and page.totals and not previous.totals & page.totals:  # two different grand totals
         return "unsure"

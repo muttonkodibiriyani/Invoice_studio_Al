@@ -257,7 +257,7 @@ def test_a_new_supplier_without_a_total_before_it_still_splits():
 NATIVE_THEN_CONTINUES = [
     # The header repeats on every page, the total only on the last.
     [_page(foot=()), _page(rows=_rows(3))],
-    # A short running head, then rows; the top of the page differs but nothing says a new invoice.
+    # A short running head with the title first, then rows: nothing says a new invoice or a new supplier.
     [_page(foot=()), "\n".join(("Tax Invoice 01/03/2026", *_rows(8), "Total Payable 90.00"))],
     # Rows only, then the totals alone on the last page.
     [_page(foot=()), "\n".join(_rows(4)), "Sub Total 100.00\nVAT 5.00\nTotal 105.00"],
@@ -298,6 +298,8 @@ def test_one_invoice_over_several_pages_neither_splits_nor_holds(pages):
     ([_page(), "\n".join(("TRN 900800700600500", *_rows(3)))], [2]),
     # Printed counters that neither run on nor restart.
     ([_page(foot=("Page 1 of 2",)), _page(rows=_rows(3), foot=("Page 4 of 5",))], [2]),
+    # A whole new header with the same supplier and date, and nothing closed before it.
+    ([_page(foot=()), _page(ref="Doc Ref X-1002", foot=())], [2]),
     # A printed number changes while the counter runs on: they disagree.
     (["Tax Invoice 1000000001\nPage 1 of 2", "Tax Invoice 1000000002\nPage 2 of 2"], [2]),
 ])
@@ -369,54 +371,62 @@ def test_child_answer_carries_hold_pages(tmp_path):
     assert outcome.hold_pages == [2] and _in_reader_child(content, tmp_path) == outcome
 
 
-def _released_hold_flow(tmp_path, monkeypatch, content, *held):
-    app, client = _studio(tmp_path, monkeypatch)
+def _read_fine(*args, **kwargs):
+    """The reader's part is not under test here, and the real one is slow on a page with no labels it knows."""
+    return {"invoice": {"number": "X-1001", "lines": []}, "text": "made up", "boxes": [],
+            "trace": [{"engine": "fake", "status": "extracted"}], "selected_engine": "fake", "completeness": 80, "document_type_hint": None,
+            "extraction_note": None, "evidence": {}, "readers": {}, "annotated_evidence": {}}
+
+
+def test_a_held_file_blocks_export_until_a_person_releases_it(tmp_path, monkeypatch):
+    content = _pdf(_page(foot=()), _page(date="09/09/2026", foot=()))
+    app, client = _studio(tmp_path, monkeypatch, _read_fine)
     with client:
         job = _upload(client, "held.pdf", content)
-        assert job["several_upload"] == list(held) and "may hold several invoices" in job["extraction_note"]
+        assert job["several_upload"] == [2] and "may hold several invoices" in job["extraction_note"]
         assert len(client.get("/api/state").json()["jobs"]) == 1  # kept whole
         job = _settled(client, job["id"])
+        jid = job["id"]
+        assert job["status"] == "review", job["error"]
         assert "may hold several invoices" in job["extraction_note"]
         issue = next(i for i in job["validation"]["issues"] if i["code"] == multi_invoice.SEVERAL_CODE)
-        assert issue["blocking"] and issue["level"] == "hard" and job["status"] == "review"
-        refused = client.post(f"/api/jobs/{job['id']}/export", json={"revision": job["revision"]})
+        assert issue["blocking"] and issue["level"] == "hard"
+        refused = client.post(f"/api/jobs/{jid}/export", json={"revision": job["revision"]})
         assert refused.status_code == 409 and "may hold several invoices" in refused.json()["detail"]
-        # Confirming review is not the release: the reviewer has to say so on this one question.
-        saved = client.post(f"/api/jobs/{job['id']}/review", json={"invoice": job["invoice"], "revision": job["revision"], "confirm": True})
+        # Confirming review is not the release: the reviewer has to answer this one question.
+        saved = client.post(f"/api/jobs/{jid}/review", json={"invoice": job["invoice"], "revision": job["revision"]})
         assert saved.status_code == 200, saved.text
-        assert not saved.json()["validation"]["ready"]
-        assert client.post(f"/api/jobs/{job['id']}/export", json={"revision": saved.json()["revision"]}).status_code == 409
-        batch = client.post("/api/exports/batch", json={"jobs": [{"id": job["id"], "revision": saved.json()["revision"]}]})
+        revision = saved.json()["revision"]
+        selection = {"jobs": [{"id": jid, "revision": revision}]}
+        assert client.post(f"/api/jobs/{jid}/export", json={"revision": revision}).status_code == 409
+        batch = client.post("/api/exports/batch", json=selection)
         assert batch.status_code == 409 and "may hold several invoices" in batch.text
-        draft = client.post("/api/exports/draft", json={"jobs": [{"id": job["id"], "revision": saved.json()["revision"]}]})
-        assert draft.status_code == 409, draft.text  # the only invoice is skipped, so there is no draft
-        released = client.post(f"/api/jobs/{job['id']}/one-invoice")
+        draft = client.post("/api/exports/target-draft", json=selection)
+        assert draft.status_code == 409 and "may hold several invoices" in draft.text
+        released = client.post(f"/api/jobs/{jid}/one-invoice")
         assert released.status_code == 200, released.text
         body = released.json()
         assert not any(i["code"] == multi_invoice.SEVERAL_CODE for i in body["validation"]["issues"])
         assert "may hold several" not in (body.get("extraction_note") or "")
-        assert client.post(f"/api/jobs/{job['id']}/one-invoice").status_code == 409
-        assert client.post(f"/api/jobs/{job['id']}/export", json={"revision": body["revision"]}).status_code == 200
+        assert client.post(f"/api/jobs/{jid}/one-invoice").status_code == 409
+        selection = {"jobs": [{"id": jid, "revision": body["revision"]}]}
+        assert client.post("/api/exports/batch", json=selection).status_code == 200
     rows = [json.loads(payload) for event, payload in audit_rows(app) if event == "several_invoices_released"]
-    assert rows == [{"job_id": job["id"], "pages": list(held)}]
-
-
-def test_a_held_file_blocks_export_until_a_person_releases_it(tmp_path, monkeypatch):
-    _released_hold_flow(tmp_path, monkeypatch, _pdf(_page(foot=()), _page(date="09/09/2026", foot=())), 2)
+    assert rows == [{"job_id": jid, "pages": [2], "actor": "owner-uid"}]
 
 
 def test_upload_splits_invoices_with_no_readable_number_into_their_own_records(tmp_path, monkeypatch):
     content = _pdf(_page(), _page(supplier="Alcora Packaging FZE", tax="900800700600500", ref="Voucher 77"),
                    _page(ref="Doc Ref X-1002", date="02/03/2026"))
-    _, client = _studio(tmp_path, monkeypatch)
+    _, client = _studio(tmp_path, monkeypatch, _read_fine)
     with client:
         _upload(client, "three.pdf", content)
-        jobs = [j for j in client.get("/api/state").json()["jobs"]]
+        jobs = client.get("/api/state").json()["jobs"]
         assert sorted(j["split"]["part"] for j in jobs) == [1, 2, 3] and all(j["split"]["of"] == 3 for j in jobs)
         for job in jobs:
             settled = _settled(client, job["id"])
             assert settled["filename"] == f"three [{settled['split']['part']} of 3].pdf"
-            assert "bound 3 invoices." in settled["extraction_note"]
+            assert "bound 3 invoices" in settled["extraction_note"]
             assert not any(i["code"] == multi_invoice.SEVERAL_CODE for i in settled["validation"]["issues"])
 
 

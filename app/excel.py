@@ -3,6 +3,7 @@ import re
 from datetime import date
 from decimal import Decimal
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 from .matching import strip_ult
@@ -59,6 +60,39 @@ def batch_workbook(entries):
 
 
 UPC_MODES=("barcode","empty")
+# What a cell shows of the AI check (app/ai_check): a fill and a note, no column added to the template. A cell with
+# neither was not confirmed. Column A of the Header row says it for the whole invoice.
+MARKS={"confirmed":("C6EFCE","AI confirmed: the local read and the AI read agree. This does not prove the value right."),
+       "filled":("BDD7EE","AI filled: the local read was blank and the value is the AI's. Check it against the document."),
+       "disputed":("F8CBAD","In dispute: the local read and the AI read differ."),
+       "settled":("FFE699","A person settled a dispute between the local read and the AI read here."),
+       "not_confirmed":("D9D9D9","Not AI-confirmed")}
+_INVOICE_MARKS={"confirmed":"confirmed","partial":"filled","disputed":"disputed","not_confirmed":"not_confirmed"}
+
+
+def _mark(cell,state,text=""):
+    color,words=MARKS[state]
+    cell.fill=PatternFill("solid",fgColor=color)
+    cell.comment=Comment(f"{words} {text}".strip(),"Invoice Studio",width=320,height=120)
+
+
+def _mark_invoice(sheet,row,check):
+    """The invoice's AI check on its Transaction Number cell, which always holds a value."""
+    counts=check.get("counts") or {}
+    said=check.get("why") or ", ".join(f"{n} {name}" for name,n in counts.items() if n)
+    cell=sheet.cell(row,1);cell.fill=PatternFill("solid",fgColor=MARKS[_INVOICE_MARKS[check["status"]]][0])
+    cell.comment=Comment(f"{check['label']}: {said}.","Invoice Studio",width=320,height=120)
+
+
+def _mark_cell(cell,states,fields,check,line=None):
+    """The strongest of ``fields``' states on this cell: its own field, or a value derived from them. A derived cell
+    takes only a dispute, since the AI did not read the code derived from what it read."""
+    own=fields[0]
+    for field in fields:
+        if states.get(field)=="disputed":
+            found=next((x for x in check["disputes"] if x["field"]==field and x["line"]==line),None)
+            _mark(cell,"disputed",f"Local: {found['local']}. AI: {found['ai']}." if found else "");return
+    if own and states.get(own) in MARKS:_mark(cell,states[own])
 _NUMBER_ID=re.compile(r"[1-9]\d{0,14}")
 
 
@@ -111,6 +145,7 @@ def _rules_sheets(views,upc,blanks):
         return f["value"]
     for transaction,v in enumerate(views,1):
         f=v["fields"];s=w["Header"];row=transaction+1
+        check=v.get("ai_check") or {"status":"not_confirmed","label":"Not AI-confirmed","why":"no AI read was made","header":{},"lines":[],"disputes":[]}
         ev=cells.setdefault(transaction,{})
         def put(sheet,r,c,field):
             if not blanks or w[sheet].cell(r,c).value not in (None,""):ev[f"{sheet}!{w[sheet].cell(r,c).coordinate}"]=field["evidence"]
@@ -136,4 +171,11 @@ def _rules_sheets(views,upc,blanks):
             for col,k in ((4,"Unit Cost"),(5,"Quantity")):
                 x=need(c[k],f"Line {line['line']} {k}");d.cell(n,col,None if x is None else Decimal(x)).number_format="0.0000";put("Details",n,col,c[k])
             text_cell(d.cell(n,6),need(c["Unit Tax Code"],f"Line {line['line']} Unit Tax Code"));put("Details",n,6,c["Unit Tax Code"])
+            states=check["lines"][line["line"]-1] if 0<line["line"]<=len(check["lines"]) else {}
+            for col,fields in ((2,("item_id","sku","gtin")),(3,("gtin",)),(4,("price",)),(5,("qty",))):
+                if col!=3 or d.cell(n,3).value not in (None,""):_mark_cell(d.cell(n,col),states,fields,check,line["line"])
+        for cell,fields in ((s.cell(row,2),("number",)),(s.cell(row,3),(None,"supplier_name")),(s.cell(row,4),("po",)),(s.cell(row,5),(None,"buyer_name")),
+                            (s.cell(row,7),("date",)),(s.cell(row,8),("net",)),(s.cell(row,9),("tax",)),(t.cell(row,3),("net",))):
+            _mark_cell(cell,check["header"],fields,check)
+        _mark_invoice(s,row,check)
     return w,cells

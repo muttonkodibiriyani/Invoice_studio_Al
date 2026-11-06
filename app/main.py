@@ -27,7 +27,7 @@ from pydantic import Field, SecretStr, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
 from .authentication import EntraIdentity, actor
-from . import ai_rules
+from . import ai_check, ai_rules
 from .azure_foundry import env_refusal
 from .authorization import ADMIN, MEMBER, PUBLIC, RateLimiter, access, allows, client_ip, local_peer, route_access, verify_registry
 from .logging_setup import new_request_id, request_id
@@ -96,6 +96,8 @@ class Review(StrictModel):
     supplier_code: str | None = None
     # The reviewer's pick among the Item Master sites of the printed supplier name (S1.2); "" clears it.
     supplier_site: str | None = None
+    # The reviewer's picks on AI disputes: {"number": "local", "line 2 qty": "ai", "lines": "typed"} (app/ai_check).
+    settled: dict[str,str] | None = None
 
 
 class Revision(StrictModel):
@@ -502,6 +504,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             view["coverage"]=coverage(view,item_rules().coverage_tiers())
             # P-LOC / P-LOCTYPE: what the user must answer about the location (rules workbook Prompts).
             view["prompts"]=result.get("prompts") or []
+            view["ai_check"]=ai_check.view(j.get("readers"),invoice.model_dump(mode="json"))
+            view["issues"]=[*view.get("issues",[]),*ai_check.issues(view["ai_check"])]
             return view
     def stored_text_checks(j):
         """The printed-text checks the target check reads, built from the job's text in a reader child
@@ -839,6 +843,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         if opts.ai_fallback or opts.engine=="ai":
             if not opts.model:warnings.append("No AI model selected. If local reading fails, this batch will wait for an AI connection or manual review.")
             warnings.append("AI fallback sends the invoice document or its extracted text to the selected provider. Provider usage limits and charges may apply.")
+            if opts.provider=="azure":warnings.append("Azure AI Foundry reads every invoice in this batch once as a second read, including ones the local readers finish, and each read is charged.")
         warnings.append("Each file must contain one invoice. For a combined PDF containing several invoices, split it into separate files first.")
         warnings.append("Missing identity, price, quantity, receipt or tax evidence cannot be guessed. Exceptions require review.")
         token=secrets.token_urlsafe(32)
@@ -992,7 +997,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     def review(jid:str,body:Review):
         if has_unwritable_text(body.model_dump()):
             raise HTTPException(400,"This value cannot be saved: remove control characters and others a workbook cannot hold.")
-        view=entries=pick=site=None;cleared=0
+        view=entries=pick=site=settled=None;cleared=0
         if not demo_references:
             j=job_or_404(jid);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -1009,7 +1014,9 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             kept=(pick,site)==(j.get("owner_supplier_code"),j.get("owner_supplier_site"))
             picked_by=None if not (pick or site) else j.get("owner_supplier_pick") if kept else {"actor":actor.get(),"at":datetime.now(timezone.utc).isoformat()}
             checks=stored_text_checks(j)
-            view=compute_rules(body.invoice,{**j,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by},entries)
+            try:settled=ai_check.settle(j.get("readers"),body.settled,body.invoice.model_dump(mode="json"),actor.get(),datetime.now(timezone.utc).isoformat())
+            except ValueError as error:raise HTTPException(422,str(error)) from None
+            view=compute_rules(body.invoice,{**j,"readers":settled,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by},entries)
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -1021,6 +1028,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             j.update(evidence=aligned_evidence(body.invoice,j),invoice=inv.model_dump(mode="json"),reviewed=body.confirm,status="review",revision=j["revision"]+1)
             if view is not None:
                 j["rules"]={**view,"revision":j["revision"]};j["owner_entries"]=entries;j["owner_entry_attribution"]=attribution
+                if body.settled:j["readers"]=settled
                 j["text_checks"]=checks  # same revision as the read above, so the same text
                 for name,value in (("owner_supplier_code",pick),("owner_supplier_site",site),("owner_supplier_pick",picked_by)):
                     if value:j[name]=value
@@ -1036,7 +1044,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             evaluate(j,c);store.job(jid,j,c)
             store.audit("reviewed" if body.confirm else "edited",{"job_id":jid,"before":before,"after":j["invoice"],"revision":j["revision"],"reference_version":references(c).get("version"),
                         **({"owner_entries":entries,"accepted":j["validation"].get("accepted",[]),"owner_supplier_pick":bool(pick or site),
-                           "owner_line_entries_cleared":cleared} if view is not None else {})},c)
+                           "owner_line_entries_cleared":cleared,**({"ai_disputes_settled":body.settled} if body.settled else {})} if view is not None else {})},c)
         return public(j)
 
     @app.post("/api/jobs/{jid}/retry")
@@ -1182,7 +1190,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         ai=(j.get("readers") or {}).get("ai") or {}
         told={k:ai[k] for k in ("filled","flagged","rules_added","rules_applied") if ai.get(k)}
         if ai.get("suggestions"):told["suggestions"]=len(ai["suggestions"])
-        return {"ai":{"status":ai.get("status"),"calls":ai.get("calls",0),**told}} if told or ai.get("calls") else {}
+        check=(j.get("rules") or {}).get("ai_check") or ai_check.view(j.get("readers"),j["invoice"])
+        return {"ai_check":{"status":check["status"],**check["counts"]},**({"ai":{"status":ai.get("status"),"calls":ai.get("calls",0),**told}} if told or ai.get("calls") else {})}
     def audit_receipt(receipt):
         # Cell evidence holds owner rows; the audit keeps its size, the receipt keeps the rows.
         return {**{k:v for k,v in receipt.items() if k!="evidence"},**({"evidence_cells":len(receipt["evidence"])} if "evidence" in receipt else {})}
@@ -1748,7 +1757,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             # The store's lock is held from the child's read to apply: what the child read is still what is there.
             # Audits wait until it is released: no database write waits on a learning run.
             with learned.lock:
-                try:record=stored_learn(j.get("text") or "",j.get("boxes") or [],j.get("tables") or [],j["invoice"],j["id"],store.root)
+                try:record=stored_learn(j.get("text") or "",j.get("boxes") or [],j.get("tables") or [],ai_check.learnable(j["invoice"],j.get("readers")),j["id"],store.root)
                 except Exception as error:record={"stage":"reader","error_type":type(error).__name__}
                 else:
                     if "error_type" in record:record["stage"]="learn"

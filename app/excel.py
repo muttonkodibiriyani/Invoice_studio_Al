@@ -67,7 +67,7 @@ def _id_cell(cell,value):
     else:text_cell(cell,value)
 
 
-def rules_workbook(views,upc="empty",draft=False):
+def rules_workbook(views,upc="empty",blanks=False):
     """Target template (Header / Tax_Breakdown / Details) from fine-rules views only.
 
     UPC stays empty by default (owner answer: Details.Item = Item Master ITEM_PARENT is what populates);
@@ -76,12 +76,12 @@ def rules_workbook(views,upc="empty",draft=False):
     Every written cell comes from a view value that carries evidence; the
     returned map records that evidence per transaction and cell. Ref No./Comment stay truly empty.
 
-    ``draft``: a review copy of the same workbook for invoices nobody approved yet. Where the export would refuse
-    a cell (flagged, no value or no evidence), the cell stays empty; nothing is ever filled to look complete.
+    ``blanks``: a cell with no evidenced value (flagged, no value or no evidence) stays empty instead of refusing the
+    workbook; nothing is ever filled to look complete. The draft and, since owner decision D11, the real export.
     """
     if upc not in UPC_MODES:raise ValueError("UPC mode must be barcode or empty")
     # Approved by the rules, or confirmed by a reviewer (owner_accepted lists the review issues they accepted).
-    if not views or not draft and any(v["status"]!="Approved" and "owner_accepted" not in v for v in views):
+    if not views or not blanks and any(v["status"]!="Approved" and "owner_accepted" not in v for v in views):
         raise ValueError("Only invoices the fine rules approved or a reviewer confirmed can be exported")
     w=Workbook();w.remove(w.active);cells={}
     for name,cols in HEADERS.items():
@@ -91,20 +91,20 @@ def rules_workbook(views,upc="empty",draft=False):
     dv=DataValidation(type="list",formula1=f'"{STORE},{WAREHOUSE}"');w["Header"].add_data_validation(dv)
     def need(f,where):
         if f["flagged"] or f["value"] is None or not f["evidence"]:
-            if draft:return None
+            if blanks:return None
             raise ValueError(f"{where} has no evidenced value")
         return f["value"]
     for transaction,v in enumerate(views,1):
         f=v["fields"];s=w["Header"];row=transaction+1
         ev=cells.setdefault(transaction,{})
         def put(sheet,r,c,field):
-            if not draft or w[sheet].cell(r,c).value not in (None,""):ev[f"{sheet}!{w[sheet].cell(r,c).coordinate}"]=field["evidence"]
+            if not blanks or w[sheet].cell(r,c).value not in (None,""):ev[f"{sheet}!{w[sheet].cell(r,c).coordinate}"]=field["evidence"]
         s.cell(row,1,transaction)
         text_cell(s.cell(row,2),need(f["number"],"Document"));put("Header",row,2,f["number"])
         for c,k in ((3,"site"),(4,"po"),(5,"location")):
             _id_cell(s.cell(row,c),need(f[k],f[k]["label"]));put("Header",row,c,f[k])
         loc_type=written(need(f["location_type"],"Location Type"))
-        if not loc_type and not draft:raise ValueError(f"Location Type must be {STORE} or {WAREHOUSE}")
+        if not loc_type and not blanks:raise ValueError(f"Location Type must be {STORE} or {WAREHOUSE}")
         text_cell(s.cell(row,6),loc_type);dv.add(s.cell(row,6));put("Header",row,6,f["location_type"])
         when=need(f["date"],"Document Date")
         s.cell(row,7,date.fromisoformat(when) if when else None).number_format="m/d/yyyy";put("Header",row,7,f["date"])

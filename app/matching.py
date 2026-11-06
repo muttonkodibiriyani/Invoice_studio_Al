@@ -316,7 +316,7 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
         key_=next((k for k,lab,_ in RULES_FIELDS if lab==label),label)
         required=label in REQUIRED_LINE if line is not None else key_ in REQUIRED_HEADER
         hint="; enter it on the review screen if you have it" if required else ""
-        issues.append({"code":"Missing Evidence","message":f"{label} {why}{hint}","owner":"Accounts payable","line":line,
+        issues.append({"code":"Missing Evidence","message":f"{label} {why}{hint}","field":label,"owner":"Accounts payable","line":line,
                        "rule":"EVIDENCE","evidence":"","blocking":required,"level":"hard" if required else "warning"})
     return {"status":result.get("status") or "Review","fields":fields,"lines":out_lines,"issues":issues,
             "item_lines":{"resolved":resolved,"total":total,"rate":str(rate.quantize(Decimal("0.0001"))) if rate is not None else None,
@@ -325,6 +325,8 @@ def rules_view(result,text="",boxes=(),printed=None,entries=None,master_version=
             "po_candidates":int(result.get("po_candidates") or 0),"config_version":result.get("config_version"),
             # Decision 76: Order Date is evidence only (review note and a Checks row), never an editable field.
             **({"order_date":result["order_date"]} if result.get("order_date") else {}),
+            # The currency the target check's arithmetic tolerance is looked up in (owner decision, task 01a1ab56).
+            **({"arithmetic_currency":result["arithmetic_currency"]} if result.get("arithmetic_currency") else {}),
             **({"receipt_date":result["receipt_date"]} if result.get("receipt_date") else {}),
             # Codes left when the rules cannot pick a supplier code: offered for the owner's pick, never a value.
             **({"supplier_site_candidates":result["supplier_site_candidates"]} if result.get("supplier_site_candidates") else {})}

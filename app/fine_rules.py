@@ -97,6 +97,13 @@ ITEM_LINE_DEFINITION = ("lines resolved to exactly one Item Master ITEM_PARENT w
 # The owner sheets name the check (POG-007, C-16); the amounts are this form answer, cited as the evidence.
 CURRENCY_REGION = {"AED": "ARE", "SAR": "SAU"}  # VAT region of a currency used in one VAT country only (T5.1)
 VALUE_TOLERANCE_BY_CURRENCY = {"KWD": Decimal("1"), "AED": Decimal("2")}
+# Owner decision (Tharak, relayed 2026-11-05, task 01a1ab56): the invoice total before tax (lines vs net, and net +
+# tax vs the labelled gross) is exact, but may differ by up to this much ("for now these 3"). The owner config's
+# ``arithmetic_tolerance`` replaces the whole table: a currency left out is checked exactly (and flagged).
+ARITHMETIC_TOLERANCE = {"AED": "10.00", "SAR": "10.00", "KWD": "1.000"}
+# Per line (02A qty x unit cost vs line amount) the owner's answer is exact plus rounding; the owner config's
+# ``line_arithmetic_tolerance`` (same shape) may allow more for a currency. None by default.
+LINE_ARITHMETIC_TOLERANCE = {}
 VALUE_DECIMALS = 2
 VALUE_TOLERANCE_SOURCE = "owner form 01a10c4f (2026-10-05 13:48Z): up to 1 KWD or 2 AED, rounded to 2 digits"
 # Owner form 01a10c4c (2026-10-05 13:43Z): the loaded POGRN report is the owner's complete 25 Sep report.
@@ -140,6 +147,8 @@ class RulesConfig:
     value_tolerance: Decimal = Decimal("0")
     value_tolerance_by_currency: dict = field(default_factory=lambda: dict(VALUE_TOLERANCE_BY_CURRENCY))
     value_decimals: int = VALUE_DECIMALS
+    arithmetic_tolerance: dict = field(default_factory=lambda: tolerance_table({}))
+    line_arithmetic_tolerance: dict = field(default_factory=dict)
     # Description acceptance threshold is open (V-009); description never auto-approves.
     description_threshold: float = 0.6
     buyer_name: str = ""
@@ -203,8 +212,33 @@ class RulesConfig:
             entity_map={**ENTITY_MAP, **{str(k).upper(): dict(v) for k, v in (data.get("entity_map") or {}).items()}},
             buyer_name=" ".join(str(data.get("buyer_name") or "").split()),
             version=str(data.get("version") or "unconfigured")[:80],
+            arithmetic_tolerance=tolerance_table(data),
+            line_arithmetic_tolerance=tolerance_table(data, "line_arithmetic_tolerance", LINE_ARITHMETIC_TOLERANCE),
             **tolerances,
         )
+
+
+def tolerance_table(data, key="arithmetic_tolerance", default=ARITHMETIC_TOLERANCE):
+    """The owner config's table under ``key`` ({3-letter currency: non-negative amount}), else the decided default:
+    {currency: Decimal}. A malformed table raises ValueError."""
+    table = (data or {}).get(key, default)
+    if not isinstance(table, dict):
+        raise ValueError(f"{key} must map a 3-letter currency to an amount")
+    out = {}
+    for code, amount in table.items():
+        value = to_decimal(amount)
+        if not re.fullmatch(r"[A-Z]{3}", str(code)) or value is None or not value.is_finite() or value < 0:
+            raise ValueError(f"{key} must map a 3-letter currency to a non-negative amount")
+        out[str(code)] = value
+    return out
+
+
+def arithmetic_tolerance(table, currency):
+    """(allowed difference, flag): the currency's tolerance, or 0 (exact) and 'no tolerance set for <cur>'."""
+    code = text(currency).upper()
+    if code in table:
+        return table[code], ""
+    return Decimal(0), f"no tolerance set for {code or 'a blank currency'}"
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -1734,10 +1768,11 @@ def resolve_currency(run, supplier_site, market, hint):
 # --------------------------------------------------------------------------- tax code
 
 
-def resolve_tax_code(run, market, document_date):
+def resolve_tax_code(run, market, document_date, tolerance=Decimal(0)):
     """R-016: Unit Tax Code is the owner's C/PV code of the receiving market's VAT region (R-013).
 
-    The printed tax must agree with the region rate, either on the invoice net or line by line.
+    The printed tax must agree with the region rate, either on the invoice net or line by line, within
+    ``tolerance`` (owner decision B, Q-a: the ARITHMETIC_TOLERANCE of the invoice currency; exact without one).
     """
     invoice = run.invoice
     printed = text(invoice.taxCode)
@@ -1765,8 +1800,8 @@ def resolve_tax_code(run, market, document_date):
         return (amount * vat["rate"] / 100).quantize(invoice.tax, rounding=ROUND_HALF_UP)
 
     nets = [line.net_amount for line in invoice.lines]
-    agrees = (invoice.net is not None and at_rate(invoice.net) == invoice.tax) or (
-        nets and None not in nets and sum((at_rate(n) for n in nets), Decimal(0)) == invoice.tax)
+    agrees = (invoice.net is not None and abs(at_rate(invoice.net) - invoice.tax) <= tolerance) or (
+        nets and None not in nets and abs(sum((at_rate(n) for n in nets), Decimal(0)) - invoice.tax) <= tolerance)
     if not agrees:
         run.exception("Tax Code", f"Printed tax {invoice.tax} does not agree with the {vat['rate']}% rate of "
                       f"VAT code {vat['code']}", "R-016", owner="Tax reviewer")
@@ -2064,10 +2099,14 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     # Line outputs (ALG-021/022/026/027).
     # T5.1 (A7): without a receiving market the country is the invoice currency's; the rate check still applies.
     country = market or CURRENCY_REGION.get(text(invoice.currency).upper())
-    tax_code = resolve_tax_code(run, country, document_date)
+    # The invoice's arithmetic is in its own currency: the resolved one, else the printed code (as the target check).
+    arithmetic_currency = currency or text(invoice.currency).upper()
+    tax_code = resolve_tax_code(run, country, document_date,
+                                arithmetic_tolerance(config.arithmetic_tolerance, arithmetic_currency)[0])
     tax_source = "Owner VAT code table (C/PV), " + ("receiving market" if market else "country of the invoice currency")
     lines_out = []
     discount = invoice_discount(invoice, scan)
+    line_tolerance = config.line_arithmetic_tolerance.get(arithmetic_currency, Decimal(0))
     for line, m in zip(invoice.lines, matches):
         n = m["line"]
         brand = ""
@@ -2097,8 +2136,10 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         elif line.net_amount is not None:
             # 02A Unit Cost: line/value reconciliation at the printed line amount's precision.
             computed = (line.qty * line.price).quantize(line.net_amount, rounding=ROUND_HALF_UP)
+            # Exact at the line amount's decimals plus rounding: one step per unit (a unit cost printed rounded).
+            allowed = max(abs(line.qty) * Decimal(1).scaleb(line.net_amount.as_tuple().exponent), line_tolerance)
             # A printed invoice-level discount explains a line amount below quantity x unit cost.
-            if computed != line.net_amount and not (discount and 0 <= line.net_amount <= computed):
+            if abs(computed - line.net_amount) > allowed and not (discount and 0 <= line.net_amount <= computed):
                 line_ok = False
                 run.exception("Line Exception", f"Quantity x unit cost {computed} differs from line amount "
                               f"{line.net_amount}", "02A-Unit Cost", n)
@@ -2162,7 +2203,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "supplier_candidates": candidates, "missing_mandatory": missing,
         "prompts": location_prompts(location, group and group["_location_type"]),
         "po": {"order": po["order"], "source": po["source"], "status": po["status"], "value_source": value_source},
-        "order_date": order_date,
+        "order_date": order_date, "arithmetic_currency": arithmetic_currency,
         "receipt_date": check_receipt_dates(po, order_date, document_date),
         "ebs_supplier_code": key or "/".join(sorted(keys)), "entity_hint": hint, "config_version": config.version,
         "item_resolution": resolution, "po_candidates": po["candidates"],

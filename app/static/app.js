@@ -353,7 +353,7 @@ const TARGET_GROUPS = [
 const TARGET_STATUS_LABELS = {
   verified: "Verified", empty_owner_rule: "Empty by owner rule", empty_flagged: "Empty (flagged)", mismatch: "Mismatch",
   over_cited: "Over-cited", no_evidence: "No evidence", unverifiable: "Unverifiable", data_gap: "Data gap",
-  owner_entry_unattributed: "Owner entry not attributed",
+  owner_entry_unattributed: "Owner entry not attributed", check_failed: "Row check failed",
 };
 
 function targetCellName(cell) {
@@ -1394,7 +1394,8 @@ function updateBatchControls() {
     : "Select invoices to download together or delete.";
   $("#batch-review").disabled = valid.length === 0 || reviewableSelected !== valid.length;
   $("#batch-fine-rules").disabled = valid.length === 0 || reviewableSelected !== valid.length;
-  $("#batch-export").disabled = valid.length === 0 || approvedSelected !== valid.length || app.reviewDirty;
+  // Decision A: the server sorts the selection into ready and blocked before anything is exported.
+  $("#batch-export").disabled = valid.length === 0 || app.reviewDirty;
   // Decision 67: the draft needs only one selected invoice with extracted data; the others are left out, never blocking it.
   $("#batch-draft").disabled = reviewableSelected === 0;
   $("#batch-delete").disabled = valid.length === 0;
@@ -2006,7 +2007,8 @@ function renderReviewActions(job) {
   $("#save-review").disabled = busy || exported || job.status === "error";
   $("#export-extraction-draft").hidden = busy || !hasStructuredInvoiceData(job);
   $("#export-extraction-draft").disabled = busy;
-  $("#export-job").disabled = !job.validation?.ready && !exported;
+  // Owner decision D11: open holds no longer stop the export; the server refuses only integrity problems.
+  $("#export-job").disabled = busy && !exported;
   $("#export-job").textContent = exported ? "Download Excel" : "Export Excel";
 }
 
@@ -2402,33 +2404,65 @@ async function downloadFineRules(kind) {
   }
 }
 
+// Decision A: 'Export selected' first shows which selected invoices go into the one real workbook and which are blocked
+// (not read, changed, already exported, duplicate). D11: open holds are listed as information for the export team.
 async function exportBatch() {
-  const selected = selectedBatchReviewJobs();
-  const jobs = selected.filter(isBatchReady);
-  if (!jobs.length || jobs.length !== selected.length) {
-    notify("Validated export requires every selected invoice to be approved and ready. Use the review workbook for extracted records.", "error", 8000);
-    return;
-  }
+  const jobs = (app.state?.jobs || []).filter((job) => app.selectedForBatch.has(job.id));
+  if (!jobs.length) return;
   if (app.reviewDirty) {
     notify("Save the current invoice before exporting a batch.", "error", 8000);
     return;
   }
   const button = $("#batch-export");
   button.disabled = true;
-  button.textContent = "Preparing…";
+  button.textContent = "Checking…";
   try {
-    const response = await studioBackground("export-batch", { jobs: jobs.map((job) => ({ id: job.id, revision: job.revision })) });
+    const response = await studioBackground("export-check", { jobs: jobs.map((job) => ({ id: job.id, revision: job.revision })) });
     if (!response.ok) throw await responseError(response);
-    const result = await response.json();
-    await downloadApi(result.url, `Merch_Inv_Batch_${result.id.slice(0, 8)}.xlsx`);
-    app.selectedForBatch.clear();
-    await loadState();
-    notify(`${result.count} invoices exported in one workbook.`);
+    const { ready, blocked } = await response.json();
+    app.batchExportReady = ready;
+    const attention = ready.filter((item) => item.attention.length);
+    $("#batch-export-count").textContent = `${ready.length} of ${jobs.length} go into one workbook; ${blocked.length} blocked.`;
+    $("#batch-export-held-list").replaceChildren(...blocked.map((item) =>
+      make("li", "", `${item.filename || item.id}: ${item.reasons.map((reason) => reason.message).join("; ")}`)));
+    $("#batch-export-held").hidden = !blocked.length;
+    $("#batch-export-attention-list").replaceChildren(...attention.map((item) =>
+      make("li", "", `${item.filename || item.id}: ${item.attention.map((hold) => hold.cell ? `${hold.code}: ${hold.cell}` : hold.code).join("; ")}`)));
+    $("#batch-export-attention").hidden = !attention.length;
+    const confirm = $("#confirm-batch-export");
+    confirm.textContent = `Export ${ready.length} invoice${ready.length === 1 ? "" : "s"}`;
+    confirm.disabled = !ready.length;
+    $("#batch-export-dialog").showModal();
   } catch (error) {
     notify(error.message, "error", 8000);
-    await loadState();
   } finally {
-    button.textContent = "Export approved";
+    button.textContent = "Export selected";
+    updateBatchControls();
+  }
+}
+
+async function confirmBatchExport() {
+  const ready = app.batchExportReady || [];
+  const button = $("#confirm-batch-export");
+  button.disabled = true;
+  button.textContent = "Exporting…";
+  try {
+    // All or nothing on the server: if any of these changed since the check, nothing is exported and the error says why.
+    const response = await studioBackground("export-batch", { jobs: ready.map((job) => ({ id: job.id, revision: job.revision })) });
+    if (!response.ok) throw await responseError(response);
+    const result = await response.json();
+    $("#batch-export-dialog").close();
+    await downloadApi(result.url, `Merch_Inv_Batch_${result.id.slice(0, 8)}.xlsx`);
+    const exported = new Set(ready.map((job) => job.id));
+    app.selectedForBatch = new Set([...app.selectedForBatch].filter((id) => !exported.has(id)));
+    const blocked = app.selectedForBatch.size;
+    notify(`${result.count} invoice${result.count === 1 ? "" : "s"} exported in one workbook.${blocked ? ` ${blocked} blocked, still selected and not exported.` : ""}`, blocked ? "warning" : "success", blocked ? 10000 : undefined);
+  } catch (error) {
+    $("#batch-export-dialog").close();
+    notify(`${error.message} Nothing was exported; check the selection again.`, "error", 10000);
+  } finally {
+    app.batchExportReady = [];
+    await loadState().catch(() => {});
     updateBatchControls();
   }
 }
@@ -3790,6 +3824,7 @@ function bindEvents() {
   $("#batch-review").addEventListener("click", openBatchReview);
   $("#confirm-batch-review").addEventListener("click", downloadBatchReview);
   $("#batch-export").addEventListener("click", exportBatch);
+  $("#confirm-batch-export").addEventListener("click", confirmBatchExport);
   $("#batch-draft").addEventListener("click", openBatchDraft);
   $("#confirm-batch-draft").addEventListener("click", downloadBatchDraft);
   $("#batch-fine-rules").addEventListener("click", openFineRules);

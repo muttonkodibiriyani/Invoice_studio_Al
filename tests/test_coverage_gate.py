@@ -1,4 +1,5 @@
 """V7.1 match coverage: the share of lines the rules found decides the Coverage_Tiers tier and whether export may run."""
+import json
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -110,7 +111,7 @@ def export_with_lines(client, owner, app, tmp_path, items):
     source.write_bytes(b"%PDF-1.4")
     store.job("cov", {"id": "cov", "filename": "invoice.pdf", "path": str(source), "status": "review", "revision": 1,
                       "reviewed": True, "provenance": [], "invoice": {"number": "INV-1", "lines": [{}] * len(items)}})
-    client.post("/api/jobs/cov/export", headers=bearer(owner), json={"revision": 1})  # stores a current rules view
+    assert client.get("/api/jobs/cov", headers=bearer(owner)).status_code == 200  # stores a current rules view
     j = store.job("cov")
     def evidenced(cells):
         return {k: cell if cell["value"] and cell["evidence"] else {**cell, **found()} for k, cell in cells.items()}
@@ -123,10 +124,14 @@ def export_with_lines(client, owner, app, tmp_path, items):
     return client.post("/api/jobs/cov/export", headers=bearer(owner), json={"revision": 1})
 
 
-def test_the_export_route_refuses_below_the_last_fallback(client, owner, app, tmp_path):
+def test_below_the_last_fallback_the_export_goes_out_with_the_coverage_hold_recorded(client, owner, app, tmp_path):
+    # Owner decision D11: the coverage tier no longer blocks the real export; the receipt keeps it for the export team.
     response = export_with_lines(client, owner, app, tmp_path, [found()] * 8 + [typed()] * 2)
-    assert response.status_code == 409
-    assert response.json()["detail"].startswith("Coverage 8 of 10 lines (80.00%). Add the missing items")
+    assert response.status_code == 200, response.json()
+    with app.state.store.connection() as c:
+        receipt = json.loads(c.execute("SELECT payload FROM exports WHERE job_id='cov'").fetchone()[0])
+    [hold] = [h for h in receipt["open_holds"] if h["code"] == "Coverage"]
+    assert hold["message"].startswith("Coverage 8 of 10 lines (80.00%). Add the missing items")
 
 
 def test_the_export_route_lets_a_filled_fallback_through(client, owner, app, tmp_path):

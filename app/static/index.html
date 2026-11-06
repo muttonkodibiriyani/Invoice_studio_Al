@@ -134,10 +134,10 @@
                   <small id="selected-detail">Select processed invoices for one review workbook.</small>
                 </div>
                 <div class="batch-actions">
-                  <button id="batch-review" class="button button-secondary button-small" type="button" disabled title="Only the values printed on the invoices. Supplier site, location and tax codes are left blank: use Export selected (draft) for the target sheet.">Printed values only</button>
+                  <button id="batch-review" class="button button-secondary button-small" type="button" disabled title="Only the values printed on the invoices. Supplier site, location and tax codes are left blank: use Draft of everything for the target sheet.">Printed values only</button>
                   <button id="batch-fine-rules" class="button button-secondary button-small" type="button" disabled>Run ULTA rules</button>
-                  <button id="batch-export" class="button button-primary button-small" type="button" disabled>Export approved</button>
-                  <button id="batch-draft" class="button button-secondary button-small" type="button" disabled>Export selected (draft)</button>
+                  <button id="batch-export" class="button button-primary button-small" type="button" disabled>Export selected</button>
+                  <button id="batch-draft" class="button button-secondary button-small" type="button" disabled>Draft of everything</button>
                   <button id="batch-delete" class="button button-quiet button-small danger-text" type="button" data-admin-only disabled>Delete selected…</button>
                 </div>
               </div>
@@ -689,7 +689,7 @@
     <dialog id="batch-review-dialog" aria-labelledby="batch-review-title">
       <form method="dialog" class="dialog-shell small-dialog">
         <div class="dialog-header"><div><p class="eyebrow">Combined extracted facts</p><h2 id="batch-review-title">Download one review workbook?</h2><p><span id="batch-review-count">0</span> saved invoice records will be combined into one Excel file.</p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
-        <div class="draft-warning" role="note"><strong>EXTRACTION · REVIEW ONLY</strong><span><b>This is not the target sheet.</b> It holds only what is printed on the invoices, so Supplier Site, Location, Location Type, Tax Code and Unit Tax Code are always blank here. For the target sheet with those filled from the ULTA rules, use <b>Export selected (draft)</b>. This download does not approve invoices, reserve receipts or write to the approved export ledger. Save each edited invoice before continuing.</span></div>
+        <div class="draft-warning" role="note"><strong>EXTRACTION · REVIEW ONLY</strong><span><b>This is not the target sheet.</b> It holds only what is printed on the invoices, so Supplier Site, Location, Location Type, Tax Code and Unit Tax Code are always blank here. For the target sheet with those filled from the ULTA rules, use <b>Draft of everything</b>. This download does not approve invoices, reserve receipts or write to the approved export ledger. Save each edited invoice before continuing.</span></div>
         <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Cancel</button><button id="confirm-batch-review" class="button button-primary" type="button">Download combined review Excel</button></div>
       </form>
     </dialog>
@@ -697,8 +697,17 @@
     <dialog id="batch-draft-dialog" aria-labelledby="batch-draft-title">
       <form method="dialog" class="dialog-shell small-dialog">
         <div class="dialog-header"><div><p class="eyebrow">Target workbook · draft</p><h2 id="batch-draft-title">Export the selected invoices as a draft?</h2><p><span id="batch-draft-count">0</span> go into one target workbook.<span id="batch-draft-skipped" hidden></span></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
-        <div class="draft-warning" role="note"><strong>DRAFT · NOT EXPORTED</strong><span>Same sheets and layout as Export approved. No invoice is marked exported, approved or confirmed. An empty cell means the rules have no evidenced value for it; nothing is filled in to look complete.</span></div>
+        <div class="draft-warning" role="note"><strong>DRAFT · NOT EXPORTED</strong><span>Same columns as Export selected, held invoices included, with a Checks sheet; the file name and every sheet are marked DRAFT. No invoice is marked exported, approved or confirmed. An empty cell means the rules have no evidenced value for it; nothing is filled in to look complete.</span></div>
         <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Cancel</button><button id="confirm-batch-draft" class="button button-primary" type="button">Download draft target workbook</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="batch-export-dialog" aria-labelledby="batch-export-title">
+      <form method="dialog" class="dialog-shell small-dialog">
+        <div class="dialog-header"><div><p class="eyebrow">Target workbook · export</p><h2 id="batch-export-title">Export the selected invoices?</h2><p id="batch-export-count"></p></div><button class="icon-button" type="button" value="cancel" aria-label="Close"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 5 10 10M15 5l-10 10"/></svg></button></div>
+        <div id="batch-export-held" class="validation-summary" hidden><strong>Blocked, not exported</strong><p>These stay as they are and can go in a later batch.</p><ul id="batch-export-held-list"></ul></div>
+        <div id="batch-export-attention" class="validation-summary" hidden><strong>Needs attention</strong><p>Exported with what was found; blanks stay blank. The export team validates these by hand (owner decision D11).</p><ul id="batch-export-attention-list"></ul></div>
+        <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Cancel</button><button id="confirm-batch-export" class="button button-primary" type="button">Export</button></div>
       </form>
     </dialog>
 
@@ -709,7 +718,7 @@
         <div id="fine-rules-summary" class="fine-rules-summary" aria-live="polite"></div>
         <div id="fine-rules-results" class="fine-rules-results"></div>
         <p id="fine-rules-target-reason" class="validation-summary" hidden></p>
-        <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Close</button><button id="fine-rules-review" class="button button-secondary" type="button" disabled title="Only the values printed on the invoices. Supplier site, location and tax codes are left blank: use Export selected (draft) for the target sheet.">Printed values only</button><button id="fine-rules-target" class="button button-primary" type="button" disabled>Download target workbook</button></div>
+        <div class="dialog-actions"><button class="button button-quiet" type="button" value="cancel">Close</button><button id="fine-rules-review" class="button button-secondary" type="button" disabled title="Only the values printed on the invoices. Supplier site, location and tax codes are left blank: use Draft of everything for the target sheet.">Printed values only</button><button id="fine-rules-target" class="button button-primary" type="button" disabled>Download target workbook</button></div>
       </form>
     </dialog>
 

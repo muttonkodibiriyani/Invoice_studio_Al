@@ -59,7 +59,7 @@ ROUTES = [
     ("GET", "/api/exports/x/evidence", "member"), ("GET", "/api/target-export/config", "member"),
     ("POST", "/api/target-export/config", "admin"), ("GET", "/api/exports/x", "member"),
     ("POST", "/api/exports/extraction-batch", "member"), ("POST", "/api/exports/target-draft", "member"),
-    ("POST", "/api/exports/batch", "member"), ("GET", "/api/batches/x", "member"),
+    ("POST", "/api/exports/batch", "member"), ("POST", "/api/exports/batch/check", "member"), ("GET", "/api/batches/x", "member"),
     ("GET", "/api/jobs/x/target-check", "member"), ("GET", "/api/target-check/accuracy", "member"),
     ("GET", "/api/costs", "admin"), ("GET", "/api/jobs/x/audit", "member"), ("POST", "/api/references", "admin"),
     ("POST", "/api/references/demo", "admin"), ("POST", "/api/demo", "admin"),

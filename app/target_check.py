@@ -15,7 +15,15 @@ printed text, the owner mapping config, or an attributed owner entry):
 - data_gap: rests on a malformed owner extract row;
 - owner_entry_unattributed: an owner entry without a matching stored entry, actor and time;
 - missing_line: a Details cell of an item line the invoice prints but the read lacks (or merged away); estimated
-  when lines_to_net fails, never matched (MEASURE, T2(b)).
+  when lines_to_net fails, never matched (MEASURE, T2(b));
+- check_failed: the evidence holds the value, but a row check the cell takes part in fails or cannot run, so the
+  value is not proven: the Header amounts need net + tax = the labelled printed gross and the lines to sum to the net (or
+  to it after the printed invoice discount; the unit-cost rounding warning is not enough), the
+  Tax Amount also net x the owner's VAT rate, a line's Unit Cost and Quantity a line without a Line Parsing
+  exception, and the Document a prefix without an l/I lookalike. An owner entry is the owner's say and stays.
+  The total before tax (lines vs net, net + tax vs gross) may differ by the currency's tolerance
+  (fine_rules.ARITHMETIC_TOLERANCE, replaced by the owner config's arithmetic_tolerance); a currency without one is
+  exact and flagged by the arithmetic_tolerance check. The tax vs net x rate is exact plus one minor unit per line.
 
 A filled owner-rule cell is a template failure (mismatch). The owner-facing line collapses the buckets:
 verified · empty by owner rule · empty (flagged) · needs checking (every other bucket).
@@ -32,14 +40,15 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from .fine_rules import CURRENCY_REGION, arithmetic_tolerance, tolerance_table
 from .location_type import STORE, TYPES, WAREHOUSE, written
 
 VERIFIED, EMPTY, MISMATCH = "verified", "empty_flagged", "mismatch"
 NO_EVIDENCE, UNVERIFIABLE, DATA_GAP, OVER_CITED = "no_evidence", "unverifiable", "data_gap", "over_cited"
 OWNER_RULE_EMPTY, UNATTRIBUTED, OWNER_ENTRY = "empty_owner_rule", "owner_entry_unattributed", "owner_entry"
-MISSING_LINE = "missing_line"
+MISSING_LINE, CHECK_FAILED = "missing_line", "check_failed"
 STATUSES = (VERIFIED, OWNER_RULE_EMPTY, EMPTY, MISMATCH, OVER_CITED, NO_EVIDENCE, UNVERIFIABLE, DATA_GAP, UNATTRIBUTED,
-            MISSING_LINE)
+            MISSING_LINE, CHECK_FAILED)
 NEEDS_CHECKING = "needs_checking"
 # Empty by owner rule is correct but proves nothing from evidence: its own group, not added to verified (n/a).
 GROUPS = (VERIFIED, OWNER_RULE_EMPTY, EMPTY, NEEDS_CHECKING)
@@ -418,9 +427,11 @@ def _line_value(line, column):
     return _dec(((line.get("cells") or {}).get(column) or {}).get("value"))
 
 
-def _vat_rate(config, code):
+def _vat_rate(config, code, region=None):
+    """The owner's VAT rate of the tax code, else (no code) of the VAT region, as the rules pick it (R-016)."""
+    key, value = ("code", code) if not _blank(code) else ("region", region)
     for row in (config or {}).get("vat_codes") or []:
-        if str(row.get("code") or "").strip() == str(code or "").strip():
+        if not _blank(value) and str(row.get(key) or "").strip().upper() == str(value).strip().upper():
             return _dec(row.get("rate"))
     return None
 
@@ -435,6 +446,10 @@ def printed_line_count(text):
 AMOUNT = re.compile(r"-?\d[\d,]*\.?\d*")
 NUMBER = re.compile(r"\d[\d,]*\.?\d*")
 DISCOUNT_LABEL = re.compile(r"(?i)\bdiscount\b")
+# A printed gross: an amount on a text line labelled as the invoice total; a sub-total, a total before / excluding
+# tax and the 'Total lines' count are not one.
+GROSS_LABEL = re.compile(r"(?i)\b(?:total|gross|amount\s+(?:due|payable)|balance\s+due)\b")
+NOT_GROSS = re.compile(r"(?i)\b(?:sub[\s-]*total|subtotal|excl\w*|exclusive|before|without|w/o|lines?)\b")
 
 
 def _amounts(pattern, text):
@@ -452,6 +467,8 @@ def text_checks(text):
             "numbers": sorted(map(str, _amounts(NUMBER, text))),
             "discounts": sorted(map(str, set().union(*(_amounts(NUMBER, row) for row in text.splitlines()
                                                        if DISCOUNT_LABEL.search(row))))),
+            "totals": sorted(map(str, set().union(*(_amounts(NUMBER, row) for row in text.splitlines()
+                                                    if GROSS_LABEL.search(row) and not NOT_GROSS.search(row))))),
             "line_count": printed_line_count(text)}
 
 
@@ -467,8 +484,9 @@ class TextChecks:
         self.unavailable = data.get("unavailable")
         self.has_text = bool(data.get("has_text")) and not self.unavailable
         self.norm = str(data.get("norm") or "")
-        self.amounts, self.numbers, self.discounts = ({Decimal(a) for a in data.get(key) or ()}
-                                                      for key in ("amounts", "numbers", "discounts"))
+        # Text checks stored before 'totals' existed have no labelled gross: the gross check then holds.
+        self.amounts, self.numbers, self.discounts, self.totals = ({Decimal(a) for a in data.get(key) or ()}
+                                                                   for key in ("amounts", "numbers", "discounts", "totals"))
         self.line_count = data.get("line_count")
 
     @classmethod
@@ -481,13 +499,13 @@ class TextChecks:
             if set(data) != {"has_text"}:
                 raise ValueError("text checks: unexpected keys")
             return {"has_text": False}
-        if set(data) != {"has_text", "norm", "amounts", "numbers", "discounts", "line_count"}:
+        if set(data) != {"has_text", "norm", "amounts", "numbers", "discounts", "totals", "line_count"}:
             raise ValueError("text checks: unexpected keys")
         count = data["line_count"]
         if not isinstance(data["norm"], str) or not (count is None or (type(count) is int and 0 < count <= 1000)):
             raise ValueError("text checks: unexpected types")
         out = {"has_text": True, "norm": data["norm"], "line_count": count}
-        for key in ("amounts", "numbers", "discounts"):
+        for key in ("amounts", "numbers", "discounts", "totals"):
             values = data[key]
             if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
                 raise ValueError("text checks: unexpected types")
@@ -542,7 +560,12 @@ def arithmetic(view, sources):
     currency = ((view.get("fields") or {}).get("currency") or {}).get("value")
     places = decimals(currency)
     net, tax = _value(view, "net"), _value(view, "tax")
-    out = []
+    # Owner decision: exact, but up to the currency's tolerance (owner config table); none set means exact.
+    # The rules' arithmetic currency (resolved, else printed) when the view carries it, else the Header Currency.
+    arithmetic_currency = view.get("arithmetic_currency") or currency
+    tolerance, flag = arithmetic_tolerance(tolerance_table(sources.config), arithmetic_currency)
+    out = [{"check": "arithmetic_tolerance", "status": WARNING if flag else PASS,
+            "detail": flag or f"Allowed difference {tolerance} {str(arithmetic_currency).strip().upper()} (owner table)"}]
 
     lines = view.get("lines") or []
     pairs = [(_line_value(l, "Quantity"), _line_value(l, "Unit Cost")) for l in lines]
@@ -552,20 +575,21 @@ def arithmetic(view, sources):
     else:
         exact = _q(sum((q * c for q, c in pairs), Decimal(0)), places)
         per_line = sum((_q(q * c, places) for q, c in pairs), Decimal(0))
-        ok = _q(net, places) in (exact, per_line)
+        ok = min(abs(_q(net, places) - exact), abs(_q(net, places) - per_line)) <= tolerance
         # Unit costs printed rounded (line totals from the unrounded price): each line may be off by up to
-        # quantity x half a unit-cost step. Within that bound it is a warning, never a pass.
+        # quantity x half a unit-cost step. Within that bound (beyond the tolerance) it is a warning, never a pass.
         step = max(Decimal(1).scaleb(c.as_tuple().exponent) for _, c in pairs)
         bound = sum((abs(q) for q, _ in pairs), Decimal(0)) * step / 2 + Decimal(1).scaleb(-places)
         rounded = not ok and abs(exact - _q(net, places)) <= bound
         # An invoice-level discount printed in the totals: the lines carry the pre-discount prices (RF-3).
         discounted = not ok and not rounded and after_discount(sources.text, pairs, net)
-        status, detail = ((PASS, "Sum of quantity x unit cost equals the Header net") if ok else
+        status, detail = ((PASS, "Sum of quantity x unit cost equals the Header net within the tolerance") if ok else
                           (WARNING, "Sum of quantity x unit cost differs from the Header net within unit-cost "
                                     "rounding") if rounded else
                           (WARNING, "Lines equal the Header net after the printed invoice discount") if discounted else
                           (FAIL, "Sum of quantity x unit cost differs from the Header net"))
-        check = {"check": "lines_to_net", "status": status, "decimals": places, "detail": detail}
+        check = {"check": "lines_to_net", "status": status, "decimals": places, "detail": detail,
+                 **({"after_discount": True} if discounted else {})}
         if status == FAIL and sources.text.unavailable:
             check.update(unavailable=True, detail=detail + "; the printed discount and line count could not be checked")
         if status == FAIL:
@@ -577,36 +601,112 @@ def arithmetic(view, sources):
         out.append({"check": "net_plus_tax_gross", "status": SKIPPED, "detail": "Header net or tax is empty"})
     else:
         gross = _q(net + tax, places)
-        found = printed(sources.text, f"{gross:f}")
+        # Only an amount on a line labelled as the total is the printed gross, never any amount on the page; within
+        # the tolerance, the net and the tax themselves never stand in for it.
+        found = None if not sources.text.has_text else any(
+            a == gross or (abs(a - gross) <= tolerance and a not in (net, tax)) for a in sources.text.totals)
         if found is None:
             status, detail = SKIPPED, (UNAVAILABLE_DETAIL if sources.text.unavailable else
                                        "No text layer to find the printed gross")
         elif found:
-            status, detail = PASS, "Net + tax is printed on the invoice as the gross"
+            status, detail = PASS, "Net + tax is the labelled printed gross, within the tolerance"
         else:
             # No gross column in the target sheet: an unprinted gross is a warning, not a failure.
-            status, detail = WARNING, "Net + tax is not printed on the invoice"
+            status, detail = WARNING, "Net + tax is not the labelled printed gross (no labelled total holds it)"
         out.append({"check": "net_plus_tax_gross", "status": status, "decimals": places, "detail": detail,
                     **({"unavailable": True} if sources.text.unavailable else {})})
 
-    code = ((view.get("fields") or {}).get("taxCode") or {}).get("value")
-    if net is None or tax is None or _blank(code):
-        out.append({"check": "tax_breakdown_to_header", "status": SKIPPED,
-                    "detail": "Tax code, Header net or tax is empty"})
+    fields = view.get("fields") or {}
+    code = (fields.get("taxCode") or {}).get("value")
+    # Without a code (the rules blank it when the tax disagrees with the rate) the rate is the VAT region's, the
+    # receiving market's or the invoice currency's, as the rules look it up (T5.1).
+    region = (fields.get("market") or {}).get("value") or CURRENCY_REGION.get(str(currency or "").strip().upper())
+    if net is None or tax is None:
+        out.append({"check": "tax_breakdown_to_header", "status": SKIPPED, "detail": "Header net or tax is empty"})
     else:
-        rate = _vat_rate(sources.config, code)
+        rate = _vat_rate(sources.config, code, region)
         if rate is None:
             out.append({"check": "tax_breakdown_to_header", "status": SKIPPED,
-                        "detail": "No owner VAT rate for the tax code; basis equals Header net by construction"})
+                        "detail": "No owner VAT rate for the tax code or VAT region; the tax is not checked"})
         else:
             # Invoices round VAT on the total or per line and sum it; either rounding is the owner's arithmetic.
             allowed = {_q(net * rate / 100, places)}
             if lines and all(q is not None and c is not None for q, c in pairs):
                 allowed.add(sum((_q(_q(q * c, places) * rate / 100, places) for q, c in pairs), Decimal(0)))
-            ok = _q(tax, places) in allowed
+            # Exact plus rounding (one minor unit per line): the before-tax tolerance does not apply to the tax.
+            ok = min(abs(_q(tax, places) - a) for a in allowed) <= Decimal(1).scaleb(-places) * len(lines)
             out.append({"check": "tax_breakdown_to_header", "status": PASS if ok else FAIL, "decimals": places,
                         "detail": "Tax basis x code rate (total or per line) equals the Header tax" if ok else
                         "Tax basis x code rate differs from the Header tax"})
+
+    # 02A: the rules hold a line whose quantity x unit cost is not its printed amount (or lacks one of them).
+    held = sorted({int(i["line"]) for i in view.get("issues") or []
+                   if i.get("code") == LINE_PARSING and str(i.get("line") or "").isdigit()})
+    if not lines:
+        out.append({"check": "line_arithmetic", "status": SKIPPED, "detail": "No item lines were read"})
+    else:
+        out.append({"check": "line_arithmetic", "status": FAIL if held else PASS, "lines": held,
+                    "detail": f"Quantity x unit cost is not the line amount on line(s) {', '.join(map(str, held))}"
+                    if held else "No line has a Line Parsing exception"})
+    return out
+
+
+LINE_PARSING = "Line Parsing Exception"  # fine_rules FAILURE_STATUS of a Line Exception (C-10)
+
+
+def lookalike_prefix(number):
+    """The letters before the first digit hold an l/I lookalike: a lower-case l among capitals ('Sl' for 'SI'),
+    or a capital I inside lower case. A title-case 'Inv' or an all-capital 'SI' is not one."""
+    letters = "".join(ch for ch in re.match(r"\D*", str(number or "")).group() if ch.isalpha())
+    rest = letters.replace("l", "")
+    return ("l" in letters and not any(ch.islower() for ch in rest)) or \
+        ("I" in letters[1:] and any(ch.islower() for ch in letters))
+
+
+def document_prefix(view):
+    number = ((view.get("fields") or {}).get("number") or {}).get("value")
+    if _blank(number):
+        return [{"check": "document_prefix", "status": SKIPPED, "detail": "Document is empty"}]
+    if lookalike_prefix(number):
+        return [{"check": "document_prefix", "status": FAIL,
+                 "detail": "Document prefix has an l/I lookalike; check the printed number"}]
+    return [{"check": "document_prefix", "status": PASS, "detail": "Document prefix has no l/I lookalike"}]
+
+
+AMOUNT_CELLS = (("Header", "Total Cost Ex Tax"), ("Header", "Tax Amount"), ("Tax_Breakdown", "Tax Basis"))
+
+
+def held_cells(checks):
+    """(sheet, column, line) -> the row checks that keep the cell from 'verified'."""
+    by = {c["check"]: c for c in checks}
+    held = {}
+
+    def hold(name, keys, ok=(PASS,)):
+        if name in by and by[name]["status"] not in ok:
+            for key in keys:
+                held.setdefault(key, []).append(by[name])
+    hold("net_plus_tax_gross", [(s, c, None) for s, c in AMOUNT_CELLS])
+    # After the printed invoice discount the lines sum to the net exactly (both amounts printed). The unit-cost
+    # rounding warning does not prove it: its bound grows with the quantities and the coarsest unit-cost step.
+    lines_ok = (PASS, WARNING) if by.get("lines_to_net", {}).get("after_discount") else (PASS,)
+    hold("lines_to_net", [(s, c, None) for s, c in AMOUNT_CELLS], lines_ok)
+    hold("tax_breakdown_to_header", [("Header", "Tax Amount", None)])
+    hold("line_arithmetic", [("Details", c, n) for n in by.get("line_arithmetic", {}).get("lines", ())
+                             for c in ("Unit Cost", "Quantity")])
+    hold("document_prefix", [("Header", "Document", None)], (PASS, SKIPPED))
+    return held
+
+
+def hold_cells(cells, checks):
+    """A verified cell (not an owner entry) whose row check fails or cannot run becomes check_failed."""
+    held = held_cells(checks)
+    out = []
+    for c in cells:
+        failing = held.get((c["sheet"], c["column"], c["line"]))
+        if failing and c["status"] == VERIFIED and c["sub"] != OWNER_ENTRY and c["scope"] == "metric":
+            c = {**c, "status": CHECK_FAILED, "group": group(CHECK_FAILED),
+                 "reason": "; ".join(f"Row check {k['check']} {k['status']}: {k['detail']}" for k in failing)}
+        out.append(c)
     return out
 
 
@@ -760,8 +860,8 @@ def check_view(view, sources, transaction=1, upc="empty", entries=None, attribut
     cells = sheet_cells(view, sources, transaction, upc, entries, attribution)
     currency = ((view.get("fields") or {}).get("currency") or {}).get("value")
     sheets = planned_rows(view, transaction, upc)
-    checks = arithmetic(view, sources) + joins(sheets) + template(sheets, decimals(currency))
-    cells += missing_line_cells(checks, upc)
+    checks = arithmetic(view, sources) + document_prefix(view) + joins(sheets) + template(sheets, decimals(currency))
+    cells = hold_cells(cells, checks) + missing_line_cells(checks, upc)
     total, metric = counts(cells), counts(cells, "metric")
     failed = [c["check"] for c in checks if c["status"] == FAIL]
     return {
@@ -787,11 +887,12 @@ def summary_line(c, failed=()):
 def issues(result):
     """Review-level banner issues: the owner's confirm is the final say (Dispatcher decision 12)."""
     out = []
-    for core, code, message in ((True, "Target Mismatch", "cell(s) do not equal the source their evidence points to"),
-                                (False, "Target Unverified", "filled cell(s) could not be proven from their evidence")):
+    for kind, code, message in ((MISMATCH, "Target Mismatch", "cell(s) do not equal the source their evidence points to"),
+                                (None, "Target Unverified", "filled cell(s) could not be proven from their evidence"),
+                                (CHECK_FAILED, "Target Check Failed", "cell(s) hold their evidence but fail a row check")):
         # Missing-line cells are reported by the failed lines_to_net check below, not as unproven filled cells.
         cells = [x for x in result["cells"] if x["group"] == NEEDS_CHECKING and x["status"] != MISSING_LINE
-                 and (x["status"] == MISMATCH) == core]
+                 and (x["status"] == kind if kind else x["status"] not in (MISMATCH, CHECK_FAILED))]
         if cells:
             fields = sorted({f"{x['sheet']}.{x['column']}" for x in cells})
             out.append({"code": code, "message": f"{len(cells)} {message}: {', '.join(fields)}", "owner": "Accounts payable",

@@ -84,6 +84,10 @@ async function main() {
       `targetChip(${JSON.stringify({ status, rules: { target_check: { counts, failed, summary } } })})`, context);
     const clean = { needs_checking: 0, empty_flagged: 0 };
     assert.equal(vm.runInContext("targetChip({status: 'review', rules: {}})", context), null, "no check, no chip");
+    const cellStatus = (sub) => vm.runInContext(`targetCellStatus({status: "verified", sub: "${sub}"})`, context);
+    assert.equal(cellStatus(""), "Verified");
+    assert.equal(cellStatus("owner_entry"), "Verified (owner entry)");
+    assert.equal(cellStatus("rule_derived"), "Verified (rule derived)");
     const waiting = chip("review", { needs_checking: 3, empty_flagged: 10 }, [], "sheet");
     assert(waiting.textContent === "3 to check" && waiting.className.includes("warning"));
     const empty = chip("review", { needs_checking: 0, empty_flagged: 10 }, [], "Target sheet: 2 verified");

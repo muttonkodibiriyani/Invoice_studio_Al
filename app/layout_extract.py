@@ -241,10 +241,15 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str
     reconstructed = "\n".join(_row_text(row) for _, row in rows)
     searchable = "\n".join(part for part in (source_text, reconstructed) if part)
 
-    if not _has_invoice_heading(searchable):
-        return None
     if _is_purchase_order_document(searchable):
         return None
+    if not _has_invoice_heading(searchable):
+        # No title on the word list. A priced table the page itself confirms still says invoice,
+        # unless the document calls itself something else.
+        from .arithmetic_lines import names_another_document, read_lines
+
+        if names_another_document(searchable) or not read_lines(words):
+            return None
 
     lines = [line.strip() for line in searchable.splitlines() if line.strip()]
     source_lines = [line.strip() for line in source_text.splitlines() if line.strip()]
@@ -460,6 +465,12 @@ def extract_invoice(text: str, boxes: list[dict[str, Any]] | None, weak: set[str
     # No tax exceeds what it is charged on: one of the two figures is misread, and nothing says which.
     if net is not None and tax is not None and to_decimal(tax) > to_decimal(net) > 0:
         net = tax = None
+    # No heading named the columns. Only then may the rows' own arithmetic find the table.
+    if not extracted_lines:
+        from .arithmetic_lines import names_another_document, read_lines
+
+        if not names_another_document(searchable, titled=_has_invoice_heading(searchable)):
+            extracted_lines = read_lines(words)
 
     invoice = Invoice(
         number=number,
@@ -519,6 +530,17 @@ def _is_purchase_order_document(text: str) -> bool:
     return invoice is None or purchase.start() < invoice.start()
 
 
+def _ruled_cells(text: str, x0: float, x1: float) -> list[tuple[str, float, float]]:
+    """A table ruled in text prints its bars against the cells: "|Goods", "184.6|", "Measur|Supplied". A lone bar stays."""
+    if "|" not in text or not text.strip("|"):
+        return [(text, x0, x1)]
+    each = (x1 - x0) / len(text)
+    return [
+        (match.group(), x0 + match.start() * each, x0 + match.end() * each)
+        for match in re.finditer(r"[^|]+", text)
+    ]
+
+
 def _normalise_words(boxes: Iterable[dict[str, Any]], *, max_page: int = 20) -> list[_Word]:
     words: list[_Word] = []
     for raw in boxes:
@@ -549,19 +571,20 @@ def _normalise_words(boxes: Iterable[dict[str, Any]], *, max_page: int = 20) -> 
         if "bottom" in coordinate_system:
             y0, y1 = page_height - y1, page_height - y0
         parent = raw.get("parent_text")
-        words.append(
-            _Word(
-                text=" ".join(value.split()),
-                page=page,
-                x0=x0,
-                y0=y0,
-                x1=x1,
-                y1=y1,
-                page_width=page_width,
-                page_height=page_height,
-                line=" ".join(parent.split()) if isinstance(parent, str) and parent.strip() else None,
+        for piece, piece_x0, piece_x1 in _ruled_cells(" ".join(value.split()), x0, x1):
+            words.append(
+                _Word(
+                    text=piece,
+                    page=page,
+                    x0=piece_x0,
+                    y0=y0,
+                    x1=piece_x1,
+                    y1=y1,
+                    page_width=page_width,
+                    page_height=page_height,
+                    line=" ".join(parent.split()) if isinstance(parent, str) and parent.strip() else None,
+                )
             )
-        )
     return _deskew(words)
 
 

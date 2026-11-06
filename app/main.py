@@ -493,6 +493,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             entry={"invoice":invoice,"filename":j["filename"],"text":j.get("text",""),"boxes":j.get("boxes",[]),"job_id":j["id"]}
             if j.get("owner_supplier_code"):entry["owner_supplier_code"]=j["owner_supplier_code"]
             if j.get("owner_supplier_site"):entry["owner_supplier_site"]=j["owner_supplier_site"]
+            if j.get("typed_supplier_name"):entry["typed_supplier_name"]=j["typed_supplier_name"]
             # Decision 44: lines read by local OCR or the AI from a scan may get the I/1, O/0 VPN lookup.
             entry["ocr_lines"]=ocr_read(j)
             entry["ai_rule_items"]={fill["line"]+1:fill["item_id"] for fill in ((j.get("readers") or {}).get("ai") or {}).get("rules_applied") or []}
@@ -959,6 +960,10 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
         offered={str(c.get(field)) for c in (j.get("rules") or {}).get("supplier_site_candidates") or [] if c.get(field)}
         if value not in offered and value!=stored:raise ValueError(f"{label} is not one of the candidates the rules offered")
         return value
+    def typed_supplier(j,body):
+        """The supplier name once the reviewer has changed it from what the job held; the same name stays typed."""
+        typed=body.invoice.supplier_name
+        return typed if typed and (typed!=(j.get("invoice") or {}).get("supplier_name") or typed==j.get("typed_supplier_name")) else None
     def carry_unchecked(invoice,stored):
         """D102(3): the review client does not send barcode_unchecked. The stored value stays on the line at the same
         index while that line still has no gtin and the same description and code (compared through text_key); a
@@ -1021,7 +1026,8 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
             checks=stored_text_checks(j)
             try:settled=ai_check.settle(j.get("readers"),body.settled,body.invoice.model_dump(mode="json"),actor.get(),datetime.now(timezone.utc).isoformat())
             except ValueError as error:raise HTTPException(422,str(error)) from None
-            view=compute_rules(body.invoice,{**j,"readers":settled,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by},entries)
+            typed=typed_supplier(j,body)
+            view=compute_rules(body.invoice,{**j,"readers":settled,"text_checks":checks,"evidence":aligned_evidence(body.invoice,j),"owner_entry_attribution":attribution,"owner_supplier_code":pick,"owner_supplier_site":site,"owner_supplier_pick":picked_by,"typed_supplier_name":typed},entries)
         with store.connection(True) as c:
             j=job_or_404(jid,c);assert_editable(j)
             if j["revision"]!=body.revision:raise HTTPException(409,"Invoice changed. Refresh before saving.")
@@ -1035,7 +1041,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
                 j["rules"]={**view,"revision":j["revision"]};j["owner_entries"]=entries;j["owner_entry_attribution"]=attribution
                 if body.settled:j["readers"]=settled
                 j["text_checks"]=checks  # same revision as the read above, so the same text
-                for name,value in (("owner_supplier_code",pick),("owner_supplier_site",site),("owner_supplier_pick",picked_by)):
+                for name,value in (("owner_supplier_code",pick),("owner_supplier_site",site),("owner_supplier_pick",picked_by),("typed_supplier_name",typed)):
                     if value:j[name]=value
                     else:j.pop(name,None)
                 if body.confirm:

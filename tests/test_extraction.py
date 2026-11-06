@@ -12,10 +12,12 @@ photograph is read by the OCR engine, with no text layer to try first.
 import json
 import os
 import re
+import sys
 from datetime import date, timedelta
 from itertools import groupby
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1130,3 +1132,89 @@ def test_a_printed_lone_i_before_a_spaced_neighbour_is_kept():
         _ocr_line("Grade", [170, 273, 220, 298], [("Grade", [170, 273, 220, 298])]),
     ])
     assert lines[0][0]["text"] == "Class I"
+
+
+@pytest.fixture
+def page_array(monkeypatch):
+    # The turn logic needs only the page's shape; CI installs the OCR stack, numpy with it, on no job.
+    monkeypatch.setitem(sys.modules, "numpy", SimpleNamespace(
+        array=lambda image: SimpleNamespace(shape=(image.height, image.width))))
+
+
+def test_a_page_read_at_the_wrong_turn_is_read_again_turned(monkeypatch, tmp_path, page_array):
+    from PIL import Image
+    from app import ocr_worker
+
+    class Result:
+        def __init__(self, score, tall):
+            box = [[0, 0], [10, 0], [10, 90], [0, 90]] if tall else [[0, 0], [90, 0], [90, 10], [0, 10]]
+            self.json = {"res": {"rec_texts": [f"word{n}" for n in range(9)], "rec_scores": [score] * 9, "rec_polys": [box] * 9}}
+
+    class Reader:
+        def __init__(self):
+            self.shapes = []
+
+        def predict(self, image, return_word_box):
+            self.shapes.append(image.shape[:2])
+            # A page 200 wide by 100 high reads only when turned back to 100 wide by 200 high, and once.
+            sideways = image.shape[0] < image.shape[1]
+            right_turn = not sideways and len(self.shapes) == 3
+            return [Result(0.95 if right_turn else 0.3, sideways)]
+
+    reader = Reader()
+    monkeypatch.setattr(ocr_worker, "paddle_reader", lambda *a, **k: reader)
+    path = tmp_path / "page.png"
+    Image.new("RGB", (200, 100), "white").save(path)
+
+    _text, boxes = ocr_worker.paddle(path, "en")
+
+    assert reader.shapes == [(100, 200), (200, 100), (200, 100)]
+    assert {box["confidence"] for box in boxes} == {0.95}
+    assert boxes[0]["size"] == [100, 200]
+
+
+def test_a_sideways_page_that_scores_well_is_still_read_turned(monkeypatch, tmp_path, page_array):
+    from PIL import Image
+    from app import ocr_worker
+
+    class Reader:
+        def __init__(self):
+            self.shapes = []
+
+        def predict(self, image, return_word_box):
+            self.shapes.append(image.shape[:2])
+            sideways = image.shape[0] < image.shape[1]
+            box = [[0, 0], [10, 0], [10, 90], [0, 90]] if sideways else [[0, 0], [90, 0], [90, 10], [0, 10]]
+            return [type("R", (), {"json": {"res": {"rec_texts": [f"w{n}" for n in range(9)], "rec_scores": [0.97 if sideways else 0.96] * 9, "rec_polys": [box] * 9}}})()]
+
+    reader = Reader()
+    monkeypatch.setattr(ocr_worker, "paddle_reader", lambda *a, **k: reader)
+    path = tmp_path / "page.png"
+    Image.new("RGB", (200, 100), "white").save(path)
+
+    _text, boxes = ocr_worker.paddle(path, "en")
+
+    assert reader.shapes == [(100, 200), (200, 100)]
+    assert boxes[0]["size"] == [100, 200]
+    assert {box["confidence"] for box in boxes} == {0.96}
+
+
+def test_a_page_read_well_is_read_once(monkeypatch, tmp_path, page_array):
+    from PIL import Image
+    from app import ocr_worker
+
+    calls = []
+
+    class Reader:
+        def predict(self, image, return_word_box):
+            calls.append(1)
+            box = [[0, 0], [90, 0], [90, 10], [0, 10]]
+            return [type("R", (), {"json": {"res": {"rec_texts": ["w"] * 9, "rec_scores": [0.8] * 9, "rec_polys": [box] * 9}}})()]
+
+    monkeypatch.setattr(ocr_worker, "paddle_reader", lambda *a, **k: Reader())
+    path = tmp_path / "page.png"
+    Image.new("RGB", (200, 100), "white").save(path)
+
+    ocr_worker.paddle(path, "en")
+
+    assert len(calls) == 1

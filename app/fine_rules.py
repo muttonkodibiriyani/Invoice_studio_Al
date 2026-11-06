@@ -381,7 +381,8 @@ def buyer_party(scan, depth=5):
     """Buyer side of the party row (Issued To / Bill To ...): (page, [row text]) from word positions.
 
     With a seller label on the same row the column boundary is midway between the two labels; without one,
-    the buyer side starts at its label. Text without word positions gives no side (never guessed)."""
+    the buyer side starts at its label and ends at a second company name, which is another party. Text without word
+    positions gives no side (never guessed)."""
     for page in sorted(scan.get("words") or {}):
         rows = []
         for top, x, value in sorted(scan["words"][page]):
@@ -400,7 +401,10 @@ def buyer_party(scan, depth=5):
             for _, below in rows[n + 1:n + 1 + depth]:
                 if _label_at(below, _PARTY_BUYER + _PARTY_SELLER):
                     break
-                side.append(" ".join(w for x, w in below if x >= boundary))
+                row_text = " ".join(w for x, w in below if x >= boundary)
+                if not seller and any(side) and len(row_text.split()) > 1 and _LEGAL_SUFFIX.fullmatch(row_text.split()[-1]):
+                    break
+                side.append(row_text)
             side = [" ".join(r.split()).strip(" :|-,") for r in side]
             return page, [r for r in side if r]
     return None, []
@@ -419,13 +423,14 @@ def _without_buyer_side(value, buyer_rows):
     return value.strip(" :|-,")
 
 
-def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=(), owner_name=""):
+def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=(), owner_name="", typed=False):
     """ALG-002: every supplier-name candidate across all pages, with page and region.
 
     Buyer-side party text is removed by position, never by name, since group companies sell to each other.
     A reader buyer that is only company-type words (a reader miss) excludes nothing. The configured owner entity
     is never its own supplier, by the whole name within the typo or two the tolerant match allows, whichever side omits
-    the company form: a sibling printing another company form or a longer name stays."""
+    the company form: a sibling printing another company form or a longer name stays.
+    A name the reviewer typed (``typed``) is always kept as they typed it."""
     found = []
 
     def is_owner(value):
@@ -454,10 +459,15 @@ def supplier_candidates(scan, printed_name=None, buyer_name=None, buyer_rows=(),
                     c.setdefault("also_on", []).append({"page": page, "line": line_no + 1, "region": region})
 
     # The reader's supplier field loses any buyer-side text it took across the party row.
-    printed_name = _without_buyer_side(" ".join(text(printed_name).split()), buyer_rows) if printed_name else ""
-    if len(printed_name) >= 2 and not is_owner(printed_name):
+    printed_name = " ".join(text(printed_name).split()) if printed_name else ""
+    if typed and printed_name:
         found.append({"name": printed_name, "page": None, "line": None, "region": "extracted",
-                      "method": "extracted supplier field"})
+                      "method": "reviewer typed supplier"})
+    elif printed_name:
+        printed_name = _without_buyer_side(printed_name, buyer_rows)
+        if len(printed_name) >= 2 and not is_owner(printed_name):
+            found.append({"name": printed_name, "page": None, "line": None, "region": "extracted",
+                          "method": "extracted supplier field"})
     for page, page_value in scan["pages"].items():
         lines = [x for x in page_value.splitlines() if x.strip()]
         for n, line in enumerate(lines):
@@ -1954,6 +1964,22 @@ def trace_totals(run, scan):
     return gross
 
 
+def check_lines_total(run, scan):
+    """A row may be missing when the printed line amounts add up to neither the printed net nor any figure on the
+    invoice. Nothing is changed; the reviewer sees the flag. A row with no amount has its own flag."""
+    invoice = run.invoice
+    amounts = [line.net_amount for line in invoice.lines]
+    if not amounts or None in amounts:
+        return
+    total = sum(amounts, Decimal(0))
+    if invoice.net is not None and abs(abs(total) - abs(invoice.net)) <= scan_guard.rounding_tolerance(len(amounts)):
+        return
+    if _printed_page(scan, abs(total)) is None:
+        against = f"the printed net {invoice.net}" if invoice.net is not None else "any printed total"
+        run.exception("Totals Audit", f"The {len(amounts)} lines read add up to {total}, which does not agree with "
+                      f"{against}; a line may be missing", "TGT-001", owner="Accounts payable")
+
+
 def item_resolution(run, matches, group):
     """Owner form 01a10c4f item-line check: lines with one ITEM_PARENT whose quantity agrees with the accepted
     PO/GRN rows of that item (C-11), over all lines. Below 95 % the owner validates."""
@@ -1992,10 +2018,12 @@ def item_resolution(run, matches, group):
 
 
 def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=(), page_count=None,
-                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None, ai_rule_items=None):
+                transaction=1, seen_documents=None, owner_supplier_code=None, ocr_lines=False, owner_supplier_site=None,
+                ai_rule_items=None, typed_supplier_name=None):
     """Run the whole rule chain for one invoice (ALG-028: every invoice, every rule). ``owner_supplier_code`` is
     the owner's pick among the R-006 candidates of an earlier run (decision 41); ``owner_supplier_site`` the
-    reviewer's pick among the Item Master sites of the printed supplier name (S1.2)."""
+    reviewer's pick among the Item Master sites of the printed supplier name (S1.2); ``typed_supplier_name`` the
+    supplier name the reviewer typed, which counts only while the invoice still holds it."""
     config = config or RulesConfig()
     # The probe pass stays exact; only the recorded pass may correct an OCR I/1, O/0 read (decision 44).
     run = Run(invoice, config, filename, ocr_lines, ai_rule_items)
@@ -2027,7 +2055,8 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
 
     # Supplier discovery uses issuer evidence, followed by scoped product search.
     buyer_page, buyer_rows = buyer_party(scan)
-    candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows, config.buyer_name)
+    candidates = supplier_candidates(scan, invoice.supplier_name, invoice.buyer_name, buyer_rows, config.buyer_name,
+                                     typed=bool(typed_supplier_name) and typed_supplier_name == invoice.supplier_name)
     candidates = tolerant_supplier_names(run, source, candidates)
     # Resolve the issuer/site or approved family before any product search (M2).
     probe = Run(invoice, config, filename)
@@ -2199,6 +2228,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
                       owner="Tax reviewer")
 
     gross = trace_totals(run, scan)
+    check_lines_total(run, scan)
     buyer = resolve_buyer(run, scan, buyer_page, buyer_rows)
     resolution = item_resolution(run, matches, group)
 
@@ -2306,7 +2336,8 @@ def run_batch(entries, source, config=None):
             result = run_invoice(entry["invoice"], source, config, entry.get("filename", ""), entry.get("text", ""),
                                  entry.get("boxes", ()), entry.get("page_count"), transaction, seen,
                                  entry.get("owner_supplier_code"), ocr_lines=entry.get("ocr_lines", False),
-                                 owner_supplier_site=entry.get("owner_supplier_site"), ai_rule_items=entry.get("ai_rule_items"))
+                                 owner_supplier_site=entry.get("owner_supplier_site"), ai_rule_items=entry.get("ai_rule_items"),
+                                 typed_supplier_name=entry.get("typed_supplier_name"))
         except Exception as error:  # isolated per invoice; the error is the evidence
             result = {"status": "Blocked", "filename": entry.get("filename", ""), "transaction": transaction,
                       "header": {"Document": text(entry["invoice"].number), "Validation Status": "Blocked"},

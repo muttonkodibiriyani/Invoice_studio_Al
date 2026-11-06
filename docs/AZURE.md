@@ -55,9 +55,9 @@ to busy; the next table shows how they add up.
    PostgreSQL. A working copy sits on the container's own disk and is gone after a restart.
 3. **Read it locally.** The readers in the container read the invoice: the PDF text layer, and
    PaddleOCR and Docling for scans and photos. Nothing leaves Azure in this step.
-4. **AI, only for gaps.** If the local read leaves gaps, the document or its text goes to the AI
-   provider an administrator set up. An administrator can also turn on an AI cross-check, which sends
-   complete invoices too. It is off by default. This is the only step where invoice content leaves Azure.
+4. **AI check.** With the Foundry endpoint set and AI fallback on, every invoice goes to it for one independent read,
+   compared with the local read afterwards (`docs/AI_BOUNDARY.md`). This is the only step where invoice content goes
+   to an AI, and only to the Foundry endpoint the operator set. It is unproven until a real Foundry run.
 5. **Save the result.** The extracted data, the checks and an audit entry go into PostgreSQL.
 6. **Export.** The Excel workbook is built and stored in PostgreSQL, not in Blob Storage. The browser
    downloads it from there.

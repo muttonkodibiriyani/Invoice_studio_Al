@@ -20,7 +20,7 @@ master. A rules workbook that cannot load is told on the `item_rules` trace entr
 |---|---|---|
 | `fallback` | The local result fails `_basic_checks`: no lines, no number or net, or lines that do not sum to the net. | It fills empty fields and flags every disagreement. Its lines stand in only for local lines that do not sum to a printed net (`merge_ai_fields`). On a **weak scan read** see below. |
 | `gap_fill` | The local result passes the checks but leaves gaps (a missing date, an item code, a unit), or a line the rules could not identify (not in the item master, ambiguous or only a suggestion; a Conflict stays with the reviewer). | It fills empty fields only. Every value a local reader read stays, and a different AI value is flagged for review. |
-| `cross_check` | The local result is complete and reconciled. | Nothing, unless the owner opts in with `ai_cross_check` or `INV_STUDIO_AI_CROSS_CHECK=1`. Then it flags disagreements and fills optional empty fields. |
+| `cross_check` | The local result is complete and reconciled. | On Azure AI Foundry the AI always reads it (see "The AI check"). On another provider, nothing unless the owner opts in with `ai_cross_check` or `INV_STUDIO_AI_CROSS_CHECK=1`. It flags disagreements and fills empty fields. |
 
 `need` is recorded on every job, whether or not the AI ran, so AI calls per invoice can be counted on an AI-off run.
 
@@ -39,9 +39,35 @@ master. A rules workbook that cannot load is told on the `item_rules` trace entr
 
 ## What the AI is not asked about
 
-A wrong header value that looks fine is not a gap, so nothing asks the AI about it: the AI is asked only for what is
-missing or fails the basic checks, and fills only empty fields (agreed design). Such a value stays until a person
-corrects it. Turning on `ai_cross_check` flags differences on complete invoices, and still overwrites nothing.
+On a provider other than Azure AI Foundry, a wrong header value that looks fine is not a gap, so nothing asks the AI
+about it: the AI is asked only for what is missing or fails the basic checks, and fills only empty fields. Turning on
+`ai_cross_check` flags differences on complete invoices, and still overwrites nothing.
+
+## The AI check
+
+Owner order, 6 Nov 2026: with Azure AI Foundry on, every invoice gets one AI read, including those the local read
+completed (`app/ai_check.py`). The read is blind: the page, the text and the rules and item master context go in, the
+local values do not. The local read is used only to search the item master for candidates.
+
+The two reads are compared afterwards, field by field and line by line, on normalised values.
+
+| Result | Cell | What happens |
+|---|---|---|
+| Both agree | AI confirmed | Nothing changes. Agreeing does not prove the value right, so nothing says verified. |
+| Local blank | AI filled | The AI's value goes in, with the AI mark. |
+| They differ | In dispute | The local value stays. A blocking `AI Dispute` issue shows both values, and neither export goes out until a person picks. A confirm alone does not clear it. |
+| No read | Not AI-confirmed | AI off, failed, timed out or a malformed reply: one call at most, no retry, and the invoice still finishes. |
+
+Line descriptions are never a dispute, because two reads rarely word them alike; they stay unchecked. A printed date
+in another format is no dispute when the date agrees. Different line counts are one dispute holding both reads.
+
+Local checks and holds still run: AI agreement clears neither a failed arithmetic check nor a Possible Duplicate. Each
+mark stands only while the cell holds the compared value, so an edited cell loses it. The Excel shows each state as a
+cell fill and note, and says the invoice's status on its Transaction Number cell, with no column or sheet added.
+
+Learning: a value only the AI read does not teach templates until a person settles it, and an AI item rule needs both
+reads to agree on the supplier and the printed code, and still passes the `close_names` check. No per-invoice cap on
+AI calls or spend exists, so none can skip a read. `/api/costs` reports calls and tokens per invoice.
 
 ## The weak-scan rule
 

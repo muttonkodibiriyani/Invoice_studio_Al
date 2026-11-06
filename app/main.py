@@ -1298,7 +1298,7 @@ def create_app(data_dir=None,*,identity=None,store_type=None):
     # manually'. Validation and review holds no longer stop the real export; each receipt lists the ones still open.
     # Only integrity blocks: not read yet, changed since the check, already exported, the same invoice twice.
     D11="exported unvalidated by owner decision D11"
-    INTEGRITY=("Duplicate","Rules Pending",SEVERAL_CODE)
+    INTEGRITY=("Duplicate","Rules Pending",SEVERAL_CODE,ai_check.ISSUE)
     def open_holds(result,why=None):
         """The holds still open at export time, each with the cell it applies to when it names one (D11)."""
         holds=[{"code":i["code"],"cell":i.get("field"),"line":i.get("line"),"message":i["message"]}

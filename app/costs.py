@@ -140,6 +140,13 @@ def _money(value):
         return Decimal(0)
 
 
+def _per_invoice(rows):
+    """AI calls and tokens per invoice over the window: what a read costs now every invoice gets one."""
+    invoices = sum(row["invoices"] for row in rows)
+    return {field: round(sum(row[field] for row in rows) / invoices, 1) if invoices else 0
+            for field in ("ai_calls", "input_tokens", "output_tokens", "cached_tokens")}
+
+
 def summarise(entries, *, days=30, spike_factor=3, spike_floor="1.00"):
     """Daily and month-to-date spend from cost records, newest day first.
 
@@ -177,4 +184,5 @@ def summarise(entries, *, days=30, spike_factor=3, spike_floor="1.00"):
             "month": month, "month_to_date_usd": str(month_to_date.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)),
             "invoices": sum(row["invoices"] for row in ordered),
             "ai_calls": sum(row["ai_calls"] for row in ordered),
+            "per_invoice": _per_invoice(ordered),
             "spikes": [row["day"] for row in ordered if row["spike"]]}

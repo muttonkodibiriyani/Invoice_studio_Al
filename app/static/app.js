@@ -253,7 +253,7 @@ function rulesCell(cell, name, line, prompted = false) {
 const READER_LINE_FIELDS = { Item: "sku", UPC: "gtin", "Unit Cost": "price", Quantity: "qty" };
 const READER_HEADER_FIELDS = { site: "supplier_name" };
 const AI_READER_LABELS = {
-  fallback: "Fallback", gap_fill: "Gap fill", cross_check: "Cross-check", skipped: "Not needed", off: "Off",
+  fallback: "Fallback", gap_fill: "Gap fill", cross_check: "Second read", skipped: "Not needed", off: "Off",
   unavailable: "Not connected", failed: "Failed", selected: "Selected reader", not_read: "Read rejected",
 };
 
@@ -301,6 +301,8 @@ function readerNotes(job, scope, column, line) {
   const notes = [];
   const badge = readerBadge(readers?.[key]);
   if (badge) notes.push(badge);
+  const mark = aiCheckBadge(job, scope, key, line, column === "site" || column === "Item");
+  if (mark) notes.push(mark);
   const note = reviewNote(evidence?.[key]?.review);
   if (note) notes.push(note);
   return notes;
@@ -312,6 +314,59 @@ function readerBadge(reader) {
   const badge = make("span", `reader-badge reader-${reader}`, reader === "ai" ? "AI" : humanize(reader));
   badge.title = reader === "ai" ? "Filled by the AI: check it against the document" : `Read by ${humanize(reader)}`;
   return badge;
+}
+
+// A cell's AI check (rules.ai_check). Two reads agreeing is not proof, so it says "AI confirmed", never verified. A filled
+// cell already has the AI badge. A derived cell (site, item) was not read by the AI, so it only carries a dispute.
+const AI_CHECK_MARKS = { confirmed: "AI confirmed", disputed: "In dispute", settled: "Settled" };
+function aiCheckBadge(job, scope, key, line, derived = false) {
+  const check = job?.rules?.ai_check;
+  const state = scope === "header" ? check?.header?.[key] : check?.lines?.[line - 1]?.[key];
+  if (!AI_CHECK_MARKS[state] || (derived && state !== "disputed")) return null;
+  return make("span", `reader-badge ai-check-${state}`, AI_CHECK_MARKS[state]);
+}
+
+// A person's pick on a dispute: the value goes into the form, then the save records who picked what.
+async function pickAiValue(dispute, choice) {
+  const job = app.currentJob;
+  if (choice !== "typed") {
+    if (dispute.key === "lines") {
+      job.invoice.lines = dispute[`${choice}_lines`];
+      renderSelectedJob(job);
+    } else {
+      const row = dispute.line ? $$("#line-items tr")[dispute.line - 1] : null;
+      const input = dispute.line ? row && $(`[name="${dispute.field}"]`, row) : $(`#header-fields [name="${dispute.field}"]`);
+      if (input) input.value = dispute[choice];
+      if (!dispute.line) job.invoice[dispute.field] = dispute[choice];
+    }
+  }
+  await submitReview({ settled: { [dispute.key]: choice } }, `${dispute.label} settled.`);
+}
+
+function aiDisputeRow(dispute, locked) {
+  const row = make("span", "ai-dispute");
+  row.append(make("strong", "", `${dispute.label}: `), make("span", "", `local read ${dispute.local} · AI read ${dispute.ai} `));
+  [["local", `Use local: ${dispute.local}`], ["ai", `Use AI: ${dispute.ai}`], ["typed", "Keep what is in the form"]].forEach(([choice, label]) => {
+    const button = make("button", "secondary", label);
+    button.type = "button";
+    button.disabled = locked;
+    button.addEventListener("click", () => pickAiValue(dispute, choice));
+    row.append(button);
+  });
+  return row;
+}
+
+// What this invoice's AI check says, its open disputes with both values, and what the read used.
+function renderAiCheck(box, job) {
+  const check = job?.rules?.ai_check;
+  if (rulesJob(job) && !["queued", "processing"].includes(job.status)) {
+    const counts = check?.counts || {};
+    const said = check?.why || (check ? ["confirmed", "filled", "disputed", "settled", "unchecked"].filter((name) => counts[name]).map((name) => `${counts[name]} ${name}`).join(", ") : "no AI read was made");
+    box.append(make("strong", `ai-check-status ai-check-${check?.status || "not_confirmed"}`, `${check?.label || "Not AI-confirmed"}: ${said}`));
+    (check?.disputes || []).forEach((dispute) => box.append(aiDisputeRow(dispute, job.status === "exported")));
+  }
+  const cost = job?.cost;
+  if (cost?.calls) box.append(make("span", "", `AI use: ${cost.calls} call${cost.calls === 1 ? "" : "s"} · ${cost.input_tokens + cost.cached_tokens} tokens in · ${cost.output_tokens} out${cost.usd === null ? " · not priced" : ` · $${cost.usd}`}`));
 }
 
 // readers.lines is positional like evidence.lines, so it marks the rows only while the counts still match.
@@ -330,7 +385,7 @@ function renderAiReader(job) {
   const named = reason.split(":")[0].split(", ");
   const missing = (job?.readers?.not_installed || [])
     .filter((entry) => entry?.hint && !(named.includes(entry.engine) && reason.includes(entry.hint.slice(1))));
-  box.hidden = !ai?.status && !missing.length;
+  box.hidden = !ai?.status && !missing.length && !rulesJob(job);
   box.replaceChildren();
   if (box.hidden) return;
   const used = ["fallback", "gap_fill", "cross_check", "selected"].includes(ai?.status);
@@ -341,6 +396,7 @@ function renderAiReader(job) {
     if (reason) box.append(make("span", "", `${used ? "Why the AI ran" : "Why"}: ${reason}`));
     box.title = (ai.notes || []).join("\n");
   }
+  renderAiCheck(box, job);
   (ai?.rules_applied || []).forEach((fill) => box.append(make("span", "", `Line ${fill.line + 1}: item ${fill.item_id} filled by AI-added rule ${fill.rule} · ${fill.source}`)));
   (ai?.suggestions || []).forEach((hint) => box.append(make("span", "", `Suggestion${hint.line === null || hint.line === undefined ? "" : ` for line ${hint.line + 1}`}, not filled: ${humanize(hint.field)} ${hint.value} · ${hint.source} · ${hint.why}`)));
   missing.forEach((entry) => box.append(make("span", "", `${humanize(entry.engine)}: ${entry.hint}`)));
@@ -1740,6 +1796,8 @@ function renderInvoiceForm(job) {
     wrapper.append(input);
     const badge = readerBadge(job.readers?.header?.[name]);
     if (badge) wrapper.append(badge);
+    const mark = aiCheckBadge(job, "header", name);
+    if (mark) wrapper.append(mark);
     const review = noteFor(input, reviewNote(job.evidence?.header?.[name]?.review));
     if (review) wrapper.append(review);
     if (buyer) {

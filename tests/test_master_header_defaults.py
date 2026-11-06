@@ -113,6 +113,22 @@ def test_the_d6_source_proves_nothing_but_a_store_at_an_unknown_location():
         assert cell["reason"] == "Evidence does not hold the value"
 
 
+def test_the_d6_source_proves_nothing_on_another_column():
+    view = unknown_location_view()
+    evidence = view["fields"]["location_type"]["evidence"]
+    sources = tc.Sources(config={}, text="")
+    for key, column in (("number", "Document"), ("site", "Supplier Site"), ("po", "Order No"), ("date", "Document Date")):
+        fields = {**view["fields"], key: {**view["fields"][key], "value": STORE, "evidence": evidence}}
+        cell = next(c for c in tc.check_view({**view, "fields": fields}, sources)["cells"] if c["column"] == column)
+        assert (cell["status"], cell["sub"]) == (tc.MISMATCH, ""), column
+
+
+def test_the_status_columns_tell_a_rule_derived_cell_apart():
+    result = tc.check_view(unknown_location_view(), tc.Sources(config={}, text=""))
+    row = next(r for r in tc.checks_rows([result]) if r.get("Column") == "Location Type")
+    assert row["Detail"] == "verified (rule derived)"
+
+
 def test_the_line_amounts_total_reaches_the_view_only_when_every_line_prints_one():
     rows = [item("P1", "S1", "LUX009RE4AED", A), item("P2", "S1", "LUX009RE4AED", B)]
     assert unknown_location_view()["line_amounts_total"] == "200"

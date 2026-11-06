@@ -403,6 +403,39 @@ def test_line_amounts_that_miss_the_net_prove_nothing():
     assert "estimated" in found["detail"] and found["missing_lines"] >= 1 and missing_cells(result)
 
 
+def test_line_amounts_within_rounding_of_the_net_still_prove_it():
+    result = check(wrong_price_read(line_amounts_total="110.02"), "Net 110.00 VAT 5.50 Total 115.50")
+    assert "the read line amounts sum to the Header net" in lines_to_net(result)["detail"]
+    assert not missing_cells(result)
+
+
+def test_a_dropped_row_inside_the_owner_tolerance_is_not_proved_read():
+    # Net 116.00, amounts 110.00: a 6.00 row dropped. AED's tolerance is 10.00, rounding is one minor unit a line.
+    for amounts in ("110.00", "115.97"):
+        result = check({**wrong_price_read(line_amounts_total=amounts), "fields": {
+            **wrong_price_read()["fields"], "net": field("116.00")}}, "Net 116.00 VAT 5.80 Total 121.80")
+        found = lines_to_net(result)
+        assert "read line amounts" not in found["detail"], amounts
+        assert "estimated" in found["detail"] and found["missing_lines"] >= 1 and missing_cells(result), amounts
+
+
+def test_an_estimated_missing_line_cell_says_it_is_an_estimate():
+    result = check(view(net="300.00", tax="15.00"), "Net 300.00 VAT 15.00 Total 315.00")
+    assert {c["reason"] for c in missing_cells(result)} == {tc.ESTIMATED_LINE_REASON}
+    assert tc.ESTIMATED_LINE_REASON.startswith("Estimated item line missing or merged")
+
+
+def test_a_counted_missing_line_cell_states_it():
+    result = check(view(net="300.00", tax="15.00"), "Total lines: 4", "Net 300.00 VAT 15.00 Total 315.00")
+    assert {c["reason"] for c in missing_cells(result)} == {tc.MISSING_LINE_REASON}
+
+
+def test_the_summary_does_not_clash_with_line_amounts_that_sum_to_the_net():
+    result = check(wrong_price_read(line_amounts_total="110.00"), "Net 110.00 VAT 5.50 Total 115.50")
+    assert "quantity x unit cost does not sum to net" in result["summary"]
+    assert "lines do not sum to net" not in result["summary"]
+
+
 def test_a_printed_count_above_the_read_names_the_missing_lines():
     result = check(view(net="300.00", tax="15.00"), "Total lines: 4", "Net 300.00 VAT 15.00 Total 315.00")
     found = lines_to_net(result)

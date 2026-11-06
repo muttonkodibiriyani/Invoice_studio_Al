@@ -63,7 +63,7 @@ def test_the_check_names_which_row_check_failed_and_no_values():
     partial["fields"]["net"] = field("999.00", "999.00")
     result = tc.check_view(partial, tc.Sources(text=TEXT + "999.00\n"))
     assert "lines_to_net" in result["failed"] and result["holds"]
-    assert "lines do not sum to net" in result["summary"]
+    assert "quantity x unit cost does not sum to net" in result["summary"]
     assert not any(value in str(result["failed"]) for value in ("999", "DEMO-2026-001"))
 
 

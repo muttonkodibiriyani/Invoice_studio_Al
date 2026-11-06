@@ -695,6 +695,7 @@ dialog:has(.fine-rules-dialog) { width: min(1180px, calc(100vw - 28px)); }
 .dialog-header { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .dialog-header h2 { margin: 2px 0; font-size: 23px; letter-spacing: -.025em; }
 .dialog-header p:not(.eyebrow) { margin: 0; color: var(--muted); font-size: 11px; }
+#export-confirm-text { overflow-wrap: anywhere; }
 .drop-zone { display: grid; min-height: 155px; place-items: center; align-content: center; gap: 5px; color: #4c5e59; background: #f6faf8; border: 1px dashed #a9c0b9; border-radius: 13px; text-align: center; transition: 140ms; }
 .drop-zone:hover, .drop-zone.dragover { background: #edf7f2; border-color: var(--forest); }
 .drop-zone strong { font-size: 13px; }

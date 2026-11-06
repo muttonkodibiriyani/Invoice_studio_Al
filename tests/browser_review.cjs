@@ -281,6 +281,25 @@ async function main() {
     await node("#confirm-export-anyway").emit("click");
     assert.deepEqual([...opened], ["j2"], "a load under way is not pulled back");
     select("app.state.jobs[0]");
+    // Unsaved edits on another invoice stay; reloading it would overwrite them with no warning.
+    answer("Blocked", 18);
+    opened.length = 0;
+    await exportOne();
+    select("app.state.jobs[1]");
+    vm.runInContext("app.reviewDirty = true", context);
+    await node("#confirm-export-anyway").emit("click");
+    assert.deepEqual([...opened], [], "edits on the other invoice are not reloaded over");
+    assert.equal(notes.at(-1), "Excel workbook prepared.");
+    // The exported invoice itself always reloads, so it shows as locked.
+    select("app.state.jobs[0]");
+    answer("Blocked", 18);
+    opened.length = 0;
+    await exportOne();
+    vm.runInContext("app.reviewDirty = true", context);
+    await node("#confirm-export-anyway").emit("click");
+    assert.deepEqual([...opened], ["j1"], "the exported invoice refreshes to locked");
+    vm.runInContext("app.reviewDirty = false", context);
+    select("app.state.jobs[0]");
     // Nothing selected any more (deleted, or the list cleared): the export still finishes, with nothing to reopen.
     answer("Blocked", 18);
     opened.length = 0;

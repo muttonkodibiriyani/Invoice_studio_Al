@@ -4,9 +4,9 @@
 
 Azure migration baseline: see [the implementation order and remaining deployment gates](docs/AZURE_MIGRATION.md).
 
-Read supplier invoices, check them against your reference data, resolve exceptions and download the invoice workbook: three template sheets, plus a Checks sheet when it is checked against your reference files. Runs locally or in a restricted Firebase/GCP pilot. The repository contains synthetic examples only.
+Read supplier invoices, check them against your reference data, resolve exceptions and download the invoice workbook: three template sheets, plus a Checks sheet when it is checked against your reference files. Runs locally, on Azure, or in the older restricted Firebase/GCP pilot. The repository contains synthetic examples only.
 
-**Hosted portal:** https://inv-studio-740495548022.web.app — sign in with an approved owner account. What is live, and how releases are made, is recorded in [docs/RUNBOOK.md](docs/RUNBOOK.md).
+**Old Google Cloud portal:** https://inv-studio-740495548022.web.app — sign in with an approved owner account. It runs side by side with Azure and is not the deploy route; the old setup is recorded in [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Run it locally
 
@@ -149,7 +149,8 @@ The UI lives in `app/static/`. The Microsoft sign-in module `app/static/entra-au
 ## Operations
 
 - [Security](docs/SECURITY.md): how each install is protected, and the status of every security finding.
-- [Runbook](docs/RUNBOOK.md): what is live, how a candidate is deployed, released and rolled back.
+- [Deploy to Azure](docs/CLOUD_SHELL_COMMANDS.md): copy-paste commands for Azure Cloud Shell.
+- [Google Cloud runbook](docs/RUNBOOK.md): the old setup only: what ran there, how a candidate was deployed, released and rolled back.
 - [Azure, simply](docs/AZURE.md#azure-simply): what runs on Azure, how an invoice's data moves, and the monthly cost. The full Azure guide follows it.
 - [Recovery](docs/RECOVERY.md).
 - [Production readiness](docs/PRODUCTION_READINESS.md).
@@ -157,7 +158,7 @@ The UI lives in `app/static/`. The Microsoft sign-in module `app/static/entra-au
 
 ## Operational boundaries
 
-The local mode is a single-operator MVP bound to loopback. The hosted pilot adds Firebase authentication, an owner allowlist, Cloud SQL, private Cloud Storage and Secret Manager. It still uses one Cloud Run instance and an in-process queue. Drain jobs before deployments; interrupted work requires a confirmed retry. A ChatGPT credential bundle is a one-time ownership transfer: successful export removes the local encrypted copy, so protect the file until the hosted import succeeds and delete it afterward. How each install is protected, and where every security finding stands, is in [Security](docs/SECURITY.md). Add role separation, durable distributed workers, schema migrations, backup restoration tests, monitoring and business acceptance before a wider rollout. Neither ledger detects invoices posted in another system unless that history is imported.
+The local mode is a single-operator MVP bound to loopback. On Azure, the app adds Microsoft Entra ID sign-in limited to two groups, PostgreSQL, private Blob Storage and Key Vault, on one container copy (see [docs/AZURE.md](docs/AZURE.md)). The old Google Cloud pilot instead has Firebase authentication, an owner allowlist, Cloud SQL, private Cloud Storage and Secret Manager, on one Cloud Run instance with an in-process queue. Drain jobs before deployments there; interrupted work requires a confirmed retry. A ChatGPT credential bundle is a one-time ownership transfer: successful export removes the local encrypted copy, so protect the file until the hosted import succeeds and delete it afterward. How each install is protected, and where every security finding stands, is in [Security](docs/SECURITY.md). Add role separation, durable distributed workers, schema migrations, backup restoration tests, monitoring and business acceptance before a wider rollout. Neither ledger detects invoices posted in another system unless that history is imported.
 
 Invoice limits: 12 MB, 20 PDF pages or image frames, 25 megapixels per image, 1,000 structured lines. Office archives must expand to at most 30 MB. Multi-invoice PDFs must be split first. Credit notes, multiple POs, mixed tax rates, unit conversions, freight and discount allocation need dedicated contracts before automatic export. Unsupported or ambiguous cases remain on hold.
 

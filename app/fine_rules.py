@@ -77,6 +77,7 @@ DAYS_BEFORE_ORDER = 7
 DAYS_FROM_RECEIPT = 30
 # Decision 41: the owner's pick among the R-006 supplier-code candidates; cells resolved through it say so.
 OWNER_PICK, EVIDENCE_OWNER_ENTRY = "OWNER-PICK", "owner_entry"
+UNKNOWN_LOCATION_RULE, UNKNOWN_LOCATION_SOURCE = "L4.2", "D6: empty location name"
 OWNER_PICK_DERIVED = {"Supplier Site", "Order No", "Location", "Location Type", "Market", "Currency", "Tax Code",
                       "Unit Tax Code"}
 EXTRA_HEADER_FIELDS = ["Buyer Name"]
@@ -2089,7 +2090,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         # L4.2 (A6, D4): a location still unknown has an empty location name, which D6 types as Store.
         from . import location_type as loc
         loc_type = loc.resolve({}).type
-        run.trace("Location Type", loc_type, "L4.2", "D6: empty location name")
+        run.trace("Location Type", loc_type, UNKNOWN_LOCATION_RULE, UNKNOWN_LOCATION_SOURCE)
     if hint and hint["mapped"] and market and not same_market(hint["mapped"]["market"], market):
         run.exception("Market Mapping", f"Supplier suffix suggests {hint['mapped']['market']} but the receiving "
                       f"location is {market}", "R-027", owner="Business")
@@ -2206,6 +2207,9 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "prompts": location_prompts(location, group and group["_location_type"]),
         "po": {"order": po["order"], "source": po["source"], "status": po["status"], "value_source": value_source},
         "order_date": order_date, "arithmetic_currency": arithmetic_currency,
+        # The printed line amounts: target_check tells a wrong quantity or price from a missing line by them.
+        **({"line_amounts_total": str(sum(line.net_amount for line in invoice.lines))}
+           if invoice.lines and all(line.net_amount is not None for line in invoice.lines) else {}),
         "receipt_date": check_receipt_dates(po, order_date, document_date),
         "ebs_supplier_code": key or "/".join(sorted(keys)), "entity_hint": hint, "config_version": config.version,
         "item_resolution": resolution, "po_candidates": po["candidates"],

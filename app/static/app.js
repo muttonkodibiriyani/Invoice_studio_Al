@@ -365,6 +365,11 @@ function targetEvidence(evidence = {}) {
 }
 
 // The per-invoice target-sheet check: the owner line, the checks, and every cell by status with its evidence.
+function targetCellStatus(cell) {
+  const status = TARGET_STATUS_LABELS[cell.status] || humanize(cell.status);
+  return status + ({ owner_entry: " (owner entry)", rule_derived: " (rule derived)" }[cell.sub] || "");
+}
+
 function renderTargetCheck(job) {
   const panel = $("#target-check");
   const check = job.rules?.target_check;
@@ -411,8 +416,7 @@ function renderTargetCheck(job) {
     table.tHead.append(head);
     picked.forEach((cell) => {
       const tr = make("tr");
-      const status = TARGET_STATUS_LABELS[cell.status] || humanize(cell.status);
-      tr.append(make("td", "", targetCellName(cell)), make("td", "", cell.sub === "owner_entry" ? `${status} (owner entry)` : status),
+      tr.append(make("td", "", targetCellName(cell)), make("td", "", targetCellStatus(cell)),
         make("td", "", cell.value || "—"), make("td", "", cell.reason || ""), make("td", "", targetEvidence(cell.evidence)));
       table.tBodies[0].append(tr);
     });

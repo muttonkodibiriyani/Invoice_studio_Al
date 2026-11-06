@@ -184,3 +184,39 @@ def test_a_weak_scan_read_that_passes_the_basic_checks_keeps_every_value_it_read
     assert result["invoice"]["net"] == "800" and result["readers"]["header"]["net"] == "paddleocr"
     assert [line["sku"] for line in result["readers"]["lines"]] == ["ai", "ai"]
     assert result["evidence"]["header"]["net"]["review"]["other_value"] == "900"
+
+
+def _blank_quantity(invoice):
+    return {**invoice, "lines": [{**invoice["lines"][0], "qty": None}, *invoice["lines"][1:]]}
+
+
+def test_a_read_with_a_blank_quantity_does_not_stop_the_chain_and_keeps_its_ai_mode(chain):
+    # Nothing checks a line with no quantity, so its sum proves nothing: the next reader still runs. The AI mode
+    # stays gap fill, because stopping the chain is a separate question from whether the read can stand.
+    result, calls = chain("invoice-scan.png", reads={"paddleocr": _blank_quantity(INVOICE)})
+    assert "docling" in calls
+    ai = result["readers"]["ai"]
+    assert ai["need"] == "gap_fill" and ai["status"] == "gap_fill"
+
+
+def test_a_complete_later_read_takes_over_from_a_blank_quantity(chain):
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": _blank_quantity(INVOICE), "docling": INVOICE},
+                      ai_fallback=False)
+    assert result["selected_engine"] == "docling"
+
+
+def test_on_a_tied_score_the_read_that_passes_the_basic_checks_is_kept(chain):
+    # Each read leaves one gap: the first has no number, the second no currency. Only the second names the invoice.
+    unnamed = {**INVOICE, "number": None}
+    named = {**INVOICE, "currency": None, "po": "from-the-second-read"}
+    result, calls = chain("invoice-scan.png", reads={"paddleocr": unnamed, "docling": named}, ai_fallback=False)
+    assert "docling" in calls
+    assert result["selected_engine"] == "docling"
+    assert result["invoice"]["number"] == INVOICE["number"]
+
+
+def test_on_a_tied_score_the_first_read_stays_when_neither_is_better(chain):
+    # Both fail the same way: the order decides, as it always has.
+    first, second = {**INVOICE, "number": None, "po": "first"}, {**INVOICE, "number": None, "po": "second"}
+    result, _ = chain("invoice-scan.png", reads={"paddleocr": first, "docling": second}, ai_fallback=False)
+    assert result["selected_engine"] == "paddleocr"

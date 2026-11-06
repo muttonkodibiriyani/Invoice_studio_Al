@@ -509,6 +509,12 @@ def _basic_checks(invoice,missing):
     return not any(x.startswith(UNRECONCILED) for x in missing)
 
 
+def _ends_the_chain(invoice,missing):
+    """A sound read that also prices every line. A line with no quantity or price is left out of the
+    reconciliation, so its sum proves nothing, least of all on a zero-value invoice: the next reader still runs."""
+    return _basic_checks(invoice,missing) and all(l.qty is not None and l.price is not None for l in invoice.lines)
+
+
 def _same(field,mine,theirs):
     """Two readers agree when amounts are numerically equal or text matches by digits and letters."""
     if field in AMOUNT_FIELDS:
@@ -1064,8 +1070,12 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
                 local_reads.append({"engine":engine,"invoice":result["invoice"],
                                     "boxes":result.get("boxes",[]),
                                     "source":"ocr" if engine=="paddleocr" else "native"})
+            # On a tied score a read that passes the basic checks beats one that does not: the gaps count the
+            # same, but a missing number or an unreconciled table is not the same as a missing date.
             if candidate is not None and (score>best_score or (
-                    score==best_score and engine==native_preflight_engine)):
+                    score==best_score and (engine==native_preflight_engine or (
+                        _basic_checks(candidate,_open_gaps(candidate,missing))
+                        and not _basic_checks(best,_open_gaps(best,quality(best)[1])))))):
                 selected_read=len(local_reads)-1
                 best=candidate;best_score=score
                 selected=("native PDF text" if engine=="native_pdf_text" else
@@ -1107,7 +1117,7 @@ def process(path,options,store,ai_reader,progress=lambda *args:None,item_master=
             # A read short of the basic checks (no net, or lines that do not sum to it: a table read short of
             # the printed rows) is not a stopping point: the next local reader still runs and the existing
             # score keeps the better read.
-            if options.engine in ("auto","ai") and engine=="paddleocr" and _basic_checks(candidate,_open_gaps(candidate,missing)):
+            if options.engine in ("auto","ai") and engine=="paddleocr" and _ends_the_chain(candidate,_open_gaps(candidate,missing)):
                 for remaining in chain[chain.index(engine)+1:]:
                     trace.append({"engine":remaining,"status":"skipped","reason":"Invoice fields were read. Remaining exceptions go to the selected AI or manual review."})
                 break

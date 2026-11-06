@@ -162,7 +162,7 @@ def lines_add_up(invoice):
 def score_read(truth: dict, result: dict, view: dict | None = None, baseline: dict | None = None) -> dict:
     """Verdicts for one read of one document, with each WRONG value and whether anything flagged it."""
     invoice = result.get("invoice") or {}
-    out = {"fields": {}, "lines": {f: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0} for f in LINE_FIELDS}, "wrong": []}
+    out = {"fields": {}, "lines": {f: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0} for f in LINE_FIELDS}, "wrong": [], "wrong_lines": []}
     for field in HEADER_FIELDS:
         verdict = verdict_header(field, invoice, truth)
         flagged = verdict == "WRONG" and field_flagged(field, result, view, baseline)
@@ -176,8 +176,10 @@ def score_read(truth: dict, result: dict, view: dict | None = None, baseline: di
             verdict = verdict_line(field, read_lines[i].get(field), truth_lines[j].get(field))
             cell = out["lines"][field]
             cell[verdict] += 1
-            if verdict == "WRONG" and not line_flagged(field, i, view):
-                cell["silent"] += 1
+            if verdict == "WRONG":
+                flagged = line_flagged(field, i, view)
+                cell["silent"] += not flagged
+                out["wrong_lines"].append({"line": j + 1, "field": field, "truth": truth_lines[j].get(field), "read": read_lines[i].get(field), "flagged": flagged})
     for j in dropped:
         for field in LINE_FIELDS:
             if truth_lines[j].get(field) not in (None, ""):

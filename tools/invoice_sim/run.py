@@ -19,6 +19,7 @@ from types import SimpleNamespace
 os.environ.setdefault("INV_STUDIO_LEARN", "0")
 ROOT = Path(__file__).resolve().parents[2]
 PER_FAMILY = 5
+ITEM_CELL = {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0, "row not read": 0}
 
 
 def corpus(seed):
@@ -126,10 +127,24 @@ class RulesRig:
         self.patch = pytest.MonkeyPatch()
         entra_env(self.patch)
         tenant = Tenant()
-        self.app = create_app(Path(data_dir), identity=EntraIdentity(fetch=tenant.jwks), store_type=Store)
+
+
+        class LocalBlobStore(Store):
+            # Entra identity means the cloud upload path. Part A does not test blob storage, so files stay on local disk.
+            def persist_blob(self, path):
+                pass
+
+            def ensure_blob(self, path):
+                pass
+
+            def remove_blob(self, path):
+                pass
+
+        self.app = create_app(Path(data_dir), identity=EntraIdentity(fetch=tenant.jwks), store_type=LocalBlobStore)
         self.client = TestClient(self.app)
         self.client.__enter__()
         headers = bearer(tenant.token("owner-uid", OWNER, roles=("admin",)))
+        self.headers = headers
         assert self.client.get("/api/session", headers=headers).status_code == 200
         upload = self.client.post("/api/item-master/validate", headers=headers, files={"file": ("master.xlsx", master_workbook(c))})
         assert upload.status_code == 200, upload.text[:400]
@@ -178,7 +193,7 @@ def _item_verdict(row, truth_line):
 def score_items(truth, read_lines, pairs, phantom, view, rows):
     """Item, UPC, Unit Cost and Quantity in the exported Details sheet, per item class. Phantom rows have no class of their own."""
     from .score import number
-    items, columns, wrong = defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0}), defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0}), []
+    items, columns, wrong = defaultdict(lambda: dict(ITEM_CELL)), defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0}), []
     view_lines = view.get("lines") or []
     by_read = dict(pairs)
     truth_lines = truth["lines"]
@@ -217,7 +232,7 @@ def _truth_invoice(truth):
 def score(args):
     from app.fine_rules import ocr_read
 
-    from .score import HEADER_FIELDS, LINE_FIELDS, score_read
+    from .score import HEADER_FIELDS, LINE_FIELDS, new_issues, score_read
     out = Path(args.out)
     manifest = json.loads((out / "manifest.json").read_text())
     c = corpus(args.seed)
@@ -248,6 +263,12 @@ def score(args):
             except Exception as error:
                 rules_error = f"{type(error).__name__}: {str(error)[:200]}"
         scored = score_read(truth, result, view, baseline)
+        supplier = scored["fields"]["supplier_name"]
+        if view is not None and supplier["verdict"] == "WRONG" and not supplier["flagged"] and result["invoice"].get("supplier_name"):
+            # The rows above assume a reviewer confirmed the supplier. Here the name stays as read: does the app notice?
+            as_read, _ = rig.run(result["invoice"], result["invoice"]["supplier_name"], text, boxes, result.get("evidence"), ocr)
+            supplier["flagged"] = any("supplier" in (i.get("message") or "").lower() for i in new_issues(as_read, baseline))
+            next(w for w in scored["wrong"] if w["field"] == "supplier_name")["flagged"] = supplier["flagged"]
         entry.update(scored)
         entry["rules_error"] = rules_error
         entry["status"] = (view or {}).get("status")
@@ -255,8 +276,8 @@ def score(args):
             items, columns, wrong_items = score_items(truth, result["invoice"].get("lines") or [], scored["pairs"], scored["phantom"], view, rows)
             for j in scored["dropped"]:
                 cls = truth["lines"][j]["item_class"]
-                items.setdefault(cls, {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0})
-                items[cls]["blank" if truth["lines"][j].get("item_id") else "correct"] += 1
+                items.setdefault(cls, dict(ITEM_CELL))
+                items[cls]["row not read"] += 1
             entry.update(items=items, columns=columns, wrong_items=wrong_items, issues=len(view.get("issues") or []))
         results.append(entry)
     (out / "results.json").write_text(json.dumps(results, default=str))
@@ -313,7 +334,7 @@ def report(results, header_fields, line_fields):
                         count[k] += n
             rows.append(["line." + field, *count.values()])
         parts += [f"## Per field, {variant}", "", _table(rows, ["field", "correct", "blank", "WRONG", "WRONG no flag"]), ""]
-        items = defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0, "silent": 0})
+        items = defaultdict(lambda: dict(ITEM_CELL))
         columns = defaultdict(lambda: {"correct": 0, "blank": 0, "WRONG": 0})
         for (_, v), docs in groups.items():
             if v != variant:
@@ -326,14 +347,14 @@ def report(results, header_fields, line_fields):
                     for k, n in cell.items():
                         columns[name][k] += n
         if items:
-            parts += [f"## Final Item ID in the exported Details sheet, {variant}", "", _table([[k, *v.values()] for k, v in sorted(items.items())], ["class", "correct", "blank", "WRONG", "WRONG no flag"]), ""]
+            parts += [f"## Final Item ID in the exported Details sheet, {variant}", "", _table([[k, *v.values()] for k, v in sorted(items.items())], ["class", "correct", "blank", "WRONG", "WRONG no flag", "row not read"]), ""]
             parts += [f"## Related export columns, {variant}", "", _table([[k, *v.values()] for k, v in sorted(columns.items())], ["column", "correct", "blank", "WRONG"]), ""]
     return "\n".join(parts)
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=("build", "read", "score"))
+    p.add_argument("command", choices=("build", "read", "score", "files"))
     p.add_argument("--out", required=True)
     from .generator import SEED
     p.add_argument("--seed", type=int, default=SEED)
@@ -342,7 +363,8 @@ def main():
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--show", type=int, default=20000)
     args = p.parse_args()
-    {"build": build, "read": read, "score": score}[args.command](args)
+    from .files import files
+    {"build": build, "read": read, "score": score, "files": files}[args.command](args)
 
 
 if __name__ == "__main__":

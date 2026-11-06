@@ -288,7 +288,7 @@ def test_a_price_nothing_can_confirm_is_cleared_so_the_line_is_flagged():
 
 
 def test_rows_a_heading_read_that_multiply_are_left_exactly_as_read():
-    read_by_heading = [_heading_row(sku="X", qty="2", price="10.00", net_amount="20.00", description="As the heading read it")]
+    read_by_heading = [_heading_row(sku="X-1", qty="2", price="10.00", net_amount="20.00", description="As the heading read it")]
     assert checked_lines(read_by_heading, _normalise_words(page(*TWO_ROWS))) is read_by_heading
 
 
@@ -354,3 +354,114 @@ def test_figures_first_on_an_upright_page_do_not_turn_it():
         [("a", "111.75"), "Amount payable"],
     )
     assert turn_pages(amounts_first) is None
+
+
+@pytest.mark.parametrize("sku, description", [
+    ("Hinge", "brass 40mm"),  # A word in the code column; the code lost.
+    ("4006381333931", "Hinge brass 40mm"),  # The barcode as the code.
+    (None, "BR-104 Hinge brass 40mm"),  # The code inside the description.
+])
+def test_a_code_a_heading_misplaced_comes_from_the_row_itself(sku, description):
+    read_by_heading = [_heading_row(sku=sku, description=description, qty="12", price="4.50", net_amount="54.00"),
+                       _heading_row(sku="TL-221", description="Adhesive", qty="3", price="19.25", net_amount="57.75")]
+    rows = (row("BR-104 Hinge brass 40mm", "12", "4.50", "54.00"), row("TL-221 Adhesive", "3", "19.25", "57.75"))
+    lines = checked_lines(read_by_heading, _normalise_words(page(*rows)))
+    assert lines[0]["sku"] == "BR-104" and lines[0]["description"] == "Hinge brass 40mm"
+    assert lines[1] == read_by_heading[1]
+
+
+def test_a_word_for_a_code_stays_when_the_row_has_no_code_either():
+    read_by_heading = [_heading_row(sku="HINGE", description="Brass", qty="12", price="4.50", net_amount="54.00"),
+                       _heading_row(sku="GLUE", description="Tile", qty="3", price="19.25", net_amount="57.75")]
+    rows = (row("HINGE Brass", "12", "4.50", "54.00"), row("GLUE Tile", "3", "19.25", "57.75"))
+    assert checked_lines(read_by_heading, _normalise_words(page(*rows))) == read_by_heading
+
+
+def test_a_different_row_gives_no_text():
+    read_by_heading = [_heading_row(sku="Hinge", description="brass", qty="12", price="4.50", net_amount="54.00"),
+                       _heading_row(sku="X-1", description="Tile", qty="3", price="19.25", net_amount="57.75")]
+    rows = (row("BR-104 Hinge", "2", "5.00", "10.00"), row("X-1 Tile", "3", "19.25", "57.75"))
+    assert checked_lines(read_by_heading, _normalise_words(page(*rows)))[0]["sku"] == "Hinge"
+
+
+def test_a_narrow_receipt_prints_its_text_on_the_row_above_the_figures():
+    lines = read(
+        ["BR-104 4006381333931 Hinge brass 40mm"],
+        ["12 PAIR x", ("b", "4.50"), ("c", "54.00")],
+        ["TL-221 5901234123457 Tile adhesive"],
+        ["3 BAG x", ("b", "19.25"), ("c", "57.75")],
+    )
+    assert [(l.sku, l.gtin, l.description, l.uom, l.qty) for l in lines] == [
+        ("BR-104", "4006381333931", "Hinge brass 40mm", "PAIR", 12),
+        ("TL-221", "5901234123457", "Tile adhesive", "BAG", 3)]
+
+
+def test_a_row_with_three_decimals_is_read_by_the_mark_another_row_settles():
+    lines = read(
+        ["Goods", ("a", "Qty"), ("b", "Each"), ("c", "Sum")],
+        row("Thermal roll", "12", "34.768", "417.216"),
+        row("Bottle brush", "19", "7.500", "142.500"),
+        row("Copper elbow", "443", "48.454", "21,465.122"),
+    )
+
+    assert [(l.qty, l.price, l.net_amount) for l in lines] == [
+        (12, Decimal("34.768"), Decimal("417.216")),
+        (19, Decimal("7.5"), Decimal("142.5")),
+        (443, Decimal("48.454"), Decimal("21465.122")),
+    ]
+
+
+def test_three_decimals_nothing_settles_stay_held():
+    lines = read(row("Thermal roll", "12", "34.768", "417.216"), row("Bottle brush", "19", "7.500", "142.500"))
+
+    assert all(line.net_amount is None for line in lines)
+
+
+def test_a_long_item_number_that_is_no_barcode_keeps_a_heading_read_as_it_is():
+    words = _normalise_words(page(
+        ["Item", "Goods", ("a", "Qty"), ("b", "Each"), ("d", "Disc"), ("c", "Sum")],
+        ["009900000001", "Hinge", ("a", "4"), ("b", "2.500"), ("d", "0.000"), ("c", "10.000")],
+        ["009900000002", "Hasp", ("a", "3"), ("b", "2.000"), ("d", "0.000"), ("c", "6.000")],
+    ))
+    lines = [
+        {"sku": "009900000001", "description": "Hinge", "uom": None, "qty": "4", "price": "2.500", "net_amount": "10.000"},
+        {"sku": "009900000002", "description": "Hasp", "uom": None, "qty": "3", "price": "2.000", "net_amount": "6.000"},
+    ]
+
+    assert checked_lines(lines, words) == lines
+
+
+def test_text_under_a_row_continues_it_only_where_the_table_is_seen_to_wrap():
+    heading = ["Goods", ("a", "Qty"), ("b", "Each"), ("c", "Sum")]
+    wraps = read(
+        heading,
+        row("Basmati rice 5kg bag", "4", "2.50", "10.00"),
+        ["with protective wrap"],
+        row("Coconut water 330ml", "3", "2.00", "6.00"),
+        ["in a carton"],
+    )
+    footer = read(heading, row("Basmati rice", "4", "2.50", "10.00"), row("Coconut water", "3", "2.00", "6.00"), ["Goods once sold"])
+
+    assert [line.description for line in wraps] == ["Basmati rice 5kg bag with protective wrap", "Coconut water 330ml in a carton"]
+    assert [line.description for line in footer] == ["Basmati rice", "Coconut water"]
+
+
+def test_arabic_held_as_glyphs_on_the_page_is_put_back_as_the_words_it_spells():
+    lines = read(["ﻭﺭﻕ", "ﻃﺒﺎﻋﺔ", ("a", "4"), ("b", "2.50"), ("c", "10.00")], ["ﻣﺎﺀ", ("a", "3"), ("b", "2.00"), ("c", "6.00")])
+
+    assert lines[0].description == "طباعة ورق"
+
+
+def test_a_turned_page_is_still_seen_when_a_scanned_row_lost_its_arithmetic():
+    from app.page_turn import turn_pages
+    upright = page(
+        ["Remittance"],
+        ["PV-1 Copper tape", ("a", "[6"), ("b", "69.72"), ("c", "6,344.52")],
+        row("BR-104 Brass hinge", "12", "4.50", "54.00"),
+        row("TL-221 Tile adhesive", "3", "19.25", "57.75"),
+        ["Amount payable", ("c", "6,456.27")],
+    )
+    over = [{**word, "box": [WIDTH - word["box"][2], HEIGHT - word["box"][3], WIDTH - word["box"][0], HEIGHT - word["box"][1]]}
+            for word in reversed(upright)]
+
+    assert turn_pages(over) is not None

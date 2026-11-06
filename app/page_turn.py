@@ -59,7 +59,7 @@ def _reads_upright(rows: list[_Row]) -> bool:
 def _figure_before_its_label(row: _Row) -> bool:
     """A money figure first and words after it: "1,204.50 Amount Due", which is "Amount Due 1,204.50" turned over."""
     words = [word.text.strip() for word in row.words if word.text.strip()]
-    return bool(_MONEY.search(words[0])) and any(_WORD.search(word) for word in words[1:])
+    return len(words) > 1 and bool(_MONEY.search(words[0])) and bool(_WORD.search(words[1]))
 
 
 def _reads_upside_down(rows: list[_Row]) -> bool:

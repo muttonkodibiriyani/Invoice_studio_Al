@@ -14,6 +14,7 @@ itself confirms is read, and a wrong row being worse than no row:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -59,6 +60,8 @@ _UOM_SHAPE = re.compile(r"[A-Z]{1,5}\.?")
 # A share of the rows that must agree before a text column is read as codes or units.
 _COLUMN_VOTE = 0.6
 _ROUNDING_SHARE = Decimal("0.005")
+_PRESENTATION_FORM = re.compile("[\ufb50-\ufdff\ufe70-\ufeff]")
+_FIGURE_END = re.compile(r"^\d[\d,]*\.\d+$")
 
 
 @dataclass(frozen=True)
@@ -355,6 +358,16 @@ def _fitting(row: _Row, shape: _Product) -> list[_Product]:
     return [product for product in row.products if product.lines_up(shape, _COLUMN_TOLERANCE)]
 
 
+def _out_of_line(row: _Row, shape: _Product) -> list[_Product]:
+    """Free-flowing text shifts a row's figures out of the columns. Real arithmetic ending the row, in the order the
+    table prints its figures, is the same reading."""
+    amount_last = shape.amount.x0 > max(shape.left.x0, shape.right.x0)
+    if not amount_last or not row.numbers:
+        return []
+    last = max(row.numbers, key=lambda number: number.x0)
+    return [product for product in row.products if product.strong and product.amount is last]
+
+
 def _table_rows(rows: list[_Row], shape: _Product) -> list[_Row]:
     """Per page, the rows from the first that multiplies to the last before anything closes the table."""
     kept: list[_Row] = []
@@ -497,12 +510,32 @@ def _main_segment(text: _Text) -> list[str]:
     return max(text.segments, key=lambda segment: sum(1 for word in segment if _LETTER.search(word)))
 
 
+def _wraps_under(row: _Row, above: _Row, below: _Row) -> bool:
+    """A row with no figures continues the text above it only when it starts where that text does, right below it."""
+    text = [word for word in row.words if _LETTER.search(word.text) and not _is_code(word.text.strip())]
+    close = below.page == above.page and below.y - above.y <= 2.5 * (above.words[0].y1 - above.words[0].y0)
+    return bool(text) and close and abs(below.words[0].x0 - text[0].x0) <= _COLUMN_TOLERANCE
+
+
+def _letter_words(text: _Text) -> int:
+    return sum(1 for segment in text.segments for word in segment if _LETTER.search(word))
+
+
+def _with_row_above(rows: list[_Row], row: _Row, text: _Text) -> _Text:
+    above = [other for other in rows if other.page == row.page and other.y < row.y][-1:]
+    if not above or above[0].closes or above[0].products or not any(_LETTER.search(word.text) for word in above[0].words):
+        return text
+    printed = _text_of(above[0], set())
+    return _Text(printed.segments + text.segments, printed.gtin or text.gtin)
+
+
 def _is_code(word: str) -> bool:
     value = word.replace(" ", "")
     return (
         bool(_SAFE_IDENTIFIER.fullmatch(value))
         and any(character.isdigit() for character in value)
         and not _MEASURE.fullmatch(value)
+        and not _FIGURE_END.fullmatch(value)
     )
 
 
@@ -514,6 +547,13 @@ def _serial_column(texts: list[_Text]) -> bool:
     """A first column counting 1, 2, 3 is a row number, not a code."""
     firsts = [text.segments[0][0] if text.segments else "" for text in texts]
     return len(firsts) > 1 and all(value == str(n + 1) for n, value in enumerate(firsts))
+
+
+def _logical_order(words: list[str]) -> list[str]:
+    """A PDF text layer can hold Arabic as the glyphs on the page, left to right: put it back as the words it spells."""
+    if not words or not all(_PRESENTATION_FORM.search(word) or word.isdigit() for word in words):
+        return words
+    return [unicodedata.normalize("NFKC", word) for word in reversed(words)]
 
 
 def _describe(texts: list[_Text]) -> list[dict[str, str | None]]:
@@ -538,7 +578,7 @@ def _describe(texts: list[_Text]) -> list[dict[str, str | None]]:
                     code = word
                 elif unit is None and _is_unit(word):
                     unit = word
-        described.append({"sku": code, "uom": unit, "description": " ".join(words), "gtin": text.gtin})
+        described.append({"sku": code, "uom": unit, "description": " ".join(_logical_order(words)), "gtin": text.gtin})
     return described
 
 
@@ -571,6 +611,21 @@ def names_another_document(text: str) -> bool:
     return bool(_OTHER_DOCUMENT.search(text))
 
 
+def _decimals(product: _Product) -> int:
+    return product.left.decimals + product.right.decimals + product.amount.decimals
+
+
+def _table_prints_decimal_points(table: list[_Row], shape: _Product) -> bool:
+    """A row whose only reading has a point before three last digits says what that mark means in "34.768" on the others."""
+    return any(
+        number.mark == "." and number.decimals == 3
+        for row in table
+        for fits in [_fitting(row, shape)]
+        if len(fits) == 1
+        for number in (fits[0].left, fits[0].right, fits[0].amount)
+    )
+
+
 def _marks_disagree(products: list[_Product]) -> bool:
     """A column printing "16.156" on one row and "5,359" on the next: a scan has lost which mark is which,
     and the same digits multiply just as well a thousand times larger, so no price or amount is certain."""
@@ -596,20 +651,41 @@ def read_lines(words: Iterable[_Word]) -> list[Line]:
     side = _quantity_side(rows, table, shape)
     scale_lost = _marks_disagree([fits[0] for fits in (_fitting(row, shape) for row in table) if fits])
     priced: list[tuple[_Row, _Product | None]] = []
+    wrapped: dict[int, list[_Row]] = {}
+    points = _table_prints_decimal_points(table, shape)
     for row in table:
-        fits = _fitting(row, shape)
+        fits = _fitting(row, shape) or _out_of_line(row, shape)
+        if points and len(fits) > 1:
+            fits = [fit for fit in fits if _decimals(fit) == max(map(_decimals, fits))]
         # Two different readings of one row in the same columns is no reading.
         if fits and len({(p.left.value, p.right.value, p.amount.value) for p in fits}) == 1:
             priced.append((row, fits[0]))
         elif _amount_of(row, shape) is not None and any(_LETTER.search(word.text) for word in row.words) and not row.closes:
             priced.append((row, None))
+        elif priced and not row.numbers and not row.closes:
+            held = wrapped.setdefault(id(priced[-1][0]), [])
+            if _wraps_under(priced[-1][0], held[-1] if held else priced[-1][0], row):
+                held.append(row)
     texts = [
         _text_of(row, product.used if product else {i for n in row.numbers if n is _amount_of(row, shape) for i in n.words})
         for row, product in priced
     ]
+    if all(_letter_words(text) <= 1 for text in texts):
+        # Figures only on every row: each row's text is the row printed above it.
+        texts = [_with_row_above(rows, row, text) for (row, _), text in zip(priced, texts)]
+        wrapped = {}
+    elif any(wrapped.values()):
+        # Text under the last row could be a footer note, unless this table is seen to wrap its text.
+        last_row = priced[-1][0]
+        for other in (other for other in rows if (other.page, other.y) > (last_row.page, last_row.y)):
+            if other.numbers or other.closes or not _wraps_under(last_row, wrapped.get(id(last_row), [last_row])[-1] if wrapped.get(id(last_row)) else last_row, other):
+                break
+            wrapped.setdefault(id(last_row), []).append(other)
     lines: list[Line] = []
     for (row, product), described in zip(priced, _describe(texts)):
         evidence = _row_text(row.words)[:500]
+        described = {**described, "description": " ".join(
+            [described["description"] or ""] + [_row_text(other.words) for other in wrapped.get(id(row), [])]).strip()}
         uom = described["uom"]
         if product is None:
             # Held: the figures did not multiply, so none of them is certain. The evidence keeps the row.
@@ -657,23 +733,66 @@ def _as_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _text_doubtful(line: dict[str, Any]) -> bool:
+    """Cells that cannot be what their heading called them: a code with no digit in it, or a barcode as the code;
+    a description starting with a code or running on into figures; a unit that is a figure."""
+    sku = str(line.get("sku") or "")
+    described = str(line.get("description") or "").split()
+    return (
+        not sku
+        or not any(character.isdigit() for character in sku) or (_is_barcode_text(sku) and not line.get("gtin"))
+        or any(map(_is_barcode_text, described))
+        or any(_PRESENTATION_FORM.search(word) for word in described)
+        or bool(described) and bool(_FIGURE_END.search(described[-1]))
+        or any(character.isdigit() for character in str(line.get("uom") or ""))
+    )
+
+
+def _is_barcode_text(word: str) -> bool:
+    return bool(re.fullmatch(r"[0-9]{8}|[0-9]{12,14}", word)) and _check_digit_ok(word)
+
+
+def _checked_text(line: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]:
+    """The row's own text in place of doubtful cells, when it is the same row and it does find a code or a unit."""
+    if not _text_doubtful(line):
+        return line
+    mine, theirs = _as_decimal(line.get("net_amount")), _as_decimal(other.get("net_amount"))
+    if mine is not None and theirs is not None and abs(mine) != abs(theirs):
+        return line
+    sku = str(line.get("sku") or "")
+    if not other.get("sku") and (not sku or not line.get("uom") or any(character.isdigit() for character in sku)):
+        return line
+    return {
+        **line,
+        **{field: other[field] for field in ("sku", "uom", "description") if other.get(field)},
+        "gtin": line.get("gtin") or other.get("gtin"),
+    }
+
+
 def checked_lines(lines: list[dict[str, Any]], words: Iterable[_Word]) -> list[dict[str, Any]]:
     """A heading can name the wrong column: "Ext. Price" read as the price, with no amount left to check it against.
     A row whose figures do not multiply takes them from the rows' own arithmetic, when the page confirms a table;
     otherwise the figure nothing confirms is cleared, so the line rules flag it. Rows that multiply are left alone."""
-    if not lines or all(_row_multiplies(line) for line in lines):
+    figures_fail = not all(_row_multiplies(line) for line in lines)
+    if not lines or not figures_fail and not any(_text_doubtful(line) for line in lines):
         return lines
     found = [line.model_dump(mode="json") for line in read_lines(words)]
-    if len(found) < len(lines):
-        return lines
-    if len(found) > len(lines):
+    if len(found) > len(lines) and figures_fail:
         return found
+    if len(found) != len(lines):
+        # Not row for row: only rows the same amount identifies may take their text.
+        amounts = {abs(_as_decimal(other["net_amount"])): other for other in found if other.get("net_amount") not in (None, "")}
+        return [
+            _checked_text(line, amounts[abs(_as_decimal(line["net_amount"]))])
+            if line.get("net_amount") not in (None, "") and abs(_as_decimal(line["net_amount"])) in amounts else line
+            for line in lines
+        ]
     merged = []
     for line, other in zip(lines, found):
         if _row_multiplies(line):
-            merged.append(line)
+            merged.append(_checked_text(line, other))
         elif other.get("net_amount") not in (None, "") and other.get("price") not in (None, ""):
-            merged.append({**line, **{field: other[field] for field in ("qty", "price", "net_amount", "tax_amount")}})
+            merged.append({**_checked_text(line, other), **{field: other[field] for field in ("qty", "price", "net_amount", "tax_amount")}})
         elif line.get("net_amount") in (None, ""):
             merged.append({**line, "price": None})
         else:

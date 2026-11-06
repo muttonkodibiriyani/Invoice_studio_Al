@@ -595,14 +595,19 @@ def arithmetic(view, sources):
         exact = _q(sum((q * c for q, c in pairs), Decimal(0)), places)
         per_line = sum((_q(q * c, places) for q, c in pairs), Decimal(0))
         ok = min(abs(_q(net, places) - exact), abs(_q(net, places) - per_line)) <= tolerance
+        amounts = _dec(view.get("line_amounts_total"))
+        # Every line's own row proved its printed discount (no line is held), and the printed amounts sum to the net.
+        line_discounted = (not ok and not held and view.get("line_discounts_printed") and amounts is not None
+                           and abs(_q(amounts, places) - _q(net, places)) <= tolerance)
         # Unit costs printed rounded (line totals from the unrounded price): each line may be off by up to
         # quantity x half a unit-cost step. Within that bound (beyond the tolerance) it is a warning, never a pass.
         step = max(Decimal(1).scaleb(c.as_tuple().exponent) for _, c in pairs)
         bound = sum((abs(q) for q, _ in pairs), Decimal(0)) * step / 2 + Decimal(1).scaleb(-places)
-        rounded = not ok and abs(exact - _q(net, places)) <= bound
+        rounded = not ok and not line_discounted and abs(exact - _q(net, places)) <= bound
         # An invoice-level discount printed in the totals: the lines carry the pre-discount prices (RF-3).
-        discounted = not ok and not rounded and after_discount(sources.text, pairs, net)
+        discounted = not ok and not line_discounted and not rounded and after_discount(sources.text, pairs, net)
         status, detail = ((PASS, "Sum of quantity x unit cost equals the Header net within the tolerance") if ok else
+                          (PASS, "Line amounts after printed line discounts equal the Header net") if line_discounted else
                           (WARNING, "Sum of quantity x unit cost differs from the Header net within unit-cost "
                                     "rounding") if rounded else
                           (WARNING, "Lines equal the Header net after the printed invoice discount") if discounted else
@@ -612,7 +617,6 @@ def arithmetic(view, sources):
         if status == FAIL and sources.text.unavailable:
             check.update(unavailable=True, detail=detail + "; the printed discount and line count could not be checked")
         if status == FAIL:
-            amounts = _dec(view.get("line_amounts_total"))
             k, found = missing_lines(len(lines), _q(net, places), exact, sources.text,
                                      None if amounts is None else _q(amounts, places), places)
             check["missing_lines"] = k

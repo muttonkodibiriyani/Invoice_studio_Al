@@ -459,3 +459,71 @@ def test_with_no_proof_the_missing_lines_are_an_estimate():
     found = lines_to_net(result)
     assert found["status"] == tc.FAIL and found["missing_lines"] == 2
     assert found["detail"].endswith("; estimated 2 item line(s) missing or merged") and missing_cells(result)
+
+
+def discount_exceptions(*rows, qty="2", price="100.00", amount="110.00"):
+    from app.fine_rules import RowsSource, RulesConfig, run_invoice
+    from app.models import Invoice, Line
+    source = RowsSource([{"VPN": "VPN-1", "ITEM_PARENT": "P1", "SUPPLIER": "101", "SUPPLIER_NAME": "ABC001RE4AED",
+                          "SUPPLIER SITE NAME": "Synthetic Co", "ITEM_DESC": "Rose red"}])
+    invoice = Invoice(supplier_name="Synthetic Co", currency="AED", lines=[
+        Line(sku="VPN-1", description="Rose red", qty=qty, price=price, net_amount=amount)])
+    result = run_invoice(invoice, source, RulesConfig(), text_value="\n".join(rows))
+    return [e for e in result["exceptions"] if e["Rule ID"] == "02A-Unit Cost"], result
+
+
+HEADING = "Description Quantity Unit Price Disc % VAT Amount"
+
+
+@pytest.mark.parametrize("rows, kwargs", [
+    ((HEADING, "[12345678901234] Rose red 2 Units 100.00 45.00 VAT 5% 5.50 110.00"), {}),
+    # OCR glues the percent to the next word; a bracketed long code on the row is not a percent.
+    (("Disc.", "Rose red 2.00 100.00 45.00VAT5% 110.00"), {}),
+    ((HEADING, "Rose red 2 Units 80.00 100.00 VAT 5% 0.00"), {"price": "80.00", "amount": "0.00"}),
+    # A percent equal to the quantity or the price is printed again in its own column.
+    ((HEADING, "Rose red 45.00 Units 10.00 45.00 VAT 5% 247.50"), {"qty": "45.00", "price": "10.00", "amount": "247.50"}),
+    ((HEADING, "Rose red 2.00 Units 100.00 100.00 VAT 5% 0.00"), {"amount": "0.00"}),
+])
+def test_a_percent_printed_on_the_lines_own_row_explains_its_amount(rows, kwargs):
+    found, result = discount_exceptions(*rows, **kwargs)
+    assert found == [] and result["line_discounts_printed"] is True
+
+
+@pytest.mark.parametrize("rows, kwargs", [
+    # No discount heading: 45 may be anything.
+    (("Description Quantity Unit Price Amount", "Rose red 2 100.00 45.00 110.00"), {}),
+    # The percent gives another amount, or the difference alone would have to explain the line.
+    ((HEADING, "Rose red 2 Units 100.00 40.00 VAT 5% 110.00"), {}),
+    ((HEADING, "Rose red 2 Units 100.00 VAT 5% 110.00"), {}),
+    # A misread quantity or price is not on the row, so the row proves nothing.
+    ((HEADING, "Rose red 2 Units 100.00 45.00 VAT 5% 110.00"), {"qty": "3", "amount": "165.00"}),
+    ((HEADING, "Rose red 2 Units 100.00 45.00 VAT 5% 110.00"), {"price": "10000.00", "amount": "11000.00"}),
+    # The amount itself is not a percent: 50.00 of 100.00 is no 50% discount when only the amount prints 50.
+    ((HEADING, "Rose red 1 Units 100.00 VAT 5% 50.00"), {"qty": "1", "amount": "50.00"}),
+    # Quantity, price and percent on different rows are no proof.
+    ((HEADING, "Rose red 2 Units 100.00", "Other 7 Units 3.00 45.00 VAT 5% 110.00"), {}),
+    # The quantity or the price itself is not a percent: 50 x 1.00 at "50%" would be 25.00.
+    ((HEADING, "Rose red 50 Units 1.00 VAT 5% 25.00"), {"qty": "50", "price": "1.00", "amount": "25.00"}),
+])
+def test_a_line_amount_the_row_does_not_prove_stays_an_exception(rows, kwargs):
+    found, result = discount_exceptions(*rows, **kwargs)
+    assert len(found) == 1 and "line_discounts_printed" not in result
+
+
+def discounted_view(amounts="110.00", issues=()):
+    return {**view(net="110.00", tax="5.50", lines=[line(1, "2", "100.00")], issues=issues),
+            "line_discounts_printed": True, "line_amounts_total": amounts}
+
+
+def test_lines_proved_by_their_printed_discounts_make_the_net_and_keep_it_verified():
+    result = check(discounted_view(), HEADING, "Rose red 2 100.00 45.00 5% 5.50 110.00", "Net 110.00",
+                   "VAT 5.50", "Total 115.50")
+    assert status_of(result, "lines_to_net") == tc.PASS and lines_to_net(result)["detail"].startswith("Line amounts")
+    for sheet, column in AMOUNTS:
+        assert cell(result, sheet, column)["status"] == tc.VERIFIED, (sheet, column)
+
+
+@pytest.mark.parametrize("v", [discounted_view(amounts="50.00"), discounted_view(issues=line_parsing(1))])
+def test_a_printed_line_discount_does_not_pass_a_net_the_lines_do_not_make(v):
+    result = check(v, HEADING, "Rose red 2 100.00 45.00 5% 5.50 110.00", "Net 110.00", "VAT 5.50", "Total 115.50")
+    assert status_of(result, "lines_to_net") == tc.FAIL

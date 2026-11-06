@@ -9,7 +9,7 @@ nothing is inferred from a supplier's country or name suffix.
 
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -1845,6 +1845,7 @@ def _printed_page(scan, amount):
 
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _DISCOUNT = re.compile(r"(?i)\bdiscount\b")
+_DISCOUNT_HEADING = re.compile(r"(?i)\bdisc(?:ount)?\b")
 
 
 def _printed_values(value, places):
@@ -1872,6 +1873,25 @@ def invoice_discount(invoice, scan):
     page = next((p for p, value in pages for row in value.splitlines()
                  if _DISCOUNT.search(row) and total - net in _printed_values(row, places)), None)
     return (total - net, page) if page else None
+
+
+def printed_line_discount(line, printed_text, allowed):
+    """A line discount the page proves: under a printed discount heading, one text row holds the line's quantity, its
+    unit cost and a percent that gives its amount (FIELD_RULES: price is the list price, net_amount after the discount).
+    The percent is never read off the difference, so a wrong quantity or price does not explain itself. A percent equal
+    to the quantity, the price or the amount must be printed again: one figure on the row is not two columns."""
+    if not _DISCOUNT_HEADING.search(printed_text):
+        return False
+    for row in printed_text.splitlines():
+        printed = Counter(Decimal(t.replace(",", "")) for t in _NUMBER.findall(row))
+        if not printed[line.qty] or not printed[line.price]:
+            continue
+        printed.subtract((line.qty, line.price, line.net_amount))
+        for percent, count in printed.items():
+            if count > 0 and 0 < percent <= 100 and abs((line.qty * line.price * (100 - percent) / 100).quantize(
+                    line.net_amount, rounding=ROUND_HALF_UP) - line.net_amount) <= allowed:
+                return True
+    return False
 
 
 def _different_company(name, owner):
@@ -2110,6 +2130,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
     lines_out = []
     discount = invoice_discount(invoice, scan)
     line_tolerance = config.line_arithmetic_tolerance.get(arithmetic_currency, Decimal(0))
+    line_discounts = False
     for line, m in zip(invoice.lines, matches):
         n = m["line"]
         brand = ""
@@ -2143,9 +2164,14 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
             allowed = max(abs(line.qty) * Decimal(1).scaleb(line.net_amount.as_tuple().exponent), line_tolerance)
             # A printed invoice-level discount explains a line amount below quantity x unit cost.
             if abs(computed - line.net_amount) > allowed and not (discount and 0 <= line.net_amount <= computed):
-                line_ok = False
-                run.exception("Line Exception", f"Quantity x unit cost {computed} differs from line amount "
-                              f"{line.net_amount}", "02A-Unit Cost", n)
+                step = max(Decimal(1).scaleb(line.net_amount.as_tuple().exponent), line_tolerance)
+                # The reader's rows and the scan's: on a tilted page either can split a printed row.
+                if printed_line_discount(line, "\n".join((text_value, *scan["pages"].values())), step):
+                    line_discounts = True
+                else:
+                    line_ok = False
+                    run.exception("Line Exception", f"Quantity x unit cost {computed} differs from line amount "
+                                  f"{line.net_amount}", "02A-Unit Cost", n)
         for f, v in (("Unit Cost", line.price), ("Quantity", line.qty)):
             run.trace(f, v, "ALG-026", "Invoice line", line=n, reference=f"page {line.page}" if line.page else "")
         if tax_code:
@@ -2208,6 +2234,7 @@ def run_invoice(invoice, source, config=None, filename="", text_value="", boxes=
         "po": {"order": po["order"], "source": po["source"], "status": po["status"], "value_source": value_source},
         "order_date": order_date, "arithmetic_currency": arithmetic_currency,
         # The printed line amounts: target_check tells a wrong quantity or price from a missing line by them.
+        **({"line_discounts_printed": True} if line_discounts else {}),
         **({"line_amounts_total": str(sum(line.net_amount for line in invoice.lines))}
            if invoice.lines and all(line.net_amount is not None for line in invoice.lines) else {}),
         "receipt_date": check_receipt_dates(po, order_date, document_date),

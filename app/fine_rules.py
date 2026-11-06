@@ -748,11 +748,6 @@ def variant_code(line):
     return None, None
 
 
-def variant_upc(line):
-    """The UPC inside a printed supplier variant code (see variant_code); otherwise None."""
-    return variant_code(line)[0]
-
-
 def item_barcode(row):
     """Explicit BARCODE in the new master; legacy catalogs declared ITEM as their barcode."""
     return strip_ult(row.get("BARCODE") if "BARCODE" in row else row.get("ITEM"))

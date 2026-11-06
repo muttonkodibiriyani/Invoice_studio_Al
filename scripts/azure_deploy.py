@@ -296,7 +296,7 @@ def is_cidr(value):
 def probe_endpoint(origin):
     """True when the endpoint answers at all over TLS: any HTTP status counts, no credential is sent."""
     try:
-        urllib.request.urlopen(origin + "/openai/v1/models", timeout=10)  # noqa: S310  an https origin check_ai accepted
+        urllib.request.urlopen(origin + "/openai/v1/models", timeout=10)  # nosec B310  an https origin check_ai accepted
     except urllib.error.HTTPError:
         return True
     except OSError:
